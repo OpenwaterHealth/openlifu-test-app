@@ -64,16 +64,28 @@ Rectangle {
             }
         }
 
+        
+        IconButton {
+            buttonIcon: "\ueb34"
+            buttonText: "Testing"
+            Layout.alignment: Qt.AlignHCenter
+            backgroundColor: sidebarMenu.activeButtonIndex === 3 ? "white" : "transparent"
+            iconColor: sidebarMenu.activeButtonIndex === 0 ? "#2C3E50" : "#BDC3C7"
+            onClicked: {
+                sidebarMenu.handleButtonClick(3); // Call the global function
+            }
+        }
+
         // Settings Button
         IconButton {
             buttonIcon: "\ueabf"
             buttonText: "Settings"
             enabled: false
             Layout.alignment: Qt.AlignHCenter
-            backgroundColor: sidebarMenu.activeButtonIndex === 3 ? "white" : "transparent"
+            backgroundColor: sidebarMenu.activeButtonIndex === 4 ? "white" : "transparent"
             iconColor: sidebarMenu.activeButtonIndex === 3 ? "#2C3E50" : "#BDC3C7"
             onClicked: {
-                sidebarMenu.handleButtonClick(3); // Call the global function
+                sidebarMenu.handleButtonClick(4); // Call the global function
             }
         }
     }

@@ -75,6 +75,7 @@ Window {
                     source: activeMenu === 0 ? "pages/Demo.qml"
                         : activeMenu === 1 ? "pages/Transmitter.qml"
                         : activeMenu === 2 ? "pages/Console.qml"
+                        : activeMenu === 3 ? "pages/Testing.qml"
                         : "pages/Settings.qml"
 
                 }
