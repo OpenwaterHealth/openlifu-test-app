@@ -7,6 +7,7 @@ import json
 import sys
 import argparse
 from pathlib import Path
+
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly
 from openlifu.io.LIFUInterface import LIFUInterface
 from openlifu.bf.pulse import Pulse
@@ -16,13 +17,19 @@ from openlifu.plan.solution import Solution
 from openlifu.xdc import Transducer
 from openlifu.xdc.util import load_transducer_from_file
 
+# import verification-tests
+from verification.prodreqs_base_class import *
+from verification.prodreqs_transmitter_heating_placeholder import TransmitterHeatingPlaceholder, parse_arguments
+from verification.prodreqs_voltage_accuracy_placeholder import VoltageAccuracyTest
+
 current_folder = Path(__file__).resolve().parent
 target_folder = current_folder.parent / "openLIFU-test-scripts" / "verification"
 print(f"Current folder: {current_folder}")
 print(f"Target folder: {target_folder}")
 sys.path.insert(0, str(target_folder))
 print((target_folder / "prodreqs_transmitter_heating_placeholder.py").exists())
-from prodreqs_transmitter_heating_placeholder import TransmitterHeatingPlaceholder
+# from prodreqs_transmitter_heating_placeholder import TransmitterHeatingPlaceholder
+
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
@@ -73,7 +80,10 @@ class LIFUConnector(QObject):
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
-        self.interface = LIFUInterface(HV_test_mode=hv_test_mode, run_async=True)
+        self.interface = LIFUInterface(HV_test_mode=hv_test_mode, 
+                                        run_async=True,
+                                        voltage_table_selection="evt0",
+                                        sequence_time_selection="stress_test")
         self._txConnected = False
         self._hvConnected = False
         self._configured = False
@@ -873,16 +883,20 @@ class LIFUConnector(QObject):
             # Fallback to default version if the function doesn't exist
             return "0.3.2"
         
-    @pyqtSlot(int, int, int)
-    def runThermalTest(self, frequency, interval, num_modules):
+    @pyqtSlot(int, int, int, int)
+    def runThermalTest(self, frequency, interval, num_modules, test_case):
         """Run the transmitter heating test."""
         try:
 
-            args = argparse.Namespace()
-            args.frequency_khz = frequency
+            args = parse_arguments()
+            args.frequency = frequency
             args.interval_msec = interval
             args.num_modules = num_modules
-            args.log_dir = None
+            args.test_case = test_case
+            args.interface = self.interface
+            # args.log_dir = None
+            # args.external_power = False
+            # args.simulate = False
 
             logger.info("Running thermal test...")
             # args = {
@@ -891,11 +905,12 @@ class LIFUConnector(QObject):
             #     "numModulesDropdown": numModulesDropdown  # Use actual number of modules
             # }
             # test = TransmitterHeatingPlaceholder(args=frequencyInput,selectedIndex,numModulesDropdown)
-            test = TransmitterHeatingPlaceholder(args)
+            # test = TransmitterHeatingPlaceholder(frequency_khz=frequency, interval_msec=interval, num_modules=num_modules)
             # test.frequency_khz = frequency
             # test.interval_msec = interval
             # test.num_modules = num_modules
 
+            test = TransmitterHeatingPlaceholder(args=args)
             test.run()
         except Exception as e:
             logger.error(f"Error running thermal test: {e}")
