@@ -883,34 +883,26 @@ class LIFUConnector(QObject):
             # Fallback to default version if the function doesn't exist
             return "0.3.2"
         
-    @pyqtSlot(int, int, int, int)
-    def runThermalTest(self, frequency, interval, num_modules, test_case):
+    @pyqtSlot(int, int, int)
+    def runThermalTest(self, frequency, num_modules, test_case):
         """Run the transmitter heating test."""
         try:
 
             args = parse_arguments()
             args.frequency = frequency
-            args.interval_msec = interval
             args.num_modules = num_modules
             args.test_case = test_case
             args.interface = self.interface
-            # args.log_dir = None
-            # args.external_power = False
-            # args.simulate = False
+            args.test_runthrough = True
 
             logger.info("Running thermal test...")
-            # args = {
-            #     "frequency_khz": frequencyInput,  # Example frequency value
-            #     "selectedIndex": selectedIndex,        # Example index value
-            #     "numModulesDropdown": numModulesDropdown  # Use actual number of modules
-            # }
-            # test = TransmitterHeatingPlaceholder(args=frequencyInput,selectedIndex,numModulesDropdown)
-            # test = TransmitterHeatingPlaceholder(frequency_khz=frequency, interval_msec=interval, num_modules=num_modules)
-            # test.frequency_khz = frequency
-            # test.interval_msec = interval
-            # test.num_modules = num_modules
-
             test = TransmitterHeatingPlaceholder(args=args)
             test.run()
         except Exception as e:
-            logger.error(f"Error running thermal test: {e}")
+            logger.error(f"\n !! Fatal error: {e}")
+            with contextlib.suppress(Exception):
+                test.print_test_summary()
+            with contextlib.suppress(Exception):
+                test.turn_off_console_and_tx()
+            with contextlib.suppress(Exception):
+                test.cleanup_interface()
