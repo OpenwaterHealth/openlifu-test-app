@@ -10,6 +10,10 @@ from qasync import QEventLoop
 from lifu_connector import LIFUConnector
 from pathlib import Path
 
+from version import get_version
+
+APP_VERSION = get_version()
+
 # run with lab supply
 # set PYTHONPATH=%cd%..\OpenLIFU-python\src;%PYTHONPATH%
 # python main.py --hv-test-mode 
@@ -51,7 +55,8 @@ def main():
     
     # Expose to QML
     engine.rootContext().setContextProperty("LIFUConnector", lifu_connector)
-    engine.rootContext().setContextProperty("appVersion", "1.0.12")
+    engine.rootContext().setContextProperty("appVersion", APP_VERSION)
+    app.setProperty("appVersion", APP_VERSION)
 
     engine.load(resource_path("main.qml"))
 
