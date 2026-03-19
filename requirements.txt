@@ -4,6 +4,7 @@ PyQt6-Qt6==6.8.1
 qasync==0.27.1
 base58==2.1.1
 scipy==1.13.1
+matplotlib==3.10.8
 
 # Optional tools for development and testing
 pytest==7.4.0
