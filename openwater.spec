@@ -27,7 +27,7 @@ hidden  += collect_submodules("PyQt6")
 hidden  += ["qasync"]
 
 # --- ✅ add olifu explicitly ---
-om_datas, om_bins, om_hidden = collect_all("opyfus")
+om_datas, om_bins, om_hidden = collect_all("olifu")
 datas   += om_datas
 binaries += om_bins
 hidden  += om_hidden

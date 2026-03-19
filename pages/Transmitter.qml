@@ -14,13 +14,12 @@ Rectangle {
 
     // Properties for dynamic data
     property var modules: []
+    property bool loading: false
 
     function updateStates() {
         console.log("Updating all states...")
-        LIFUConnector.queryNumModules()
-        LIFUConnector.queryTxInfo()
-        LIFUConnector.queryTxTemperature()
-        LIFUConnector.queryTriggerInfo()
+        loading = true
+        queryTimer.start()
     }
 
     // Run refresh logic immediately on page load if TX is already connected
@@ -41,6 +40,18 @@ Rectangle {
         }
     }
 
+    Timer {
+        id: queryTimer
+        interval: 50   // Short delay to let the busy indicator render first
+        running: false
+        onTriggered: {
+            LIFUConnector.queryNumModules()
+            LIFUConnector.queryTxInfo()
+            LIFUConnector.queryTxTemperature()
+            LIFUConnector.queryTriggerInfo()
+        }
+    }
+
     Connections {
         target: LIFUConnector
 
@@ -51,6 +62,7 @@ Rectangle {
         } else {
             console.log("TX Disconnected - Clearing Data...")
             modules = []
+            loading = false
 
             pingResult.text = ""
             echoResult.text = ""
@@ -70,6 +82,7 @@ Rectangle {
                     amb_temperature: existing ? existing.amb_temperature : 0.0
                 }
             })
+            loading = false
         }
 
         // Handle temperature updates
@@ -118,10 +131,32 @@ Rectangle {
             border.color: "#3E4E6F"
             border.width: 2
 
+            BusyIndicator {
+                id: busyIndicator
+                anchors.centerIn: parent
+                running: loading
+                visible: loading
+                width: 80
+                height: 80
+                z: 10
+            }
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: busyIndicator.bottom
+                anchors.topMargin: 8
+                visible: loading
+                text: "Querying transmitter modules ..."
+                color: "#BDC3C7"
+                font.pixelSize: 14
+                z: 10
+            }
+
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 20
                 spacing: 10
+                visible: !loading
 
                 // Vertical Stack Section
                 ColumnLayout {
