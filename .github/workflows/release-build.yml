@@ -37,19 +37,18 @@ jobs:
           python -m pip install --upgrade pip
 
           # Fetch latest openmotion-sdk wheel from GitHub Releases
-            WHL_URL=$(python - <<'PY'
-            import json, urllib.request
-            url = 'https://api.github.com/repos/OpenwaterHealth/openlifu-sdk/releases/latest'
-            try:
-              data = json.load(urllib.request.urlopen(url))
-              for a in data.get('assets', []):
-                if a.get('name','').endswith('.whl'):
-                  print(a.get('browser_download_url'))
-                  break
-            except Exception:
-              pass
-            PY
-            )
+          WHL_URL=$(python -c "
+          import json, urllib.request
+          url = 'https://api.github.com/repos/OpenwaterHealth/openlifu-sdk/releases/latest'
+          try:
+            data = json.load(urllib.request.urlopen(url))
+            for a in data.get('assets', []):
+              if a.get('name','').endswith('.whl'):
+                print(a.get('browser_download_url'))
+                break
+          except Exception:
+            pass
+          ")
 
           if [ -n "$WHL_URL" ]; then
             echo "Installing pylib wheel: $WHL_URL"
