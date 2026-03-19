@@ -13,18 +13,7 @@ Rectangle {
     opacity: 0.95
 
     // Properties for dynamic data
-    property var modules: {
-        return {
-            "module_1": {firmwareVersion: "N/A",
-                        deviceId: "N/A",
-                        tx_temperature: 0.0,
-                        amb_temperature: 0.0 },
-            "module_2": {firmwareVersion: "N/A",
-                        deviceId: "N/A",
-                        tx_temperature: 0.0,
-                        amb_temperature: 0.0 }
-        }
-    }
+    property var modules: []
 
     function updateStates() {
         console.log("Updating all states...")
@@ -61,41 +50,38 @@ Rectangle {
             infoTimer.start()  // One-time info fetch
         } else {
             console.log("TX Disconnected - Clearing Data...")
+            modules = []
 
-        modules["module_1"].firmwareVersion = "N/A"
-        modules["module_1"].deviceId = "N/A"
-        modules["module_1"].tx_temp = 0.0
-        modules["module_1"].amb_temp = 0.0
-
-        modules["module_2"].firmwareVersion = "N/A"
-        modules["module_2"].deviceId = "N/A"
-        modules["module_2"].tx_temp = 0.0
-        modules["module_2"].amb_temp = 0.0
-
-        pingResult.text = ""
-        echoResult.text = ""
-        toggleLedResult.text = ""
-    }
-}
+            pingResult.text = ""
+            echoResult.text = ""
+            toggleLedResult.text = ""
+        }
+        }
 
         // Handle device info response
-        onTxDeviceInfoReceived: (module, fwVersion, devId) => {
-            let index = "module_" + module.toString()
-            modules[index].firmwareVersion = fwVersion
-            modules[index].deviceId = devId
-
-            // Update modules object so QML detects the change
-            modules = JSON.parse(JSON.stringify(modules))
+        onTxDeviceInfoReceived: (modulesList) => {
+            // Build modules array, preserving existing temperature data
+            modules = modulesList.map(function(m, i) {
+                let existing = modules[i]
+                return {
+                    firmwareVersion: m.firmwareVersion,
+                    deviceId: m.deviceId,
+                    tx_temperature: existing ? existing.tx_temperature : 0.0,
+                    amb_temperature: existing ? existing.amb_temperature : 0.0
+                }
+            })
         }
 
         // Handle temperature updates
         onTemperatureTxUpdated: (module, tx_temp, amb_temp) => {
-            let index = "module_" + module.toString()
-            modules[index].tx_temperature = tx_temp
-            modules[index].amb_temperature = amb_temp
-
-            // Update modules object so QML detects the change
-            modules = JSON.parse(JSON.stringify(modules))
+            if (module < modules.length) {
+                let updated = modules.slice()
+                updated[module] = Object.assign({}, updated[module], {
+                    tx_temperature: tx_temp,
+                    amb_temperature: amb_temp
+                })
+                modules = updated
+            }
         }
 
         onTriggerStateChanged: (state) => {
@@ -210,7 +196,7 @@ Rectangle {
                                 }
 
                                 onClicked: {
-                                    if(LIFUConnector.sendPingCommand("TX")){                                        
+                                    if(LIFUConnector.sendPingCommand("TX", moduleTabBar.currentIndex)){                                        
                                         pingResult.text = "Ping SUCCESS"
                                         pingResult.color = "green"
                                     }else{
@@ -265,7 +251,7 @@ Rectangle {
                                 }
 
                                 onClicked: {
-                                    if(LIFUConnector.sendLedToggleCommand("TX"))
+                                    if(LIFUConnector.sendLedToggleCommand("TX", moduleTabBar.currentIndex))
                                     {
                                         toggleLedResult.text = "LED Toggled"
                                         toggleLedResult.color = "green"
@@ -320,8 +306,7 @@ Rectangle {
                                 }
 
                                 onClicked: {
-
-                                    if(LIFUConnector.sendEchoCommand("TX"))
+                                    if(LIFUConnector.sendEchoCommand("TX", moduleTabBar.currentIndex))
                                     {
                                         echoResult.text = "Echo SUCCESS"
                                         echoResult.color = "green"
@@ -752,7 +737,7 @@ Rectangle {
                         // TX Status Indicator
                         RowLayout {
                             spacing: 8
-                        
+
                             Rectangle {
                                 width: 20
                                 height: 20
@@ -763,63 +748,46 @@ Rectangle {
                             }
 
                             Text {
-                                text: LIFUConnector.txConnected ? "Module 1 Connected" : "Module 1 Not Connected"
+                                text: LIFUConnector.txConnected
+                                      ? modules.length + " Module" + (modules.length !== 1 ? "s" : "") + " Connected"
+                                      : "Not Connected"
                                 font.pixelSize: 16
                                 color: "#BDC3C7"
                             }
 
-                            Rectangle {
-                                width: 20
-                                height: 20
-                                radius: 10
-                                color: LIFUConnector.queryNumModulesConnected == 2 ? "green" : "red"
-                                border.color: "black"
-                                border.width: 1
-                            }
+                            // Spacer to push the Refresh Button to the right
+                            Item { Layout.fillWidth: true }
 
-                            Text {
-                                text: LIFUConnector.queryNumModulesConnected == 2 ? "Module 2 Connected" : "Module 2 Not Connected"
-                                font.pixelSize: 16
-                                color: "#BDC3C7"
-                            }
-                        
-                        // Spacer to push the Refresh Button to the right
-                            Item {
-                                Layout.fillWidth: true
-                            }
-
-                            
                             // Refresh Button
                             Rectangle {
                                 width: 30
                                 height: 30
                                 radius: 15
-                                color: enabled ? "#2C3E50" : "#7F8C8D"  // Dim when disabled
-                                Layout.alignment: Qt.AlignRight  
+                                color: enabled ? "#2C3E50" : "#7F8C8D"
+                                Layout.alignment: Qt.AlignRight
                                 enabled: LIFUConnector.txConnected
 
-                                // Icon Text
                                 Text {
-                                    text: "\u21BB"  // Unicode for the refresh icon
+                                    text: "\u21BB"
                                     anchors.centerIn: parent
                                     font.pixelSize: 20
-                                    font.family: iconFont.name  // Use the loaded custom font
-                                    color: enabled ? "white" : "#BDC3C7"  // Dim icon text when disabled
+                                    font.family: iconFont.name
+                                    color: enabled ? "white" : "#BDC3C7"
                                 }
 
                                 MouseArea {
                                     anchors.fill: parent
-                                    enabled: parent.enabled  // MouseArea also disabled when button is disabled
+                                    enabled: parent.enabled
                                     onClicked: {
                                         console.log("Manual Refresh Triggered")
-                                        updateStates();
+                                        updateStates()
                                     }
-
-                                    onEntered: if (parent.enabled) parent.color = "#34495E"  // Highlight only when enabled
+                                    onEntered: if (parent.enabled) parent.color = "#34495E"
                                     onExited: parent.color = enabled ? "#2C3E50" : "#7F8C8D"
                                 }
                             }
                         }
+
                         // Divider Line
                         Rectangle {
                             Layout.fillWidth: true
@@ -827,142 +795,113 @@ Rectangle {
                             color: "#3E4E6F"
                         }
 
-                        RowLayout {
-                            spacing: 40   // space between columns
-
-                            // Left column (Module 1)
-                            ColumnLayout {
-                                spacing: 8
-
-                                RowLayout {
-                                    spacing: 8
-                                    Text { text: "Device ID:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                                    Text { text: modules["module_1"].deviceId; color: "#3498DB"; font.pixelSize: 14 }
-                                }
-
-                                RowLayout {
-                                    spacing: 8
-                                    Text { text: "Firmware Version:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                                    Text { text: modules["module_1"].firmwareVersion; color: "#2ECC71"; font.pixelSize: 14 }
-                                }
-                            }
-
-                            // Right column (Module 2)
-                            ColumnLayout {
-                                spacing: 8
-
-                                RowLayout {
-                                    spacing: 8
-                                    Text { text: "Device ID:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                                    Text { text: modules["module_2"].deviceId; color: "#3498DB"; font.pixelSize: 14 }
-                                }
-
-                                RowLayout {
-                                    spacing: 8
-                                    Text { text: "Firmware Version:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                                    Text { text: modules["module_2"].firmwareVersion; color: "#2ECC71"; font.pixelSize: 14 }
-                                }
-                            }
-                        }
-
-
-                        RowLayout {
-                            id: temperatureGrid
-                            spacing: 20
-
-                            ColumnLayout {
-                                Label {
-                                    text: "Module 1"
-                                    font.bold: true
-                                    font.pointSize: 16
-                                    horizontalAlignment: Text.AlignHCenter
-                                    Layout.alignment: Qt.AlignHCenter
-                                }
-                                // MODULE 1 TEMP #1 Widget
-                                TemperatureWidget {
-                                    id: tempWidget1
-                                    temperature: modules["module_1"].tx_temperature
-                                    tempName: "TX Temperature"
-                                    Layout.fillWidth: true
-                                }
-
-                                // MODULE 1 TEMP #2 Widget
-                                TemperatureWidget {
-                                    id: tempWidget2
-                                    temperature: modules["module_1"].amb_temperature
-                                    tempName: "Ambient Temperature"
-                                    Layout.alignment: Qt.AlignHCenter
-                                }
-                            }
-                            
-                            ColumnLayout{
-                                Label {
-                                    text: "Module 2"
-                                    font.bold: true
-                                    font.pointSize: 16
-                                    horizontalAlignment: Text.AlignHCenter
-                                    Layout.alignment: Qt.AlignHCenter
-                                }
-                                // MODULE 2 TEMP #1 Widget
-                                TemperatureWidget {
-                                    id: tempWidget3
-                                    temperature: modules["module_2"].tx_temperature
-                                    tempName: "TX Temperature"
-                                    Layout.alignment: Qt.AlignHCenter
-                                }
-
-                                // MODULE 2 TEMP #2 Widget
-                                TemperatureWidget {
-                                    id: tempWidget4
-                                    temperature: modules["module_2"].amb_temperature
-                                    tempName: "Ambient Temperature"
-                                    Layout.alignment: Qt.AlignHCenter
-                                }
-                            }
-                        }
-
-                        
-
-
-                        // Soft Reset Button
-                        Rectangle {
+                        // Module Tabs
+                        TabBar {
+                            id: moduleTabBar
                             Layout.fillWidth: true
-                            height: 40
-                            radius: 10
-                            color: enabled ? "#E74C3C" : "#7F8C8D"  // Red when enabled, gray when disabled
-                            enabled: LIFUConnector.txConnected
+                            visible: modules.length > 0
 
-                            Text {
-                                text: "Soft Reset"
-                                anchors.centerIn: parent
-                                color: parent.enabled ? "white" : "#BDC3C7"  // White when enabled, light gray when disabled
-                                font.pixelSize: 18
-                                font.weight: Font.Bold
+                            onCurrentIndexChanged: {
+                                pingResult.text = ""
+                                toggleLedResult.text = ""
+                                echoResult.text = ""
                             }
 
-                            MouseArea {
-                                anchors.fill: parent
-                                enabled: parent.enabled  // Disable MouseArea when the button is disabled
-                                onClicked: {
-                                    console.log("Soft Reset Triggered")
-                                    LIFUConnector.softResetTX()
+                            Repeater {
+                                model: modules.length
+                                TabButton {
+                                    text: "Module " + index
+                                    width: implicitWidth
                                 }
+                            }
+                        }
 
-                                onEntered: {
-                                    if (parent.enabled) {
-                                        parent.color = "#C0392B"  // Darker red on hover (only when enabled)
+                        StackLayout {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            currentIndex: moduleTabBar.currentIndex
+                            visible: modules.length > 0
+
+                            Repeater {
+                                model: modules.length
+
+                                Item {
+                                    // Capture index for use inside nested elements
+                                    property int moduleIndex: index
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        spacing: 10
+
+                                        // Device Info
+                                        RowLayout {
+                                            spacing: 8
+                                            Text { text: "Device ID:"; color: "#BDC3C7"; font.pixelSize: 14 }
+                                            Text { text: modules[moduleIndex] ? modules[moduleIndex].deviceId : "N/A"; color: "#3498DB"; font.pixelSize: 14 }
+                                        }
+
+                                        RowLayout {
+                                            spacing: 8
+                                            Text { text: "Firmware Version:"; color: "#BDC3C7"; font.pixelSize: 14 }
+                                            Text { text: modules[moduleIndex] ? modules[moduleIndex].firmwareVersion : "N/A"; color: "#2ECC71"; font.pixelSize: 14 }
+                                        }
+
+                                        // Temperature Widgets
+                                        TemperatureWidget {
+                                            temperature: modules[moduleIndex] ? modules[moduleIndex].tx_temperature : 0.0
+                                            tempName: "TX Temperature"
+                                            Layout.fillWidth: true
+                                        }
+
+                                        TemperatureWidget {
+                                            temperature: modules[moduleIndex] ? modules[moduleIndex].amb_temperature : 0.0
+                                            tempName: "Ambient Temperature"
+                                            Layout.fillWidth: true
+                                        }
+
+                                        Item { Layout.fillHeight: true }
+
+                                        // Per-module Soft Reset Button
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 40
+                                            radius: 10
+                                            color: enabled ? "#E74C3C" : "#7F8C8D"
+                                            enabled: LIFUConnector.txConnected
+
+                                            Text {
+                                                text: "Soft Reset Module " + moduleIndex
+                                                anchors.centerIn: parent
+                                                color: parent.enabled ? "white" : "#BDC3C7"
+                                                font.pixelSize: 16
+                                                font.weight: Font.Bold
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                enabled: parent.enabled
+                                                onClicked: {
+                                                    console.log("Soft Reset Module", moduleIndex)
+                                                    LIFUConnector.softResetTXModule(moduleIndex)
+                                                }
+                                                onEntered: if (parent.enabled) parent.color = "#C0392B"
+                                                onExited: if (parent.enabled) parent.color = "#E74C3C"
+                                            }
+
+                                            Behavior on color { ColorAnimation { duration: 200 } }
+                                        }
                                     }
                                 }
-                                onExited: {
-                                    if (parent.enabled) {
-                                        parent.color = "#E74C3C"  // Restore original color (only when enabled)
-                                    }
-                                }
                             }
+                        }
 
-                            Behavior on color {
-                                ColorAnimation { duration: 200 }
-                            }
+                        // Placeholder when no modules detected
+                        Text {
+                            visible: modules.length === 0
+                            text: "No modules detected"
+                            color: "#7F8C8D"
+                            font.pixelSize: 14
+                            Layout.alignment: Qt.AlignHCenter
                         }
                     }
                 }
