@@ -394,7 +394,5 @@ Rectangle {
 
     Component.onDestruction: {
         console.log("Closing UI, clearing LIFUConnector...");
-        LIFUConnector.stop_monitoring();
-        LIFUConnector = null;  // Ensure QML does not access it
     }
 }

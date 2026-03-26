@@ -10,8 +10,12 @@ from qasync import QEventLoop
 from lifu_connector import LIFUConnector
 from pathlib import Path
 
+from version import get_version
+
+APP_VERSION = get_version()
+
 # run with lab supply
-# set PYTHONPATH=%cd%..\OpenLIFU-python\src;%PYTHONPATH%
+# set PYTHONPATH=%cd%\src;%PYTHONPATH%
 # python main.py --hv-test-mode 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +55,8 @@ def main():
     
     # Expose to QML
     engine.rootContext().setContextProperty("LIFUConnector", lifu_connector)
-    engine.rootContext().setContextProperty("appVersion", "1.0.12")
+    engine.rootContext().setContextProperty("appVersion", APP_VERSION)
+    app.setProperty("appVersion", APP_VERSION)
 
     engine.load(resource_path("main.qml"))
 
@@ -67,9 +72,9 @@ def main():
         logger.info("Starting LIFU monitoring...")
         await lifu_connector.start_monitoring()
 
-    async def shutdown():
-        """Ensure LIFUConnector stops monitoring before closing."""
-        logger.info("Shutting down LIFU monitoring...")
+    def handle_exit():
+        """Stop monitoring and cancel pending tasks synchronously on app quit."""
+        logger.info("Application closing...")
         lifu_connector.stop_monitoring()
 
         pending_tasks = [t for t in asyncio.all_tasks() if not t.done()]
@@ -77,28 +82,16 @@ def main():
             logger.info(f"Cancelling {len(pending_tasks)} pending tasks...")
             for task in pending_tasks:
                 task.cancel()
-            await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-        logger.info("LIFU monitoring stopped. Application shutting down.")
-
-    def handle_exit():
-        """Ensure QML cleans up before Python exit without blocking."""
-        logger.info("Application closing...")
-
-        # Schedule shutdown but do NOT block the loop
-        asyncio.ensure_future(shutdown()).add_done_callback(lambda _: loop.stop())
-
-        engine.deleteLater()  # Ensure QML engine is destroyed
+        engine.deleteLater()
 
     # Connect shutdown process to app quit event
     app.aboutToQuit.connect(handle_exit)
 
     try:
         with loop:
-            loop.run_until_complete(main_async())  # Start monitoring before running event loop
+            loop.create_task(main_async())  # Schedule monitoring as a background task
             loop.run_forever()
-    except RuntimeError as e:
-        logger.error(f"Runtime error: {e}")
     except KeyboardInterrupt:
         logger.info("Application interrupted.")
     finally:
