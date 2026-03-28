@@ -1,5 +1,7 @@
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
+import os
+import threading
 import numpy as np
 import base58
 import re
@@ -60,6 +62,11 @@ class LIFUConnector(QObject):
     connectionStatusChanged = pyqtSignal()  # 🔹 New signal for connection updates
     triggerStateChanged = pyqtSignal(bool)  # 🔹 New signal for trigger state change
     txConfigStateChanged = pyqtSignal(bool)  # 🔹 New signal for tx configured state change
+
+    # Firmware update signals
+    fwUpdateProgress = pyqtSignal(str, int, int)  # (label, written, total)
+    fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
+    fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -884,3 +891,114 @@ class LIFUConnector(QObject):
         except Exception:
             # Fallback to default version if the function doesn't exist or package metadata is missing
             return "0.3.2"
+
+    # ------------------------------------------------------------------
+    # Firmware update
+    # ------------------------------------------------------------------
+
+    @pyqtSlot(str, result=str)
+    def getDefaultFirmwarePath(self, device_type: str) -> str:
+        """Return the bundled firmware file path for the given device type (console or transmitter)."""
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec("openlifu_sdk")
+            if spec is None or spec.origin is None:
+                return ""
+            fw_dir = os.path.join(os.path.dirname(spec.origin), "firmware")
+            names = {
+                "console": "openlifu-console-fw.signed.bin",
+                "transmitter": "openlifu-transmitter-fw.signed.bin",
+            }
+            name = names.get(device_type, "")
+            return os.path.join(fw_dir, name) if name else ""
+        except Exception as e:
+            logger.error(f"Error locating default firmware for {device_type}: {e}")
+            return ""
+
+    @pyqtSlot(result=str)
+    def readHvFirmwareVersion(self) -> str:
+        """Read and return the current console (HV) firmware version."""
+        try:
+            version = self.interface.hvcontroller.get_version()
+            self.fwVersionRead.emit("console", version)
+            logger.info(f"Console firmware version: {version}")
+            return version
+        except Exception as e:
+            logger.error(f"Error reading console firmware version: {e}")
+            self.fwVersionRead.emit("console", "Error")
+            return "Error"
+
+    @pyqtSlot(int, result=str)
+    def readTxFirmwareVersion(self, module: int) -> str:
+        """Read and return the current transmitter firmware version for a given module."""
+        try:
+            version = self.interface.txdevice.get_version(module=module)
+            self.fwVersionRead.emit(f"transmitter_{module}", version)
+            logger.info(f"Transmitter module {module} firmware version: {version}")
+            return version
+        except Exception as e:
+            logger.error(f"Error reading transmitter module {module} firmware version: {e}")
+            self.fwVersionRead.emit(f"transmitter_{module}", "Error")
+            return "Error"
+
+    @pyqtSlot(str)
+    def updateConsoleFirmware(self, firmware_path: str) -> None:
+        """Update the console (HV) firmware using DFU.  Runs in a background thread."""
+        def _run():
+            try:
+                from openlifu_sdk.io.LIFUDFU import LIFUDFUManager
+
+                def _progress(written: int, total: int, label: str) -> None:
+                    self.fwUpdateProgress.emit(label, written, total)
+
+                self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
+                logger.info(f"Console firmware update: {firmware_path}")
+                mgr = LIFUDFUManager(uart=self.interface.hvcontroller.uart)
+                mgr.update_module(
+                    module=0,
+                    package_file=firmware_path,
+                    enter_dfu_fn=self.interface.hvcontroller.enter_dfu,
+                    vid=0x0483,
+                    pid=0xDF11,
+                    libusb_dll=None,
+                    dfu_wait_s=5.0,
+                    device_type="console",
+                    progress_callback=_progress,
+                )
+                self.fwUpdateStatus.emit("console", True, "Console firmware update complete.")
+                logger.info("Console firmware update complete.")
+            except Exception as e:
+                msg = f"Console update failed: {e}"
+                logger.error(msg)
+                self.fwUpdateStatus.emit("console", False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, int)
+    def updateTransmitterFirmware(self, firmware_path: str, module: int) -> None:
+        """Update the transmitter firmware for a specific module. Runs in a background thread."""
+        def _run():
+            try:
+                def _progress(written: int, total: int, label: str) -> None:
+                    self.fwUpdateProgress.emit(label, written, total)
+
+                self.fwUpdateStatus.emit("transmitter", False, f"Starting transmitter firmware update for module {module}…")
+                logger.info(f"Transmitter module {module} firmware update: {firmware_path}")
+                self.interface.txdevice.update_firmware(
+                    module=module,
+                    package_file=firmware_path,
+                    vid=0x0483,
+                    pid=0xDF11,
+                    libusb_dll=None,
+                    dfu_wait_s=5.0,
+                    device_type="transmitter",
+                    progress_callback=_progress,
+                )
+                self.fwUpdateStatus.emit("transmitter", True, f"Transmitter module {module} firmware update complete.")
+                logger.info(f"Transmitter module {module} firmware update complete.")
+            except Exception as e:
+                msg = f"Transmitter module {module} update failed: {e}"
+                logger.error(msg)
+                self.fwUpdateStatus.emit("transmitter", False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
