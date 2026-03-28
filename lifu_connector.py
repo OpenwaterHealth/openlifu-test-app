@@ -32,6 +32,17 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
+def _parse_tx_module(target: str):
+    """Parse a target string like 'tx 0', 'tx_0', 'tx0' into an integer module index.
+    Returns None if the target is not a TX target (e.g. 'console').
+    """
+    import re as _re
+    m = _re.match(r'^tx[\s_]?(\d+)$', target.strip().lower())
+    if m:
+        return int(m.group(1))
+    return None
+
+
 # Define system states
 DISCONNECTED = 0
 TX_CONNECTED = 1
@@ -67,6 +78,10 @@ class LIFUConnector(QObject):
     fwUpdateProgress = pyqtSignal(str, int, int)  # (label, written, total)
     fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
     fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
+
+    # User config signals
+    userConfigRead = pyqtSignal(str, str)   # (target, json_str)  target: "console" | "tx_N"
+    userConfigStatus = pyqtSignal(str, bool, str)  # (target, success, message)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -1000,5 +1015,66 @@ class LIFUConnector(QObject):
                 msg = f"Transmitter module {module} update failed: {e}"
                 logger.error(msg)
                 self.fwUpdateStatus.emit("transmitter", False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str)
+    def readUserConfig(self, target: str) -> None:
+        """Read user configuration from the target device. Emits userConfigRead on success.
+
+        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        """
+        def _run():
+            try:
+                module = _parse_tx_module(target)
+                if module is None:
+                    # Console not yet supported
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
+                config = self.interface.txdevice.read_config(module=module)
+                if config is None:
+                    self.userConfigStatus.emit(target, False, "Failed to read config – no response from device.")
+                    return
+
+                json_str = config.get_json_str()
+                logger.info(f"User config read from {target}: {json_str}")
+                self.userConfigRead.emit(target, json_str)
+            except Exception as e:
+                msg = f"Error reading config from {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, str)
+    def writeUserConfig(self, target: str, json_str: str) -> None:
+        """Write user configuration JSON to the target device.
+
+        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        """
+        def _run():
+            try:
+                module = _parse_tx_module(target)
+                if module is None:
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
+                updated = self.interface.txdevice.write_config_json(json_str, module=module)
+                if updated is None:
+                    self.userConfigStatus.emit(target, False, "Write failed – no response from device.")
+                    return
+
+                msg = f"Config written to {target}. Seq: {updated.header.seq}, CRC: 0x{updated.header.crc:04X}"
+                logger.info(msg)
+                self.userConfigStatus.emit(target, True, msg)
+            except json.JSONDecodeError as e:
+                msg = f"Invalid JSON: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+            except Exception as e:
+                msg = f"Error writing config to {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
 
         threading.Thread(target=_run, daemon=True).start()

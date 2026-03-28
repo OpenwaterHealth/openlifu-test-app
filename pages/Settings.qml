@@ -22,7 +22,8 @@ Rectangle {
 
     function rebuildConfigTargets() {
         var items = []
-        if (LIFUConnector.hvConnected) items.push("Console")
+        // Console user config not yet supported in firmware – enable when ready:
+        // if (LIFUConnector.hvConnected) items.push("Console")
         if (LIFUConnector.txConnected) {
             for (var i = 0; i < txModuleCount; i++) items.push("TX " + i)
         }
@@ -143,6 +144,18 @@ Rectangle {
                 LIFUConnector.readTxFirmwareVersion(txModuleSelector.currentIndex)
             }
             rebuildConfigTargets()
+        }
+
+        function onUserConfigRead(target, jsonStr) {
+            userConfigEditor.text = jsonStr
+        }
+
+        function onUserConfigStatus(target, success, message) {
+            // Flash the status text briefly; reuse the editor placeholder area
+            userConfigStatusText.text = message
+            userConfigStatusText.color = success ? "#2ECC71" : "#E74C3C"
+            userConfigStatusText.visible = true
+            userConfigStatusHideTimer.restart()
         }
     }
 
@@ -315,6 +328,22 @@ Rectangle {
                             Layout.alignment: Qt.AlignHCenter
                         }
 
+                        // Status message (hidden until a read/write completes)
+                        Timer {
+                            id: userConfigStatusHideTimer
+                            interval: 4000
+                            onTriggered: userConfigStatusText.visible = false
+                        }
+
+                        Text {
+                            id: userConfigStatusText
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                            visible: false
+                        }
+
                         Item {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
@@ -327,10 +356,19 @@ Rectangle {
 
                                 TextArea {
                                     id: userConfigEditor
+                                    width: parent.width
+                                    height: Math.max(contentHeight, parent.height)
+                                    leftPadding: 8
+                                    rightPadding: 8
+                                    topPadding: 8
+                                    bottomPadding: 8
+
                                     font.family: "Courier New"
                                     font.pixelSize: 13
                                     color: "white"
+
                                     wrapMode: TextArea.Wrap
+
                                     background: Rectangle {
                                         color: "#2A2F3B"
                                         radius: 4
@@ -383,6 +421,8 @@ Rectangle {
                             model: settingsPage.configTargetModel
                             enabled: settingsPage.configTargetModel.length > 0
 
+                            onCurrentIndexChanged: userConfigEditor.text = ""
+
                             contentItem: Text {
                                 leftPadding: 8
                                 text: configTargetSelector.enabled ? configTargetSelector.displayText : "No devices"
@@ -417,7 +457,10 @@ Rectangle {
                                 id: readConfigArea
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                onClicked: LIFUConnector.readUserConfig()
+                                onClicked: {
+                                    var target = configTargetSelector.currentText.toLowerCase()
+                                    LIFUConnector.readUserConfig(target)
+                                }
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -443,7 +486,10 @@ Rectangle {
                                 id: writeConfigArea
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                onClicked: LIFUConnector.writeUserConfig(userConfigEditor.text)
+                                onClicked: {
+                                    var target = configTargetSelector.currentText.toLowerCase()
+                                    LIFUConnector.writeUserConfig(target, userConfigEditor.text)
+                                }
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -454,6 +500,7 @@ Rectangle {
                             Layout.fillWidth: true
                             height: 40
                             radius: 6
+                            visible: false
                             color: clearConfigArea.containsMouse ? "#C0392B" : "#3A3F4B"
                             border.color: clearConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
 
