@@ -386,20 +386,26 @@ Rectangle {
                             Button {
                                 text: "Browse…"
                                 hoverEnabled: true
-                                Layout.preferredHeight: 32
-                                Layout.preferredWidth: 80
+                                Layout.preferredHeight: 40
+                                Layout.preferredWidth: 100
+                                enabled: !consoleUpdating
 
                                 contentItem: Text {
                                     text: parent.text
-                                    color: "#BDC3C7"
+                                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: Text.AlignVCenter
-                                    font.pixelSize: 13
                                 }
                                 background: Rectangle {
-                                    color: parent.hovered ? "#4A90E2" : "#3A3F4B"
+                                    color: {
+                                        if (!parent.enabled) return "#3A3F4B"
+                                        return parent.hovered ? "#4A90E2" : "#3A3F4B"
+                                    }
                                     radius: 4
-                                    border.color: parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                    border.color: {
+                                        if (!parent.enabled) return "#7F8C8D"
+                                        return parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                    }
                                 }
                                 onClicked: consoleFwDialog.open()
                             }
@@ -408,14 +414,15 @@ Rectangle {
                         // Update button
                         Rectangle {
                             id: consoleUpdateButton
-                            Layout.fillWidth: true
+                            Layout.preferredWidth: 200
+                            Layout.alignment: Qt.AlignRight
                             height: 40
                             radius: 6
                             color: enabled ? (consoleUpdateArea.containsMouse ? "#C0392B" : "#E74C3C") : "#7F8C8D"
                             enabled: LIFUConnector.hvConnected && !consoleUpdating && consoleFwPath.text.length > 0
 
                             Text {
-                                text: consoleUpdating ? "Updating…" : "Update Console Firmware"
+                                text: consoleUpdating ? "Updating…" : "Update Firmware"
                                 anchors.centerIn: parent
                                 color: parent.enabled ? "white" : "#BDC3C7"
                                 font.pixelSize: 15
@@ -603,20 +610,26 @@ Rectangle {
                             Button {
                                 text: "Browse…"
                                 hoverEnabled: true
-                                Layout.preferredHeight: 32
-                                Layout.preferredWidth: 80
+                                Layout.preferredHeight: 40
+                                Layout.preferredWidth: 100
+                                enabled: !transmitterUpdating
 
                                 contentItem: Text {
                                     text: parent.text
-                                    color: "#BDC3C7"
+                                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: Text.AlignVCenter
-                                    font.pixelSize: 13
                                 }
                                 background: Rectangle {
-                                    color: parent.hovered ? "#4A90E2" : "#3A3F4B"
+                                    color: {
+                                        if (!parent.enabled) return "#3A3F4B"
+                                        return parent.hovered ? "#4A90E2" : "#3A3F4B"
+                                    }
                                     radius: 4
-                                    border.color: parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                    border.color: {
+                                        if (!parent.enabled) return "#7F8C8D"
+                                        return parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                    }
                                 }
                                 onClicked: txFwDialog.open()
                             }
@@ -625,14 +638,15 @@ Rectangle {
                         // Update button
                         Rectangle {
                             id: txUpdateButton
-                            Layout.fillWidth: true
+                            Layout.preferredWidth: 200
+                            Layout.alignment: Qt.AlignRight
                             height: 40
                             radius: 6
                             color: enabled ? (txUpdateArea.containsMouse ? "#C0392B" : "#E74C3C") : "#7F8C8D"
                             enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0 && transmitterFwPath.text.length > 0
 
                             Text {
-                                text: transmitterUpdating ? "Updating…" : "Update Transmitter Firmware"
+                                text: transmitterUpdating ? "Updating…" : "Update Firmware"
                                 anchors.centerIn: parent
                                 color: parent.enabled ? "white" : "#BDC3C7"
                                 font.pixelSize: 15
