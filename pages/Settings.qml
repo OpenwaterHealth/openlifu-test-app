@@ -18,6 +18,16 @@ Rectangle {
     property bool transmitterUpdating: false
     property int txModuleCount: 0
     property bool txLoading: false
+    property var configTargetModel: []
+
+    function rebuildConfigTargets() {
+        var items = []
+        if (LIFUConnector.hvConnected) items.push("Console")
+        if (LIFUConnector.txConnected) {
+            for (var i = 0; i < txModuleCount; i++) items.push("TX " + i)
+        }
+        configTargetModel = items
+    }
 
     function queryTxModules() {
         txLoading = true
@@ -35,6 +45,7 @@ Rectangle {
         if (LIFUConnector.txConnected) {
             queryTxModules()
         }
+        rebuildConfigTargets()
     }
 
     // Small delay so the busy indicator renders before the blocking query
@@ -85,6 +96,7 @@ Rectangle {
                 hvConnectTimer.stop()
                 consoleCurrentVersion.text = "—"
             }
+            rebuildConfigTargets()
         }
 
         function onFwUpdateProgress(label, written, total) {
@@ -119,6 +131,7 @@ Rectangle {
                 settingsPage.txModuleCount = 0
                 txCurrentVersion.text = "\u2014"
             }
+            rebuildConfigTargets()
         }
 
         function onNumModulesUpdated() {
@@ -129,6 +142,7 @@ Rectangle {
                 txCurrentVersion.text = "Reading…"
                 LIFUConnector.readTxFirmwareVersion(txModuleSelector.currentIndex)
             }
+            rebuildConfigTargets()
         }
     }
 
@@ -263,26 +277,214 @@ Rectangle {
         anchors.margins: 20
         spacing: 15
 
-        // Title
-        Text {
-            text: "Settings"
-            font.pixelSize: 24
-            font.weight: Font.Bold
-            color: "white"
-            horizontalAlignment: Text.AlignHCenter
-            Layout.alignment: Qt.AlignHCenter
-        }
-
-        // Scrollable content
-        ScrollView {
+        // Content grid
+        ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            ScrollBar.vertical.policy: ScrollBar.AsNeeded
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            spacing: 16
 
-            ColumnLayout {
-                width: settingsPage.width - 40
+            // ============================================
+            // USER CONFIG CARD (row 1 – full width, 50% height)
+            // ============================================
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                color: "#1E1E20"
+                radius: 10
+                border.color: "#3E4E6F"
+                border.width: 2
+                clip: true
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 16
+
+                    // Section header + JSON editor
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.horizontalStretchFactor: 7
+                        spacing: 8
+
+                        Text {
+                            text: "User Config"
+                            font.pixelSize: 18
+                            font.weight: Font.Bold
+                            color: "white"
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+
+                            ScrollView {
+                                anchors.fill: parent
+                                clip: true
+                                ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                                TextArea {
+                                    id: userConfigEditor
+                                    font.family: "Courier New"
+                                    font.pixelSize: 13
+                                    color: "white"
+                                    wrapMode: TextArea.Wrap
+                                    background: Rectangle {
+                                        color: "#2A2F3B"
+                                        radius: 4
+                                        border.color: "#3E4E6F"
+                                    }
+                                }
+                            }
+
+                            Text {
+                                anchors.centerIn: parent
+                                visible: userConfigEditor.text.length === 0
+                                text: "No config loaded\nPress Read Config to load from device."
+                                color: "#7F8C8D"
+                                font.pixelSize: 14
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.WordWrap
+                                width: parent.width - 32
+                            }
+                        }
+                    }
+
+                    // Action buttons
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.horizontalStretchFactor: 3
+                        spacing: 12
+                        Layout.alignment: Qt.AlignTop
+
+                        Text {
+                            text: "Actions"
+                            font.pixelSize: 14
+                            font.weight: Font.Bold
+                            color: "white"
+                            Layout.alignment: Qt.AlignHCenter
+                            topPadding: 4
+                        }
+
+                        // Component selector
+                        Text {
+                            text: "Target Component"
+                            color: "#BDC3C7"
+                            font.pixelSize: 12
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+
+                        ComboBox {
+                            id: configTargetSelector
+                            Layout.fillWidth: true
+                            model: settingsPage.configTargetModel
+                            enabled: settingsPage.configTargetModel.length > 0
+
+                            contentItem: Text {
+                                leftPadding: 8
+                                text: configTargetSelector.enabled ? configTargetSelector.displayText : "No devices"
+                                color: configTargetSelector.enabled ? "white" : "#7F8C8D"
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: 13
+                            }
+                            background: Rectangle {
+                                color: "#2A2F3B"
+                                radius: 4
+                                border.color: configTargetSelector.enabled ? "#3E4E6F" : "#2A2F3B"
+                            }
+                        }
+
+                        // Read Config
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            color: readConfigArea.containsMouse ? "#4A90E2" : "#3A3F4B"
+                            border.color: readConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Read Config"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: readConfigArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: LIFUConnector.readUserConfig()
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Write Config
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            color: writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B"
+                            border.color: writeConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Write Config"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: writeConfigArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: LIFUConnector.writeUserConfig(userConfigEditor.text)
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Clear Config
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            color: clearConfigArea.containsMouse ? "#C0392B" : "#3A3F4B"
+                            border.color: clearConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Clear Config"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: clearConfigArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: userConfigEditor.text = ""
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Spacer
+                        Item { Layout.fillHeight: true }
+                    }
+                }
+            }
+
+            // Row 2 – Console (left 50%) + Transmitter (right 50%)
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
                 spacing: 16
 
                 // ============================================
@@ -290,11 +492,12 @@ Rectangle {
                 // ============================================
                 Rectangle {
                     Layout.fillWidth: true
-                    implicitHeight: consoleCardColumn.implicitHeight + 30
+                    Layout.fillHeight: true
                     color: "#1E1E20"
                     radius: 10
                     border.color: "#3E4E6F"
                     border.width: 2
+                    clip: true
 
                     ColumnLayout {
                         id: consoleCardColumn
@@ -459,11 +662,12 @@ Rectangle {
                 Rectangle {
                     id: txCard
                     Layout.fillWidth: true
-                    implicitHeight: txLoading ? 120 : (txCardColumn.implicitHeight + 30)
+                    Layout.fillHeight: true
                     color: "#1E1E20"
                     radius: 10
                     border.color: "#3E4E6F"
                     border.width: 2
+                    clip: true
 
                     // Busy overlay — shown while querying module count
                     BusyIndicator {
@@ -679,9 +883,6 @@ Rectangle {
                         }
                     }
                 }
-
-                // Bottom spacer
-                Item { implicitHeight: 10 }
             }
         }
     }
