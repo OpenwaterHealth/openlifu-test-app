@@ -1,17 +1,20 @@
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
+import os
+import threading
 import numpy as np
 import base58
 import re
 import json
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly
-from openlifu.io.LIFUInterface import LIFUInterface
-from openlifu.bf.pulse import Pulse
-from openlifu.bf.sequence import Sequence
-from openlifu.geo import Point
-from openlifu.plan.solution import Solution
-from openlifu.xdc import Transducer
-from openlifu.xdc.util import load_transducer_from_file
+from openlifu_sdk.io.LIFUInterface import LIFUInterface
+
+# from openlifu.bf.pulse import Pulse
+# from openlifu.bf.sequence import Sequence
+# from openlifu.geo import Point
+# from openlifu.plan.solution import Solution
+# from openlifu.xdc import Transducer
+# from openlifu.xdc.util import load_transducer_from_file
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
@@ -27,6 +30,17 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 ch.setFormatter(formatter)
 # Add ch to logger
 logger.addHandler(ch)
+
+
+def _parse_tx_module(target: str):
+    """Parse a target string like 'tx 0', 'tx_0', 'tx0' into an integer module index.
+    Returns None if the target is not a TX target (e.g. 'console').
+    """
+    import re as _re
+    m = _re.match(r'^tx[\s_]?(\d+)$', target.strip().lower())
+    if m:
+        return int(m.group(1))
+    return None
 
 
 # Define system states
@@ -50,7 +64,7 @@ class LIFUConnector(QObject):
     # New Signals for data updates
     hvDeviceInfoReceived = pyqtSignal(str, str)  # (firmwareVersion, deviceId)
     monVoltagesReceived = pyqtSignal(list)  # Signal for voltage monitor readings
-    txDeviceInfoReceived = pyqtSignal(int, str, str)  # (firmwareVersion, deviceId)
+    txDeviceInfoReceived = pyqtSignal('QVariantList')  # list of {module, firmwareVersion, deviceId}
     temperatureHvUpdated = pyqtSignal(float, float)  # (temp1, temp2)
     temperatureTxUpdated = pyqtSignal(int, float, float)  # (tx_temp, amb_temp)
     numModulesUpdated    = pyqtSignal()  # (num_modules)
@@ -59,6 +73,15 @@ class LIFUConnector(QObject):
     connectionStatusChanged = pyqtSignal()  # 🔹 New signal for connection updates
     triggerStateChanged = pyqtSignal(bool)  # 🔹 New signal for trigger state change
     txConfigStateChanged = pyqtSignal(bool)  # 🔹 New signal for tx configured state change
+
+    # Firmware update signals
+    fwUpdateProgress = pyqtSignal(str, int, int)  # (label, written, total)
+    fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
+    fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
+
+    # User config signals
+    userConfigRead = pyqtSignal(str, str)   # (target, json_str)  target: "console" | "tx_N"
+    userConfigStatus = pyqtSignal(str, bool, str)  # (target, success, message)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -292,43 +315,43 @@ class LIFUConnector(QObject):
     def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, triggerHZ, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
         if self._txConnected:
-            pulse = Pulse(frequency=float(freq), duration=float(durationS))
-            pt = Point(position=(float(xInput),float(yInput),float(zInput)), units="mm")
-            
-            self.queryNumModules()
-
-            arr = load_transducer_from_file(fR".\pinmap_{self._num_modules_connected}x.json")
-            logger.info(f"{self._num_modules_connected}x config file loaded")
-            
-            focus = pt.get_position(units="mm")
-
-            distances = np.sqrt(np.sum((focus - arr.get_positions(units="mm"))**2, 1))
-            tof = distances*1e-3 / 1500
-            delays = tof.max() - tof
-            apodizations = np.ones(arr.numelements())
-            sequence = Sequence(
-                pulse_interval=1.0/float(triggerHZ),
-                pulse_count=int(pulseCount),
-                pulse_train_interval=float(trainInterval),
-                pulse_train_count=int(trainCount)
-            )
-
-            solution = Solution(
-                id="solution",
-                name="Solution",
-                protocol_id="example_protocol",
-                transducer="example_transducer",
-                delays = delays,
-                apodizations = apodizations,
-                pulse = pulse,
-                sequence = sequence,
-                voltage=float(voltage),
-                target=pt,
-                foci=[pt],
-                approved=True
-            )
-            
-            self.interface.set_solution(solution, trigger_mode=mode)
+            # pulse = Pulse(frequency=float(freq), duration=float(durationS))
+            # pt = Point(position=(float(xInput),float(yInput),float(zInput)), units="mm")
+            # 
+            # self.queryNumModules()
+# 
+            # arr = load_transducer_from_file(fR".\pinmap_{self._num_modules_connected}x.json")
+            # logger.info(f"{self._num_modules_connected}x config file loaded")
+            # 
+            # focus = pt.get_position(units="mm")
+# 
+            # distances = np.sqrt(np.sum((focus - arr.get_positions(units="mm"))**2, 1))
+            # tof = distances*1e-3 / 1500
+            # delays = tof.max() - tof
+            # apodizations = np.ones(arr.numelements())
+            # sequence = Sequence(
+            #     pulse_interval=1.0/float(triggerHZ),
+            #     pulse_count=int(pulseCount),
+            #     pulse_train_interval=float(trainInterval),
+            #     pulse_train_count=int(trainCount)
+            # )
+# 
+            # solution = Solution(
+            #     id="solution",
+            #     name="Solution",
+            #     protocol_id="example_protocol",
+            #     transducer="example_transducer",
+            #     delays = delays,
+            #     apodizations = apodizations,
+            #     pulse = pulse,
+            #     sequence = sequence,
+            #     voltage=float(voltage),
+            #     target=pt,
+            #     foci=[pt],
+            #     approved=True
+            # )
+            # 
+            # self.interface.set_solution(solution, trigger_mode=mode)
 
             self._configured = True
             self.update_state()
@@ -338,35 +361,35 @@ class LIFUConnector(QObject):
     @pyqtSlot(int, int, result=bool)
     def setSimpleTxConfig(self, freq: float, pulses: int):
         print(freq, pulses)
-        pulse = Pulse(frequency=freq, duration=float(1e-5), amplitude=1.0)
-        pt = Point(position=(0, 0, 25), units="mm")
-
-        sequence = Sequence(
-            pulse_interval=1.0/freq,
-            pulse_count=int(1),
-            pulse_train_interval=float(0),
-            pulse_train_count=int(1)
-        )
-
-        solution = Solution(
-            id="solution",
-            name="Solution",
-            protocol_id="example_protocol",
-            transducer_id="example_transducer",
-            delays = np.zeros((1,64)),
-            apodizations = np.ones((1,64)),
-            pulse = pulse,
-            sequence = sequence,
-            target=pt,
-            foci=[pt],
-            approved=True
-        )
-
-        sol_dict = solution.to_dict()
-        profile_index = 1
-        profile_increment = True
-        logger.error(f">>>>>>>>>>>>>>>>>>> Set Solution {solution}")
-        ret_status = self.interface.set_solution(solution = solution)
+        # pulse = Pulse(frequency=freq, duration=float(1e-5), amplitude=1.0)
+        # pt = Point(position=(0, 0, 25), units="mm")
+# 
+        # sequence = Sequence(
+        #     pulse_interval=1.0/freq,
+        #     pulse_count=int(1),
+        #     pulse_train_interval=float(0),
+        #     pulse_train_count=int(1)
+        # )
+# 
+        # solution = Solution(
+        #     id="solution",
+        #     name="Solution",
+        #     protocol_id="example_protocol",
+        #     transducer_id="example_transducer",
+        #     delays = np.zeros((1,64)),
+        #     apodizations = np.ones((1,64)),
+        #     pulse = pulse,
+        #     sequence = sequence,
+        #     target=pt,
+        #     foci=[pt],
+        #     approved=True
+        # )
+# 
+        # sol_dict = solution.to_dict()
+        # profile_index = 1
+        # profile_increment = True
+        # logger.error(f">>>>>>>>>>>>>>>>>>> Set Solution {solution}")
+        # ret_status = self.interface.set_solution(solution = solution)
 
         self._txconfigured_state = True
         self.txConfigStateChanged.emit(self._txconfigured_state)
@@ -447,19 +470,25 @@ class LIFUConnector(QObject):
 
     @pyqtSlot()
     def queryTxInfo(self):
-        """Fetch and emit device information."""
+        """Fetch and emit device information for all TX modules as a list."""
         try:
-            for module in range(1, self._num_modules_connected+1):
-                fw_version = self.interface.txdevice.get_version(module)
+            module_count = self.interface.txdevice.get_module_count()
+            modules_info = []
+            for module_idx in range(module_count):
+                fw_version = self.interface.txdevice.get_version(module=module_idx)
                 logger.info(f"Version: {fw_version}")
-                hw_id = self.interface.txdevice.get_hardware_id(module)            
-                if hw_id :
-                        device_id = base58.b58encode(bytes.fromhex(hw_id)).decode()
+                hw_id = self.interface.txdevice.get_hardware_id(module=module_idx)
+                if hw_id:
+                    device_id = base58.b58encode(bytes.fromhex(hw_id)).decode()
                 else:
                     device_id = 'N/A'
-                
-                self.txDeviceInfoReceived.emit(module, fw_version, device_id)
-            logger.info(f"Device Info - Firmware: {fw_version}, Device ID: {device_id}")
+                logger.info(f"Module {module_idx} - Firmware: {fw_version}, Device ID: {device_id}")
+                modules_info.append({
+                    "module": module_idx,
+                    "firmwareVersion": fw_version,
+                    "deviceId": device_id
+                })
+            self.txDeviceInfoReceived.emit(modules_info)
         except Exception as e:
             logger.error(f"Error querying device info: {e}")
 
@@ -485,15 +514,14 @@ class LIFUConnector(QObject):
     def queryTxTemperature(self):
         """Fetch and emit temperature data."""
         try:
-            for module in range(1, self._num_modules_connected+1):
-                logger.info(f"Module: {module}")
-                tx_temp = self.interface.txdevice.get_temperature(module)  
-                amb_temp = self.interface.txdevice.get_ambient_temperature(module)  
+            for module in range(0, self._num_modules_connected):
+                tx_temp = self.interface.txdevice.get_temperature(module=module)  
+                amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)  
 
                 self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
-                logger.info(f"Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
+                logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
         except Exception as e:
-            logger.error(f"Error querying temperature data: {e}")
+            logger.error(f"Error querying Module: {module} temperature data: {e}")
 
     @pyqtSlot()
     def queryNumModules(self):
@@ -555,7 +583,8 @@ class LIFUConnector(QObject):
             logger.error(f"Error setting async mode: {e}")
 
     @pyqtSlot(str, result=bool)
-    def sendPingCommand(self, target: str):
+    @pyqtSlot(str, int, result=bool)
+    def sendPingCommand(self, target: str, index: int = 0):
         """Send a ping command to HV device."""
         try:
             if target == "HV":
@@ -566,7 +595,8 @@ class LIFUConnector(QObject):
                     logger.error(f"Failed to send ping command")
                     return False
             elif target == "TX":
-                if self.interface.txdevice.ping():
+                logger.info(f"Ping command sent to Module {index}")
+                if self.interface.txdevice.ping(module=index):
                     logger.info(f"Ping command sent successfully")
                     return True
                 else:
@@ -580,7 +610,8 @@ class LIFUConnector(QObject):
             return False
         
     @pyqtSlot(str, result=bool)
-    def sendLedToggleCommand(self, target: str):
+    @pyqtSlot(str, int, result=bool)
+    def sendLedToggleCommand(self, target: str, index: int = 0):
         """Send a LED Toggle command to device."""
         try:
             if target == "HV":
@@ -590,8 +621,9 @@ class LIFUConnector(QObject):
                 else:
                     logger.error(f"Failed to Toggle command")
                     return False
-            elif target == "TX":
-                if self.interface.txdevice.toggle_led():
+            elif target == "TX":                
+                logger.info(f"Toggle command sent to Module {index}")
+                if self.interface.txdevice.toggle_led(module=index):
                     logger.info(f"Toggle command sent successfully")
                     return True
                 else:
@@ -605,23 +637,25 @@ class LIFUConnector(QObject):
             return False
         
     @pyqtSlot(str, result=bool)
-    def sendEchoCommand(self, target: str):
+    @pyqtSlot(str, int, result=bool)
+    def sendEchoCommand(self, target: str, index: int = 0):
         """Send Echo command to device."""
         try:
             expected_data = b"Hello FROM Test Application!"
             if target == "HV":
                 echoed_data, data_len = self.interface.hvcontroller.echo(echo_data=expected_data)
-            elif target == "TX":
-                echoed_data, data_len = self.interface.txdevice.echo(echo_data=expected_data)
+            elif target == "TX":                
+                logger.info(f"Echo command sent to Module {index}")
+                echoed_data, data_len = self.interface.txdevice.echo(echo_data=expected_data, module=index)
             else:
-                logger.error(f"Invalid target for Echo command")
+                logger.error("Invalid target for Echo command")
                 return False
 
             if echoed_data == expected_data and data_len == len(expected_data):
-                logger.info(f"Echo command successful - Data matched")
+                logger.info("Echo command successful - Data matched")
                 return True
             else:
-                logger.error(f"Echo command failed - Data mismatch")
+                logger.error("Echo command failed - Data mismatch")
                 return False
             
         except Exception as e:
@@ -634,10 +668,10 @@ class LIFUConnector(QObject):
         try:
             voltage = float(strval)
             if self.interface.hvcontroller.set_voltage(voltage=voltage):
-                logger.info(f"Voltage set successfully")
+                logger.info("Voltage set successfully")
                 return True
             else:   
-                logger.error(f"Failed to set voltage")
+                logger.error("Failed to set voltage")
                 return False    
                         
         except Exception as e:
@@ -851,6 +885,17 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error Sending Software Reset: {e}")
 
+    @pyqtSlot(int)
+    def softResetTXModule(self, module: int):
+        """Soft reset a specific TX module by index."""
+        try:
+            if self.interface.txdevice.soft_reset(module=module):
+                logger.info(f"Software Reset Sent to module {module}")
+            else:
+                logger.error(f"Failed to send Software Reset to module {module}")
+        except Exception as e:
+            logger.error(f"Error Sending Software Reset to module {module}: {e}")
+
         
     @pyqtProperty(str, constant=True)
     def sdkVersion(self) -> str:
@@ -858,6 +903,178 @@ class LIFUConnector(QObject):
         try:
             # Attempt to get SDK version from LIFUInterface
             return LIFUInterface.get_sdk_version()
-        except (AttributeError, NameError):
-            # Fallback to default version if the function doesn't exist
+        except Exception:
+            # Fallback to default version if the function doesn't exist or package metadata is missing
             return "0.3.2"
+
+    # ------------------------------------------------------------------
+    # Firmware update
+    # ------------------------------------------------------------------
+
+    @pyqtSlot(str, result=str)
+    def getDefaultFirmwarePath(self, device_type: str) -> str:
+        """Return the bundled firmware file path for the given device type (console or transmitter)."""
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec("openlifu_sdk")
+            if spec is None or spec.origin is None:
+                return ""
+            fw_dir = os.path.join(os.path.dirname(spec.origin), "firmware")
+            names = {
+                "console": "openlifu-console-fw.signed.bin",
+                "transmitter": "openlifu-transmitter-fw.signed.bin",
+            }
+            name = names.get(device_type, "")
+            return os.path.join(fw_dir, name) if name else ""
+        except Exception as e:
+            logger.error(f"Error locating default firmware for {device_type}: {e}")
+            return ""
+
+    @pyqtSlot(result=str)
+    def readHvFirmwareVersion(self) -> str:
+        """Read and return the current console (HV) firmware version."""
+        try:
+            version = self.interface.hvcontroller.get_version()
+            self.fwVersionRead.emit("console", version)
+            logger.info(f"Console firmware version: {version}")
+            return version
+        except Exception as e:
+            logger.error(f"Error reading console firmware version: {e}")
+            self.fwVersionRead.emit("console", "Error")
+            return "Error"
+
+    @pyqtSlot(int, result=str)
+    def readTxFirmwareVersion(self, module: int) -> str:
+        """Read and return the current transmitter firmware version for a given module."""
+        try:
+            version = self.interface.txdevice.get_version(module=module)
+            self.fwVersionRead.emit(f"transmitter_{module}", version)
+            logger.info(f"Transmitter module {module} firmware version: {version}")
+            return version
+        except Exception as e:
+            logger.error(f"Error reading transmitter module {module} firmware version: {e}")
+            self.fwVersionRead.emit(f"transmitter_{module}", "Error")
+            return "Error"
+
+    @pyqtSlot(str)
+    def updateConsoleFirmware(self, firmware_path: str) -> None:
+        """Update the console (HV) firmware using DFU.  Runs in a background thread."""
+        def _run():
+            try:
+                from openlifu_sdk.io.LIFUDFU import LIFUDFUManager
+
+                def _progress(written: int, total: int, label: str) -> None:
+                    self.fwUpdateProgress.emit(label, written, total)
+
+                self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
+                logger.info(f"Console firmware update: {firmware_path}")
+                mgr = LIFUDFUManager(uart=self.interface.hvcontroller.uart)
+                mgr.update_module(
+                    module=0,
+                    package_file=firmware_path,
+                    enter_dfu_fn=self.interface.hvcontroller.enter_dfu,
+                    vid=0x0483,
+                    pid=0xDF11,
+                    libusb_dll=None,
+                    dfu_wait_s=5.0,
+                    device_type="console",
+                    progress_callback=_progress,
+                )
+                self.fwUpdateStatus.emit("console", True, "Console firmware update complete.")
+                logger.info("Console firmware update complete.")
+            except Exception as e:
+                msg = f"Console update failed: {e}"
+                logger.error(msg)
+                self.fwUpdateStatus.emit("console", False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, int)
+    def updateTransmitterFirmware(self, firmware_path: str, module: int) -> None:
+        """Update the transmitter firmware for a specific module. Runs in a background thread."""
+        def _run():
+            try:
+                def _progress(written: int, total: int, label: str) -> None:
+                    self.fwUpdateProgress.emit(label, written, total)
+
+                self.fwUpdateStatus.emit("transmitter", False, f"Starting transmitter firmware update for module {module}…")
+                logger.info(f"Transmitter module {module} firmware update: {firmware_path}")
+                self.interface.txdevice.update_firmware(
+                    module=module,
+                    package_file=firmware_path,
+                    vid=0x0483,
+                    pid=0xDF11,
+                    libusb_dll=None,
+                    dfu_wait_s=5.0,
+                    device_type="transmitter",
+                    progress_callback=_progress,
+                )
+                self.fwUpdateStatus.emit("transmitter", True, f"Transmitter module {module} firmware update complete.")
+                logger.info(f"Transmitter module {module} firmware update complete.")
+            except Exception as e:
+                msg = f"Transmitter module {module} update failed: {e}"
+                logger.error(msg)
+                self.fwUpdateStatus.emit("transmitter", False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str)
+    def readUserConfig(self, target: str) -> None:
+        """Read user configuration from the target device. Emits userConfigRead on success.
+
+        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        """
+        def _run():
+            try:
+                module = _parse_tx_module(target)
+                if module is None:
+                    # Console not yet supported
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
+                config = self.interface.txdevice.read_config(module=module)
+                if config is None:
+                    self.userConfigStatus.emit(target, False, "Failed to read config – no response from device.")
+                    return
+
+                json_str = config.get_json_str()
+                logger.info(f"User config read from {target}: {json_str}")
+                self.userConfigRead.emit(target, json_str)
+            except Exception as e:
+                msg = f"Error reading config from {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, str)
+    def writeUserConfig(self, target: str, json_str: str) -> None:
+        """Write user configuration JSON to the target device.
+
+        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        """
+        def _run():
+            try:
+                module = _parse_tx_module(target)
+                if module is None:
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
+                updated = self.interface.txdevice.write_config_json(json_str, module=module)
+                if updated is None:
+                    self.userConfigStatus.emit(target, False, "Write failed – no response from device.")
+                    return
+
+                msg = f"Config written to {target}. Seq: {updated.header.seq}, CRC: 0x{updated.header.crc:04X}"
+                logger.info(msg)
+                self.userConfigStatus.emit(target, True, msg)
+            except json.JSONDecodeError as e:
+                msg = f"Invalid JSON: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+            except Exception as e:
+                msg = f"Error writing config to {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()

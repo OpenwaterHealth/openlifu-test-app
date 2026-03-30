@@ -1,0 +1,158 @@
+name: Build & Release
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, next]
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "pre-[0-9]+.[0-9]+.[0-9]+"
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── conda environment "olifu" ──────────────────────────────
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: "3.12"
+          activate-environment: olifu
+
+      - name: Install dependencies into olifu
+        shell: bash -el {0}
+        run: |
+          conda activate olifu
+          python -m pip install --upgrade pip
+
+          # Fetch latest openmotion-sdk wheel from GitHub Releases
+          WHL_URL=$(python -c "
+          import json, urllib.request
+          url = 'https://api.github.com/repos/OpenwaterHealth/openlifu-sdk/releases/latest'
+          try:
+            data = json.load(urllib.request.urlopen(url))
+            for a in data.get('assets', []):
+              if a.get('name','').endswith('.whl'):
+                print(a.get('browser_download_url'))
+                break
+          except Exception:
+            pass
+          ")
+
+          if [ -n "$WHL_URL" ]; then
+            echo "Installing pylib wheel: $WHL_URL"
+            pip install "$WHL_URL"
+          else
+            echo "No wheel found – falling back to source install"
+            pip install git+https://github.com/OpenwaterHealth/openlifu-sdk.git
+          fi
+
+          pip install -r requirements.txt
+
+      # ── build ────────────────────────────────────────────────────
+      - name: Stamp version from git tag
+        shell: bash -el {0}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            # Strip leading 'v' only; keep 'pre-' for pre-release versions
+            VER="${TAG#v}"
+          else
+            VER=$(git describe --tags --dirty --always --long 2>/dev/null || echo "dev-${GITHUB_SHA::8}")
+          fi
+          echo "Stamping version: $VER"
+          # Update _FALLBACK_VERSION in version.py so the frozen exe uses it
+          sed -i "s/^_FALLBACK_VERSION = .*/_FALLBACK_VERSION = \"${VER}\"/" version.py
+
+      - name: Build with PyInstaller
+        shell: bash -el {0}
+        run: |
+          conda activate olifu
+          python -m PyInstaller -y openwater.spec
+
+      # ── package ──────────────────────────────────────────────────
+      - name: Determine version tag
+        id: meta
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG=$(git describe --tags --dirty --always 2>/dev/null || echo "dev-${GITHUB_SHA::8}")
+          fi
+          echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "ARTIFACT_NAME=OpenLifu-TestApp-${TAG}" >> "$GITHUB_OUTPUT"
+          echo "ARTIFACT_ZIP=OpenLifu-TestApp-${TAG}.zip" >> "$GITHUB_OUTPUT"
+
+          # pre-release flag
+          if [[ "$TAG" == pre-* ]]; then
+            echo "PRERELEASE=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "PRERELEASE=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "::notice ::Version tag resolved to: ${TAG}"
+
+      - name: Zip build output
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\* -DestinationPath "${{ steps.meta.outputs.ARTIFACT_ZIP }}"
+
+      # ── always upload workflow artifact ──────────────────────────
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.ARTIFACT_NAME }}
+          path: ${{ steps.meta.outputs.ARTIFACT_ZIP }}
+
+      # ── build release notes ───────────────────────────────────────
+      - name: Build release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        id: notes
+        shell: bash
+        run: |
+          : > notes.md
+
+          if [[ "${{ steps.meta.outputs.PRERELEASE }}" == "true" ]]; then
+            echo "⚠️ **PRE-RELEASE – NOT FOR PRODUCTION**" >> notes.md
+            echo "" >> notes.md
+          fi
+
+          # Commits since previous tag (bullet list)
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            echo "### Changes since ${PREV_TAG}" >> notes.md
+            echo "" >> notes.md
+            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" >> notes.md
+            echo "" >> notes.md
+            echo "" >> notes.md
+            echo "**Full diff:** [\`${PREV_TAG}...${{ steps.meta.outputs.TAG }}\`](https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ steps.meta.outputs.TAG }})" >> notes.md
+          else
+            echo "### Commits" >> notes.md
+            echo "" >> notes.md
+            git log --pretty=format:"- %s (%h)" -20 >> notes.md
+          fi
+
+      # ── create release on tag push ──────────────────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.TAG }}
+          name: ${{ steps.meta.outputs.TAG }}
+          body_path: notes.md
+          prerelease: ${{ steps.meta.outputs.PRERELEASE == 'true' }}
+          files: ${{ steps.meta.outputs.ARTIFACT_ZIP }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
