@@ -26,25 +26,17 @@ hidden  += qt_hidden
 hidden  += collect_submodules("PyQt6")
 hidden  += ["qasync"]
 
-# --- ✅ add openlifu_sdk explicitly ---
-om_datas, om_bins, om_hidden = collect_all("openlifu_sdk")
+# --- ✅ add olifu explicitly ---
+om_datas, om_bins, om_hidden = collect_all("olifu")
 datas   += om_datas
 binaries += om_bins
 hidden  += om_hidden
-hidden  += collect_submodules("openlifu_sdk")
 
-# --- libusb DLLs: must be placed at openlifu_sdk/libusb/<arch>/ so that
-#     LIFUDFU._find_bundled_libusb_dll() can locate them via Path(__file__)
-#     when running as a frozen exe. Add as datas (not binaries) to preserve
-#     the subdirectory structure under _MEIPASS. ---
-import struct as _struct
-_libusb_src = os.path.abspath(
-    os.path.join(".venv", "Lib", "site-packages", "openlifu_sdk", "libusb")
-)
-for _arch in ("win64", "win32"):
-    _dll = os.path.join(_libusb_src, _arch, "libusb-1.0.dll")
-    if os.path.isfile(_dll):
-        datas.append((_dll, os.path.join("openlifu_sdk", "libusb", _arch)))
+# --- openlifu_sdk (ships libusb-1.0.dll for win32/win64) ---
+sdk_datas, sdk_bins, sdk_hidden = collect_all("openlifu_sdk")
+datas    += sdk_datas
+binaries += sdk_bins
+hidden   += sdk_hidden
 
 # --- force include pyserial dependency ---
 hidden += [
