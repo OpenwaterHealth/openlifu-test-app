@@ -32,6 +32,12 @@ datas   += om_datas
 binaries += om_bins
 hidden  += om_hidden
 
+# --- openlifu_sdk (ships libusb-1.0.dll for win32/win64) ---
+sdk_datas, sdk_bins, sdk_hidden = collect_all("openlifu_sdk")
+datas    += sdk_datas
+binaries += sdk_bins
+hidden   += sdk_hidden
+
 # --- force include pyserial dependency ---
 hidden += [
     "serial",
