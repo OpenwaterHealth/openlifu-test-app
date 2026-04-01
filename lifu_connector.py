@@ -1,3 +1,5 @@
+from turtle import mode
+
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
 import os
@@ -49,6 +51,11 @@ TX_CONNECTED = 1
 CONFIGURED = 2
 READY = 3
 RUNNING = 4
+
+#
+SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
+NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
+DEFAULT_PULSE_DURATION = 1e-5 # Default pulse duration in seconds, adjust as needed
 
 class LIFUConnector(QObject):
     # Ensure signals are correctly defined
@@ -314,86 +321,56 @@ class LIFUConnector(QObject):
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, triggerHZ, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
-        if self._txConnected:
-            # pulse = Pulse(frequency=float(freq), duration=float(durationS))
-            # pt = Point(position=(float(xInput),float(yInput),float(zInput)), units="mm")
-            # 
-            # self.queryNumModules()
-# 
-            # arr = load_transducer_from_file(fR".\pinmap_{self._num_modules_connected}x.json")
-            # logger.info(f"{self._num_modules_connected}x config file loaded")
-            # 
-            # focus = pt.get_position(units="mm")
-# 
-            # distances = np.sqrt(np.sum((focus - arr.get_positions(units="mm"))**2, 1))
-            # tof = distances*1e-3 / 1500
-            # delays = tof.max() - tof
-            # apodizations = np.ones(arr.numelements())
-            # sequence = Sequence(
-            #     pulse_interval=1.0/float(triggerHZ),
-            #     pulse_count=int(pulseCount),
-            #     pulse_train_interval=float(trainInterval),
-            #     pulse_train_count=int(trainCount)
-            # )
-# 
-            # solution = Solution(
-            #     id="solution",
-            #     name="Solution",
-            #     protocol_id="example_protocol",
-            #     transducer="example_transducer",
-            #     delays = delays,
-            #     apodizations = apodizations,
-            #     pulse = pulse,
-            #     sequence = sequence,
-            #     voltage=float(voltage),
-            #     target=pt,
-            #     foci=[pt],
-            #     approved=True
-            # )
-            # 
-            # self.interface.set_solution(solution, trigger_mode=mode)
+        if not self._txConnected:
+            logger.error("Cannot configure transmitter: No TX device connected")
+            return
+        self.queryNumModules()
+        num_modules = self._num_modules_connected
+        def load_element_positions_from_file(filepath):
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            if "type"  in data and data["type"] == "TransducerArray":
+                modules = []
+                for module in data['modules']:
+                    module_transform = np.array(module['transform'])
+                    element_positions = np.array([elem['position'] for elem in module['elements']])
+                    element_positions = np.hstack((element_positions, np.ones((element_positions.shape[0], 1))))
+                    world_positions = (np.linalg.inv(module_transform) @ element_positions.T).T[:, :3]  # drop the homogeneous coordinate
+                    modules.append(world_positions)
+                element_positions = np.vstack(modules)
+            else:
+                element_positions = np.array([elem['position'] for elem in data['elements']])
+            return element_positions
+        pulse = {"frequency": float(freq),
+                "duration": float(durationS),
+                "amplitude": 1.0
+                }
+        focus = np.array([float(xInput), float(yInput), float(zInput)])
+        element_positions = load_element_positions_from_file(fR".\pinmap_{num_modules}x.json")
+        numelements = element_positions.shape[0]
+        print(f"{num_modules}x config file loaded")
+        distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
+        tof = distances*1e-3 / SPEED_OF_SOUND
+        delays = tof.max() - tof
+        apodizations = np.ones(numelements)
+        sequence = {"pulse_interval": 1.0/float(triggerHZ),
+                    "pulse_count": int(pulseCount),
+                    "pulse_train_interval": float(trainInterval),
+                    "pulse_train_count": int(trainCount)}
+        solution = {
+            "id": "solution",
+            "name": "Solution",
+            "delays": delays,
+            "apodizations": apodizations,
+            "pulse": pulse,
+            "sequence": sequence,
+            "voltage": float(voltage)}
 
-            self._configured = True
-            self.update_state()
-            logger.info("Transmitter configured")
+        self.interface.set_solution(solution, trigger_mode=mode)
 
-        
-    @pyqtSlot(int, int, result=bool)
-    def setSimpleTxConfig(self, freq: float, pulses: int):
-        print(freq, pulses)
-        # pulse = Pulse(frequency=freq, duration=float(1e-5), amplitude=1.0)
-        # pt = Point(position=(0, 0, 25), units="mm")
-# 
-        # sequence = Sequence(
-        #     pulse_interval=1.0/freq,
-        #     pulse_count=int(1),
-        #     pulse_train_interval=float(0),
-        #     pulse_train_count=int(1)
-        # )
-# 
-        # solution = Solution(
-        #     id="solution",
-        #     name="Solution",
-        #     protocol_id="example_protocol",
-        #     transducer_id="example_transducer",
-        #     delays = np.zeros((1,64)),
-        #     apodizations = np.ones((1,64)),
-        #     pulse = pulse,
-        #     sequence = sequence,
-        #     target=pt,
-        #     foci=[pt],
-        #     approved=True
-        # )
-# 
-        # sol_dict = solution.to_dict()
-        # profile_index = 1
-        # profile_increment = True
-        # logger.error(f">>>>>>>>>>>>>>>>>>> Set Solution {solution}")
-        # ret_status = self.interface.set_solution(solution = solution)
-
-        self._txconfigured_state = True
-        self.txConfigStateChanged.emit(self._txconfigured_state)
-        return True
+        self._configured = True
+        self.update_state()
+        logger.info("Transmitter configured")
 
     @pyqtSlot()
     def reset_configuration(self):
