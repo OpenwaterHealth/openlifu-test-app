@@ -341,7 +341,7 @@ class LIFUConnector(QObject):
             #check if delays and apodizations match the number of elements in the loaded solution
             delays_arr = np.array(solution["delays"])
             apodizations_arr = np.array(solution["apodizations"])
-            if delays.ndim == 1:
+            if delays_arr.ndim == 1:
                 n_delays = delays_arr.shape[0]
             else:
                 n_delays = delays_arr.shape[1]
