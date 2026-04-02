@@ -872,13 +872,31 @@ Rectangle {
                                         RowLayout {
                                             spacing: 8
                                             Text { text: "Device ID:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                                            Text { text: modules[moduleIndex] ? modules[moduleIndex].deviceId : "N/A"; color: "#3498DB"; font.pixelSize: 14 }
+                                            TextField { 
+                                                text: modules[moduleIndex] ? modules[moduleIndex].deviceId : "N/A"
+                                                readOnly: true
+                                                color: "#3498DB"; font.pixelSize: 14
+                                                background: Rectangle {
+                                                    color: "transparent"
+                                                    border.color: "transparent"
+                                                    radius: 0
+                                                }
+                                            }
                                         }
 
                                         RowLayout {
                                             spacing: 8
                                             Text { text: "Firmware Version:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                                            Text { text: modules[moduleIndex] ? modules[moduleIndex].firmwareVersion : "N/A"; color: "#2ECC71"; font.pixelSize: 14 }
+                                            TextField {
+                                                text: modules[moduleIndex] ? modules[moduleIndex].firmwareVersion : "N/A"
+                                                readOnly: true
+                                                color: "#2ECC71"; font.pixelSize: 14
+                                                background: Rectangle {
+                                                    color: "transparent"
+                                                    border.color: "transparent"
+                                                    radius: 0
+                                                }
+                                            }
                                         }
 
                                         // Temperature Widgets
