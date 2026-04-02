@@ -55,7 +55,6 @@ RUNNING = 4
 #
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
-DEFAULT_PULSE_DURATION = 1e-5 # Default pulse duration in seconds, adjust as needed
 
 class LIFUConnector(QObject):
     # Ensure signals are correctly defined
@@ -89,6 +88,11 @@ class LIFUConnector(QObject):
     # User config signals
     userConfigRead = pyqtSignal(str, str)   # (target, json_str)  target: "console" | "tx_N"
     userConfigStatus = pyqtSignal(str, bool, str)  # (target, success, message)
+    
+    # Solution loading signals
+    solutionFileLoaded = pyqtSignal(str, str)  # (solution_name, message)
+    solutionLoadError = pyqtSignal(str)  # (error_message)
+    solutionStateChanged = pyqtSignal()  # Notifies when solution is loaded/unloaded
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -100,6 +104,11 @@ class LIFUConnector(QObject):
         self._trigger_state = False  # Internal state to track trigger status
         self._txconfigured_state = False  # Internal state to track trigger status
         self._num_modules_connected = 0
+        
+        # Solution loading state
+        self._solution_loaded = False
+        self._loaded_solution_data = None
+        self._solution_name = ""
 
         self.connect_signals()
 
@@ -431,6 +440,16 @@ class LIFUConnector(QObject):
     def triggerEnabled(self):
         """Expose trigger enabled status to QML."""
         return self._trigger_state
+    
+    @pyqtProperty(bool, notify=solutionStateChanged)
+    def solutionLoaded(self):
+        """Expose solution loaded status to QML."""
+        return self._solution_loaded
+    
+    @pyqtProperty(str, notify=solutionStateChanged)
+    def solutionName(self):
+        """Expose loaded solution name to QML."""
+        return self._solution_name
     
     @pyqtSlot()
     def queryHvInfo(self):
@@ -1055,3 +1074,238 @@ class LIFUConnector(QObject):
                 self.userConfigStatus.emit(target, False, msg)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Solution loading functionality
+    # ------------------------------------------------------------------
+    
+    @pyqtSlot(str, result=bool)
+    def loadSolutionFromFile(self, file_path):
+        """Load a solution from a JSON file and apply it to the UI controls.
+        
+        Args:
+            file_path: The path to the solution JSON file
+            
+        Returns:
+            bool: True if loading was successful, False otherwise
+        """
+        try:
+            logger.info(f"Attempting to load solution from: {file_path}")
+            
+            # Normalize the path for the current OS
+            normalized_path = os.path.normpath(file_path)
+            logger.info(f"Normalized path: {normalized_path}")
+            
+            # Validate file exists and is readable
+            if not os.path.exists(normalized_path):
+                error_msg = f"File not found: {normalized_path}"
+                logger.error(error_msg)
+                self.solutionLoadError.emit(error_msg)
+                return False
+                
+            if not os.path.isfile(normalized_path):
+                error_msg = f"Path is not a file: {normalized_path}"
+                logger.error(error_msg)
+                self.solutionLoadError.emit(error_msg)
+                return False
+                
+            with open(normalized_path, 'r', encoding='utf-8') as f:
+                solution_data = json.load(f)
+                
+            logger.info(f"Successfully parsed JSON from {normalized_path}")
+            logger.info(f"JSON data type: {type(solution_data)}")
+            if isinstance(solution_data, dict):
+                logger.info(f"JSON keys: {list(solution_data.keys())}")
+            else:
+                logger.warning(f"Unexpected JSON data type: {type(solution_data)}, value: {str(solution_data)[:100]}")
+            
+            # Validate solution structure
+            if not self._validate_solution_format(solution_data):
+                return False
+                
+            # If transducer is connected, verify element count matches modules
+            if self._txConnected:
+                self.queryNumModules()  # Update module count
+                expected_elements = self._num_modules_connected * NUM_ELEMENTS_PER_MODULE
+                actual_elements = len(solution_data.get('transducer', {}).get('elements', []))
+                
+                if expected_elements != actual_elements:
+                    error_message = f"Element count mismatch!\nExpected: {expected_elements} elements ({self._num_modules_connected} modules × {NUM_ELEMENTS_PER_MODULE})\nFound in solution: {actual_elements} elements"
+                    self.solutionLoadError.emit(error_message)
+                    return False
+            
+            # Store loaded solution data
+            self._loaded_solution_data = solution_data
+            self._solution_loaded = True
+            self._solution_name = solution_data.get('name', 'Unnamed Solution')
+            
+            # Emit success signal with solution details
+            if "name" in solution_data:
+                message = f"Loaded solution {solution_data['name']} from file"
+            else:
+                message = f"Loaded solution with {len(solution_data.get('transducer', {}).get('elements', []))} elements"
+            logger.info(message)
+            self.solutionFileLoaded.emit(self._solution_name, message)
+            self.solutionStateChanged.emit()
+            
+            logger.info(f"Successfully loaded solution: {self._solution_name}")
+            return True
+            
+        except json.JSONDecodeError as e:
+            error_msg = f"Invalid JSON format: {str(e)}"
+            logger.error(error_msg)
+            self.solutionLoadError.emit(error_msg)
+            return False
+        except PermissionError as e:
+            error_msg = f"Permission denied accessing file: {str(e)}"
+            logger.error(error_msg)
+            self.solutionLoadError.emit(error_msg)
+            return False
+        except Exception as e:
+            error_msg = f"Error loading solution: {str(e)}"
+            logger.error(f"Error loading solution from {file_path}: {e}")
+            self.solutionLoadError.emit(error_msg)
+            return False
+    
+    def _validate_solution_format(self, solution_data):
+        """Validate that the solution file has the required structure.
+        
+        Args:
+            solution_data: The parsed JSON solution data
+            
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        try:
+            # First check if solution_data is actually a dict
+            if not isinstance(solution_data, dict):
+                self.solutionLoadError.emit(f"Invalid solution format: expected JSON object, got {type(solution_data).__name__}")
+                return False
+            
+            logger.info(f"Validating solution with keys: {list(solution_data.keys())}")
+            
+            # Check for required top-level fields
+            required_fields = ['transducer', 'pulse', 'sequence']
+            for field in required_fields:
+                if field not in solution_data:
+                    self.solutionLoadError.emit(f"Missing required field: {field}")
+                    return False
+            
+            # Validate transducer structure
+            transducer = solution_data['transducer']
+            if not isinstance(transducer, dict):
+                self.solutionLoadError.emit("Transducer field must be an object")
+                return False
+                
+            if 'elements' not in transducer:
+                self.solutionLoadError.emit("Missing 'elements' in transducer data")
+                return False
+                
+            if not isinstance(transducer['elements'], list):
+                self.solutionLoadError.emit("Transducer elements must be a list")
+                return False
+                
+            # Validate pulse structure
+            pulse = solution_data['pulse']
+            if not isinstance(pulse, dict):
+                self.solutionLoadError.emit("Pulse field must be an object")
+                return False
+                
+            pulse_fields = ['frequency', 'duration']
+            for field in pulse_fields:
+                if field not in pulse:
+                    self.solutionLoadError.emit(f"Missing pulse field: {field}")
+                    return False
+            
+            # Validate sequence structure
+            sequence = solution_data['sequence']
+            if not isinstance(sequence, dict):
+                self.solutionLoadError.emit("Sequence field must be an object")
+                return False
+                
+            sequence_fields = ['pulse_interval', 'pulse_count']
+            for field in sequence_fields:
+                if field not in sequence:
+                    self.solutionLoadError.emit(f"Missing sequence field: {field}")
+                    return False
+                    
+            logger.info("Solution validation passed")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Error validating solution format: {str(e)}"
+            logger.error(error_msg)
+            self.solutionLoadError.emit(error_msg)
+            return False
+    
+    @pyqtSlot(result='QVariantMap')
+    def getLoadedSolutionSettings(self):
+        """Get the loaded solution settings to populate UI controls.
+        
+        Returns:
+            QVariantMap: Dictionary containing solution settings
+        """
+        if not self._solution_loaded or not self._loaded_solution_data:
+            return {}
+        
+        try:
+            data = self._loaded_solution_data
+            
+            # Extract focus point (target)
+            target = data.get('target', {})
+            focus_position = target.get('position', [0, 0, 25])
+            
+            # Extract pulse settings
+            pulse = data.get('pulse', {})
+            frequency = pulse.get('frequency', 400000)
+            duration = pulse.get('duration', 2e-5)
+            
+            # Extract sequence settings
+            sequence = data.get('sequence', {})
+            pulse_interval = sequence.get('pulse_interval', 0.1)
+            pulse_count = sequence.get('pulse_count', 1)
+            pulse_train_interval = sequence.get('pulse_train_interval', 1)
+            pulse_train_count = sequence.get('pulse_train_count', 1)
+            
+            # Extract voltage
+            voltage = data.get('voltage', 12.0)
+            
+            # Calculate trigger frequency from pulse interval
+            trigger_frequency = 1.0 / pulse_interval if pulse_interval > 0 else 10
+            
+            return {
+                'xInput': float(focus_position[0]),
+                'yInput': float(focus_position[1]),
+                'zInput': float(focus_position[2]),
+                'frequency': float(frequency),
+                'duration': float(duration),
+                'voltage': float(voltage),
+                'triggerFrequency': float(trigger_frequency),
+                'pulseCount': int(pulse_count),
+                'trainInterval': float(pulse_train_interval),
+                'trainCount': int(pulse_train_count)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error extracting solution settings: {e}")
+            return {}
+    
+    @pyqtSlot()
+    def makeLoadedSolutionEditable(self):
+        """Release the loaded solution data while preserving UI field values."""
+        if self._solution_loaded:
+            solution_name = self._solution_name
+            self._solution_loaded = False
+            self._loaded_solution_data = None
+            self._solution_name = ""
+            self.solutionStateChanged.emit()
+            logger.info(f"Released solution '{solution_name}' - UI fields preserved, controls are now editable")
+    
+    @pyqtSlot()
+    def clearLoadedSolution(self):
+        """Clear the currently loaded solution and return controls to editable state."""
+        self._solution_loaded = False
+        self._loaded_solution_data = None
+        self._solution_name = ""
+        self.solutionStateChanged.emit()
+        logger.info("Solution cleared - controls returned to editable state")

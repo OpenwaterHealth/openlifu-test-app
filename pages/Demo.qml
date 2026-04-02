@@ -11,6 +11,61 @@ Rectangle {
     radius: 20
     opacity: 0.95
 
+    // Properties to track solution loading state
+    property bool solutionLoaded: LIFUConnector.solutionLoaded
+    property bool controlsReadOnly: solutionLoaded
+
+    // File dialog for loading solutions
+    FileDialog {
+        id: solutionFileDialog
+        title: "Load Solution File"
+        nameFilters: ["JSON files (*.json)", "All files (*)"]
+        onAccepted: {
+            console.log("Selected file: " + selectedFile)
+            var filePath = selectedFile.toString()
+            
+            // Convert file URL to local path
+            if (filePath.startsWith("file:///")) {
+                // Windows: file:///C:/path -> C:/path
+                filePath = filePath.substring(8)
+            } else if (filePath.startsWith("file://")) {
+                // Unix: file://path -> /path
+                filePath = filePath.substring(7)
+            }
+            
+            // Convert forward slashes to backslashes on Windows
+            if (Qt.platform.os === "windows") {
+                filePath = filePath.replace(/\//g, "\\")
+            }
+            
+            console.log("Converted file path: " + filePath)
+            LIFUConnector.loadSolutionFromFile(filePath)
+        }
+    }
+
+    // Function to apply loaded solution settings to UI controls
+    function applySolutionSettings() {
+        if (LIFUConnector.solutionLoaded) {
+            var settings = LIFUConnector.getLoadedSolutionSettings()
+            
+            // Apply focus settings
+            xInput.text = settings.xInput.toString()
+            yInput.text = settings.yInput.toString()
+            zInput.text = settings.zInput.toString()
+            
+            // Apply pulse settings
+            frequencyInput.text = settings.frequency.toString()
+            durationInput.text = settings.duration.toString()
+            voltage.text = settings.voltage.toString()
+            
+            // Apply trigger settings
+            triggerFrequencyHz.text = settings.triggerFrequency.toString()
+            triggerPulseCount.text = settings.pulseCount.toString()
+            triggerPulseTrainInterval.text = settings.trainInterval.toString()
+            triggerPulseTrainCount.text = settings.trainCount.toString()
+        }
+    }
+
     // HEADER
     Text {
         text: "Focused Ultrasound Demo"
@@ -23,6 +78,30 @@ Rectangle {
             left: parent.left
             right: parent.right
             topMargin: 10
+        }
+    }
+
+    // Solution status indicator
+    Rectangle {
+        visible: solutionLoaded
+        width: solutionStatusText.width + 20
+        height: solutionStatusText.height + 10
+        color: "#2E7D32"
+        radius: 5
+        anchors {
+            top: parent.top
+            right: parent.right
+            topMargin: 45
+            rightMargin: 20
+        }
+        
+        Text {
+            id: solutionStatusText
+            anchors.centerIn: parent
+            text: "Solution: " + (LIFUConnector.solutionName || "Loaded")
+            color: "white"
+            font.pixelSize: 12
+            font.weight: Font.Bold
         }
     }
 
@@ -56,7 +135,19 @@ Rectangle {
                         width: parent.width
 
                         Text { text: "Voltage (+/-):"; color: "white" }
-                        TextField { id: voltage; Layout.preferredHeight: 32; font.pixelSize: 14; text: "12.0" }
+                        TextField { 
+                            id: voltage 
+                            Layout.preferredHeight: 32 
+                            font.pixelSize: 14 
+                            text: "12.0"
+                            color: controlsReadOnly ? "#777" : "white" 
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#444" : "#333"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
                     }
                 }
 
@@ -69,10 +160,34 @@ Rectangle {
                         width: parent.width
 
                         Text { text: "Frequency (Hz):"; color: "white" }
-                        TextField { id: frequencyInput; Layout.preferredHeight: 32; font.pixelSize: 14; text: "400e3" }
+                        TextField { 
+                            id: frequencyInput
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "400e3"
+                            color: controlsReadOnly ? "#777" : "white" 
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#444" : "#333"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
 
                         Text { text: "Duration (S):"; color: "white" }
-                        TextField { id: durationInput; Layout.preferredHeight: 32; font.pixelSize: 14; text: "2e-5" }
+                        TextField { 
+                            id: durationInput
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "2e-5"
+                            color: controlsReadOnly ? "#777" : "white" 
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#444" : "#333"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
                     }
                 }
 
@@ -85,16 +200,64 @@ Rectangle {
                         width: parent.width
 
                         Text { text: "Trigger (Hz):"; color: "white" }
-                        TextField { id: triggerFrequencyHz; Layout.preferredHeight: 32; font.pixelSize: 14; text: "10" }
+                        TextField { 
+                            id: triggerFrequencyHz
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "10"
+                            color: controlsReadOnly ? "#777" : "white" 
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#444" : "#333"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
 
                         Text { text: "Pulse Count:"; color: "white" }
-                        TextField { id: triggerPulseCount; Layout.preferredHeight: 32; font.pixelSize: 14; text: "1" }
+                        TextField { 
+                            id: triggerPulseCount
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "1"
+                            color: controlsReadOnly ? "#777" : "white" 
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#444" : "#333"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
 
                         Text { text: "Train Interval (S):"; color: "white" }
-                        TextField { id: triggerPulseTrainInterval; Layout.preferredHeight: 32; font.pixelSize: 14; text: "1" }
+                        TextField { 
+                            id: triggerPulseTrainInterval
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "1"
+                            color: controlsReadOnly ? "#777" : "white" 
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#444" : "#333"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
 
                         Text { text: "Train Count:"; color: "white" }
-                        TextField { id: triggerPulseTrainCount; Layout.preferredHeight: 32; font.pixelSize: 14; text: "1" }
+                        TextField { 
+                            id: triggerPulseTrainCount
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "1"
+                            color: controlsReadOnly ? "#777" : "white" 
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#444" : "#333"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
 
                         Text { text: "Trigger Mode:"; color: "white" }
 
@@ -103,6 +266,14 @@ Rectangle {
 							Layout.preferredWidth: 150
 							Layout.preferredHeight: 32
 							model: ["Sequence", "Continuous", "Single"]
+                            currentIndex: 1
+							enabled: true
+							
+							background: Rectangle {
+                                color: "#333"
+                                border.color: "#999"
+                                radius: 4
+                            }
 							
 							onActivated: {
 								var selectedIndex = triggerModeDropdown.currentText;
@@ -119,7 +290,35 @@ Rectangle {
                     spacing: 10
 
                     Button {
-                        text: "Configure"
+                        text: "Load Solution"
+                        Layout.fillWidth: true
+                        enabled: !solutionLoaded
+                        background: Rectangle {
+                            color: "#3A3F4B"
+                            radius: 4
+                            border.color: "#BDC3C7"
+                        }
+                        onClicked: {
+                            solutionFileDialog.open()
+                        }
+                    }
+
+                    Button {
+                        text: "Edit Solution"
+                        Layout.fillWidth: true
+                        enabled: solutionLoaded
+                        background: Rectangle {
+                            color: "#2E86AB"
+                            radius: 4
+                            border.color: "#BDC3C7"
+                        }
+                        onClicked: {
+                            LIFUConnector.makeLoadedSolutionEditable()
+                        }
+                    }
+
+                    Button {
+                        text: "Send to Device"
                         Layout.fillWidth: true
                         enabled: LIFUConnector.state === 1  // TX_CONNECTED
                         background: Rectangle {
@@ -140,6 +339,12 @@ Rectangle {
                             );
                         }
                     }
+                }
+
+                // Second row of buttons
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
 
                     Button {
                         text: "Start"
@@ -248,17 +453,53 @@ Rectangle {
                         Layout.fillWidth: true
 
                         GridLayout {
-                            columns: 4
+                            columns: 6
                             width: parent.width
 
                             Text { text: "Left (X):"; color: "white" }
-                            TextField { id: xInput; Layout.preferredHeight: 32; font.pixelSize: 14; text: "0" }
+                            TextField { 
+                                id: xInput
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 14
+                                text: "0"
+                                color: controlsReadOnly ? "#777" : "white" 
+                                enabled: !controlsReadOnly
+                                background: Rectangle {
+                                    color: controlsReadOnly ? "#444" : "#333"
+                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    radius: 4
+                                }
+                            }
 
                             Text { text: "Front (Y):"; color: "white" }
-                            TextField { id: yInput; Layout.preferredHeight: 32; font.pixelSize: 14; text: "0" }
+                            TextField { 
+                                id: yInput
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 14
+                                text: "0"
+                                color: controlsReadOnly ? "#777" : "white" 
+                                enabled: !controlsReadOnly
+                                background: Rectangle {
+                                    color: controlsReadOnly ? "#444" : "#333"
+                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    radius: 4
+                                }
+                            }
 
                             Text { text: "Down (Z):"; color: "white" }
-                            TextField { id: zInput; Layout.preferredHeight: 32; font.pixelSize: 14; text: "25" }
+                            TextField { 
+                                id: zInput
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 14
+                                text: "25"
+                                color: controlsReadOnly ? "#777" : "white" 
+                                enabled: !controlsReadOnly
+                                background: Rectangle {
+                                    color: controlsReadOnly ? "#444" : "#333"
+                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    radius: 4
+                                }
+                            }
                         }
                     }
                 }
@@ -388,6 +629,25 @@ Rectangle {
             console.log("Received image data for display.");
             ultrasoundGraph.updateImage("data:image/png;base64," + imageData);
             statusText.text = "Status: Plot updated!";
+        }
+
+        // Solution loading signal handlers
+        function onSolutionFileLoaded(solutionName, message) {
+            console.log("Solution loaded: " + solutionName + " - " + message);
+            statusText.text = "Status: " + message;
+            applySolutionSettings();
+        }
+
+        function onSolutionLoadError(errorMessage) {
+            console.error("Solution load error: " + errorMessage);
+            statusText.text = "Error: " + errorMessage;
+        }
+
+        function onSolutionStateChanged() {
+            console.log("Solution state changed - loaded:", LIFUConnector.solutionLoaded);
+            if (!LIFUConnector.solutionLoaded) {
+                statusText.text = "Status: Solution cleared - controls are now editable";
+            }
         }
     }
 
