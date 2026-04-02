@@ -14,6 +14,12 @@ Rectangle {
     // Properties to track solution loading state
     property bool solutionLoaded: LIFUConnector.solutionLoaded
     property bool controlsReadOnly: solutionLoaded
+    
+    // Properties to track field activity based on trigger mode
+    property bool triggerFrequencyActive: true
+    property bool pulseCountActive: true
+    property bool trainIntervalActive: triggerModeDropdown.currentText !== "Single"
+    property bool trainCountActive: triggerModeDropdown.currentText === "Sequence"
 
     // File dialog for loading solutions
     FileDialog {
@@ -140,10 +146,10 @@ Rectangle {
                             Layout.preferredHeight: 32 
                             font.pixelSize: 14 
                             text: "12.0"
-                            color: controlsReadOnly ? "#777" : "white" 
+                            color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#444" : "#333"
+                                color: controlsReadOnly ? "#333" : "#222"
                                 border.color: controlsReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
@@ -165,10 +171,10 @@ Rectangle {
                             Layout.preferredHeight: 32
                             font.pixelSize: 14
                             text: "400e3"
-                            color: controlsReadOnly ? "#777" : "white" 
+                            color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#444" : "#333"
+                                color: controlsReadOnly ? "#333" : "#222"
                                 border.color: controlsReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
@@ -180,10 +186,10 @@ Rectangle {
                             Layout.preferredHeight: 32
                             font.pixelSize: 14
                             text: "2e-5"
-                            color: controlsReadOnly ? "#777" : "white" 
+                            color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#444" : "#333"
+                                color: controlsReadOnly ? "#333" : "#222"
                                 border.color: controlsReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
@@ -192,85 +198,24 @@ Rectangle {
                 }
 
                 GroupBox {
-                    title: "Trigger Profile"
+                    title: "Pulse Timing Settings"
                     Layout.fillWidth: true
 
                     GridLayout {
                         columns: 2
                         width: parent.width
-
-                        Text { text: "Trigger (Hz):"; color: "white" }
-                        TextField { 
-                            id: triggerFrequencyHz
-                            Layout.preferredHeight: 32
-                            font.pixelSize: 14
-                            text: "10"
-                            color: controlsReadOnly ? "#777" : "white" 
-                            enabled: !controlsReadOnly
-                            background: Rectangle {
-                                color: controlsReadOnly ? "#444" : "#333"
-                                border.color: controlsReadOnly ? "#777" : "#999"
-                                radius: 4
-                            }
-                        }
-
-                        Text { text: "Pulse Count:"; color: "white" }
-                        TextField { 
-                            id: triggerPulseCount
-                            Layout.preferredHeight: 32
-                            font.pixelSize: 14
-                            text: "1"
-                            color: controlsReadOnly ? "#777" : "white" 
-                            enabled: !controlsReadOnly
-                            background: Rectangle {
-                                color: controlsReadOnly ? "#444" : "#333"
-                                border.color: controlsReadOnly ? "#777" : "#999"
-                                radius: 4
-                            }
-                        }
-
-                        Text { text: "Train Interval (S):"; color: "white" }
-                        TextField { 
-                            id: triggerPulseTrainInterval
-                            Layout.preferredHeight: 32
-                            font.pixelSize: 14
-                            text: "1"
-                            color: controlsReadOnly ? "#777" : "white" 
-                            enabled: !controlsReadOnly
-                            background: Rectangle {
-                                color: controlsReadOnly ? "#444" : "#333"
-                                border.color: controlsReadOnly ? "#777" : "#999"
-                                radius: 4
-                            }
-                        }
-
-                        Text { text: "Train Count:"; color: "white" }
-                        TextField { 
-                            id: triggerPulseTrainCount
-                            Layout.preferredHeight: 32
-                            font.pixelSize: 14
-                            text: "1"
-                            color: controlsReadOnly ? "#777" : "white" 
-                            enabled: !controlsReadOnly
-                            background: Rectangle {
-                                color: controlsReadOnly ? "#444" : "#333"
-                                border.color: controlsReadOnly ? "#777" : "#999"
-                                radius: 4
-                            }
-                        }
-
                         Text { text: "Trigger Mode:"; color: "white" }
 
 						ComboBox {
 							id: triggerModeDropdown
 							Layout.preferredWidth: 150
 							Layout.preferredHeight: 32
-							model: ["Sequence", "Continuous", "Single"]
+							model: ["Single", "Continuous", "Sequence"]
                             currentIndex: 1
 							enabled: true
 							
 							background: Rectangle {
-                                color: "#333"
+                                color: "#222"
                                 border.color: "#999"
                                 radius: 4
                             }
@@ -281,6 +226,66 @@ Rectangle {
 								
 							}
 						}
+
+                        Text { text: "Pulse Repetition Frequency (Hz):"; color: triggerFrequencyActive ? "white" : "#888"}
+                        TextField { 
+                            id: triggerFrequencyHz
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "10"
+                            color: controlsReadOnly ? (triggerFrequencyActive ? "#BBB" : "#777") : (triggerFrequencyActive ? "white" : "#888")
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#333" : "#222"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
+
+                        Text { text: "Pulse Count per Pulse Train:"; color: pulseCountActive ? "white" : "#888" }
+                        TextField { 
+                            id: triggerPulseCount
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "1"
+                            color: controlsReadOnly ? (pulseCountActive ? "#BBB" : "#777") : (pulseCountActive ? "white" : "#888")
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#333" : "#222"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
+
+                        Text { text: "Min Pulse Train Repeat Interval (S):"; color: trainIntervalActive ? "white" : "#888" }
+                        TextField { 
+                            id: triggerPulseTrainInterval
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "0"
+                            color: controlsReadOnly ? (trainIntervalActive ? "#BBB" : "#777") : (trainIntervalActive ? "white" : "#888")
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#333" : "#222"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
+
+                        Text { text: "Pulse Train Count:"; color: trainCountActive ? "white" : "#888" }
+                        TextField { 
+                            id: triggerPulseTrainCount
+                            Layout.preferredHeight: 32
+                            font.pixelSize: 14
+                            text: "1"
+                            color: controlsReadOnly ? (trainCountActive ? "#BBB" : "#777") : (trainCountActive ? "white" : "#888")
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#333" : "#222"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
                     }
                 }
 
@@ -462,10 +467,10 @@ Rectangle {
                                 Layout.preferredHeight: 32
                                 font.pixelSize: 14
                                 text: "0"
-                                color: controlsReadOnly ? "#777" : "white" 
+                                color: controlsReadOnly ? "#BBB" : "white" 
                                 enabled: !controlsReadOnly
                                 background: Rectangle {
-                                    color: controlsReadOnly ? "#444" : "#333"
+                                    color: controlsReadOnly ? "#333" : "#222"
                                     border.color: controlsReadOnly ? "#777" : "#999"
                                     radius: 4
                                 }
@@ -477,10 +482,10 @@ Rectangle {
                                 Layout.preferredHeight: 32
                                 font.pixelSize: 14
                                 text: "0"
-                                color: controlsReadOnly ? "#777" : "white" 
+                                color: controlsReadOnly ? "#BBB" : "white" 
                                 enabled: !controlsReadOnly
                                 background: Rectangle {
-                                    color: controlsReadOnly ? "#444" : "#333"
+                                    color: controlsReadOnly ? "#333" : "#222"
                                     border.color: controlsReadOnly ? "#777" : "#999"
                                     radius: 4
                                 }
@@ -492,10 +497,10 @@ Rectangle {
                                 Layout.preferredHeight: 32
                                 font.pixelSize: 14
                                 text: "25"
-                                color: controlsReadOnly ? "#777" : "white" 
+                                color: controlsReadOnly ? "#BBB" : "white" 
                                 enabled: !controlsReadOnly
                                 background: Rectangle {
-                                    color: controlsReadOnly ? "#444" : "#333"
+                                    color: controlsReadOnly ? "#333" : "#222"
                                     border.color: controlsReadOnly ? "#777" : "#999"
                                     radius: 4
                                 }
