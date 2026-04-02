@@ -328,7 +328,7 @@ class LIFUConnector(QObject):
             logger.error(f"Error generating plot: {e}")
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
-    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, triggerHZ, pulseCount, trainInterval, trainCount, durationS, mode):
+    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
         if not self._txConnected:
             logger.error("Cannot configure transmitter: No TX device connected")
@@ -362,7 +362,7 @@ class LIFUConnector(QObject):
         tof = distances*1e-3 / SPEED_OF_SOUND
         delays = tof.max() - tof
         apodizations = np.ones(numelements)
-        sequence = {"pulse_interval": 1.0/float(triggerHZ),
+        sequence = {"pulse_interval": float(pulseInterval),
                     "pulse_count": int(pulseCount),
                     "pulse_train_interval": float(trainInterval),
                     "pulse_train_count": int(trainCount)}
@@ -1270,9 +1270,6 @@ class LIFUConnector(QObject):
             # Extract voltage
             voltage = data.get('voltage', 12.0)
             
-            # Calculate trigger frequency from pulse interval
-            trigger_frequency = 1.0 / pulse_interval if pulse_interval > 0 else 10
-            
             return {
                 'xInput': float(focus_position[0]),
                 'yInput': float(focus_position[1]),
@@ -1280,7 +1277,7 @@ class LIFUConnector(QObject):
                 'frequency': float(frequency),
                 'duration': float(duration),
                 'voltage': float(voltage),
-                'triggerFrequency': float(trigger_frequency),
+                'pulseInterval': float(pulse_interval),
                 'pulseCount': int(pulse_count),
                 'trainInterval': float(pulse_train_interval),
                 'trainCount': int(pulse_train_count)
