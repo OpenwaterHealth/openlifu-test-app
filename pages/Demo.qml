@@ -589,7 +589,7 @@ Rectangle {
                     spacing: 15
 
                     GroupBox {
-                        title: "Beam Focus"
+                        title: solutionLoaded ? "Beam Focus (Delays and Apodizations Loaded Directly from Solution)" : "Beam Focus"
                         Layout.fillWidth: true
 
                         GridLayout {

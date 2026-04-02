@@ -335,45 +335,68 @@ class LIFUConnector(QObject):
             return
         self.queryNumModules()
         num_modules = self._num_modules_connected
-        def load_element_positions_from_file(filepath):
-            with open(filepath, 'r') as f:
-                data = json.load(f)
-            if "type"  in data and data["type"] == "TransducerArray":
-                modules = []
-                for module in data['modules']:
-                    module_transform = np.array(module['transform'])
-                    element_positions = np.array([elem['position'] for elem in module['elements']])
-                    element_positions = np.hstack((element_positions, np.ones((element_positions.shape[0], 1))))
-                    world_positions = (np.linalg.inv(module_transform) @ element_positions.T).T[:, :3]  # drop the homogeneous coordinate
-                    modules.append(world_positions)
-                element_positions = np.vstack(modules)
+        if self._solution_loaded:
+            logger.info("Using loaded solution for configuration")
+            solution = self._loaded_solution_data
+            #check if delays and apodizations match the number of elements in the loaded solution
+            delays_arr = np.array(solution["delays"])
+            apodizations_arr = np.array(solution["apodizations"])
+            if delays.ndim == 1:
+                n_delays = delays_arr.shape[0]
             else:
-                element_positions = np.array([elem['position'] for elem in data['elements']])
-            return element_positions
-        pulse = {"frequency": float(freq),
-                "duration": float(durationS),
-                "amplitude": 1.0
-                }
-        focus = np.array([float(xInput), float(yInput), float(zInput)])
-        element_positions = load_element_positions_from_file(fR".\pinmap_{num_modules}x.json")
-        numelements = element_positions.shape[0]
-        print(f"{num_modules}x config file loaded")
-        distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
-        tof = distances*1e-3 / SPEED_OF_SOUND
-        delays = tof.max() - tof
-        apodizations = np.ones(numelements)
-        sequence = {"pulse_interval": float(pulseInterval),
-                    "pulse_count": int(pulseCount),
-                    "pulse_train_interval": float(trainInterval),
-                    "pulse_train_count": int(trainCount)}
-        solution = {
-            "id": "solution",
-            "name": "Solution",
-            "delays": delays,
-            "apodizations": apodizations,
-            "pulse": pulse,
-            "sequence": sequence,
-            "voltage": float(voltage)}
+                n_delays = delays_arr.shape[1]
+            if n_delays != num_modules * NUM_ELEMENTS_PER_MODULE:
+                logger.error(f"Loaded solution has {delays_arr.shape[0]} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                self.solutionLoadError.emit(f"Loaded solution has {delays_arr.shape[0]} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                return
+            if apodizations_arr.ndim == 1:
+                n_apodizations = apodizations_arr.shape[0]
+            else:
+                n_apodizations = apodizations_arr.shape[1]
+            if n_apodizations != num_modules * NUM_ELEMENTS_PER_MODULE:
+                logger.error(f"Loaded solution has {apodizations_arr.shape[0]} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                self.solutionLoadError.emit(f"Loaded solution has {apodizations_arr.shape[0]} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                return
+        else:
+            def load_element_positions_from_file(filepath):
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                if "type"  in data and data["type"] == "TransducerArray":
+                    modules = []
+                    for module in data['modules']:
+                        module_transform = np.array(module['transform'])
+                        element_positions = np.array([elem['position'] for elem in module['elements']])
+                        element_positions = np.hstack((element_positions, np.ones((element_positions.shape[0], 1))))
+                        world_positions = (np.linalg.inv(module_transform) @ element_positions.T).T[:, :3]  # drop the homogeneous coordinate
+                        modules.append(world_positions)
+                    element_positions = np.vstack(modules)
+                else:
+                    element_positions = np.array([elem['position'] for elem in data['elements']])
+                return element_positions
+            pulse = {"frequency": float(freq),
+                    "duration": float(durationS),
+                    "amplitude": 1.0
+                    }
+            focus = np.array([float(xInput), float(yInput), float(zInput)])
+            element_positions = load_element_positions_from_file(fR".\pinmap_{num_modules}x.json")
+            numelements = element_positions.shape[0]
+            print(f"{num_modules}x config file loaded")
+            distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
+            tof = distances*1e-3 / SPEED_OF_SOUND
+            delays = tof.max() - tof
+            apodizations = np.ones(numelements)
+            sequence = {"pulse_interval": float(pulseInterval),
+                        "pulse_count": int(pulseCount),
+                        "pulse_train_interval": float(trainInterval),
+                        "pulse_train_count": int(trainCount)}
+            solution = {
+                "id": "solution",
+                "name": "Solution",
+                "delays": delays,
+                "apodizations": apodizations,
+                "pulse": pulse,
+                "sequence": sequence,
+                "voltage": float(voltage)}
 
         self.interface.set_solution(solution, trigger_mode=mode)
 
@@ -1141,7 +1164,7 @@ class LIFUConnector(QObject):
             
             # Emit success signal with solution details
             if "name" in solution_data:
-                message = f"Loaded solution {solution_data['name']} from file"
+                message = f"Loaded solution '{solution_data['name']}' from file"
             else:
                 message = f"Loaded solution with {len(solution_data.get('transducer', {}).get('elements', []))} elements"
             logger.info(message)
