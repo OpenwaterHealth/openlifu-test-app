@@ -109,30 +109,6 @@ Rectangle {
         }
     }
 
-    // Solution status indicator
-    Rectangle {
-        visible: solutionLoaded
-        width: solutionStatusText.width + 20
-        height: solutionStatusText.height + 10
-        color: "#2E7D32"
-        radius: 5
-        anchors {
-            top: parent.top
-            right: parent.right
-            topMargin: 45
-            rightMargin: 20
-        }
-        
-        Text {
-            id: solutionStatusText
-            anchors.centerIn: parent
-            text: "Solution: " + (LIFUConnector.solutionName || "Loaded")
-            color: "white"
-            font.pixelSize: 12
-            font.weight: Font.Bold
-        }
-    }
-
     // Initialize validation after all components are created
     Component.onCompleted: {
         updateTrainIntervalValidation()
