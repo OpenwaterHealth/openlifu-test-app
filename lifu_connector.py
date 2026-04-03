@@ -8,7 +8,8 @@ import numpy as np
 import re
 import base58
 import json
-from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly
+from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly\nfrom scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
+from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface
 
 logger = logging.getLogger("LIFUConnector")
@@ -86,6 +87,7 @@ class LIFUConnector(QObject):
     solutionFileLoaded = pyqtSignal(str, str)  # (solution_name, message)
     solutionLoadError = pyqtSignal(str)  # (error_message)
     solutionStateChanged = pyqtSignal()  # Notifies when solution is loaded/unloaded
+    testReportLoaded = pyqtSignal(bool, str)  # (success, message)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -1321,11 +1323,65 @@ class LIFUConnector(QObject):
             self.solutionStateChanged.emit()
             logger.info(f"Released solution '{solution_name}' - UI fields preserved, controls are now editable")
     
-    @pyqtSlot()
-    def clearLoadedSolution(self):
-        """Clear the currently loaded solution and return controls to editable state."""
-        self._solution_loaded = False
-        self._loaded_solution_data = None
-        self._solution_name = ""
-        self.solutionStateChanged.emit()
-        logger.info("Solution cleared - controls returned to editable state")
+    @pyqtSlot(str, str)
+    def loadTestReport(self, file_path, target):
+        """Load and validate test report against specified TXM module"""
+        def _run():
+            try:
+                # Parse the target to get module number
+                module = _parse_tx_module(target)
+                if module is None:
+                    self.testReportLoaded.emit(False, f"Unsupported target: {target}")
+                    return
+                
+                # Convert file URL to local path
+                if file_path.startswith("file:///"):
+                    file_path_clean = file_path[8:]  # Remove file:/// prefix
+                elif file_path.startswith("file://"):
+                    file_path_clean = file_path[7:]  # Remove file:// prefix
+                else:
+                    file_path_clean = file_path
+                    
+                logger.info(f"Loading test report from: {file_path_clean} for {target}")
+                
+                # Read the test report
+                report_df = read_test_report(file_path_clean)
+                config = test_report_to_config(report_df)
+                
+                # Extract report information
+                report_sn = config.get('sn', 'Unknown')
+                report_hwid = config.get('hwid', 'Unknown')
+                report_freq = config.get('freq', 'Unknown')
+                
+                report_info = f"SN: {report_sn}, HWID: {report_hwid}, Freq: {report_freq} kHz"
+                
+                # Check if we have a connected TXM to compare against
+                if self._txConnected:
+                    try:
+                        # Check against specified module
+                        check_result = check_config_against_device(self.interface, config, module=module)
+                        if check_result is not False:  # None means warnings but valid, False means mismatch
+                            # Convert config to JSON string and populate User Config editor
+                            import json
+                            json_str = json.dumps(config, indent=2)
+                            self.userConfigRead.emit(target, json_str)
+                            
+                            message = f"Test report matches {target}! {report_info} - Config loaded into editor."
+                            self.testReportLoaded.emit(True, message)
+                        else:
+                            message = f"Test report does NOT match {target}. Report: {report_info}"
+                            self.testReportLoaded.emit(False, message)
+                    except Exception as e:
+                        logger.warning(f"Could not verify report against device: {e}")
+                        message = f"Test report loaded but could not verify against {target}: {e}"
+                        self.testReportLoaded.emit(False, message)
+                else:
+                    message = f"Test report loaded. No TXM connected for verification. {report_info}"
+                    self.testReportLoaded.emit(False, message)
+                    
+            except Exception as e:
+                error_msg = f"Failed to load test report: {str(e)}"
+                logger.error(error_msg)
+                self.testReportLoaded.emit(False, error_msg)
+                
+        threading.Thread(target=_run, daemon=True).start()
