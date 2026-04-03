@@ -144,7 +144,7 @@ Rectangle {
                         width: parent.width
 
                         Text { 
-                            text: "Voltage (+/-):" 
+                            text: "Voltage per Rail (+/-):" 
                             color: "white" 
                             
                             HoverHandler {
