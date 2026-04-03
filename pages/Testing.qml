@@ -61,7 +61,7 @@ Rectangle {
                 temperature1 = 0.0
                 temperature2 = 0.0
                 rgbState = "Off" // Reset RGB state
-                voltageState = "Off" // Reset voltage state
+                // voltageState = "Off" // Reset voltage state
                 pingResult.text = ""
                 echoResult.text = ""
                 toggleLedResult.text = ""
@@ -205,7 +205,7 @@ Rectangle {
                                     id: testCaseDropdown
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 32
-                                    model: [1, 2, 3, 4, 5, 6, 7]
+                                    model: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
                                     
                                     onActivated: {
                                         var selectedIndex = testCaseDropdown.currentText;
@@ -217,7 +217,7 @@ Rectangle {
                                 Button {
                                     text: "Start"
                                     Layout.fillWidth: true
-                                    // enabled: LIFUConnector.state === 3  // READY
+                                    enabled: LIFUConnector.state === 5 || LIFUConnector.state === 1  // TX_CONNECTED or TEST_SCRIPT_READY
                                     background: Rectangle {
                                         color: "#3A3F4B"
                                         radius: 4
@@ -239,8 +239,8 @@ Rectangle {
                                         border.color: "#BDC3C7"
                                     }
                                     onClicked: {
-                                        console.log("Stopping Sonication...");
-                                        LIFUConnector.stop_sonication();
+                                        console.log("Stopping thermal test...");
+                                        LIFUConnector._stop_thermal_test();
                                         // LIFUConnector.setAsyncMode(false)
                                     }
                                 }

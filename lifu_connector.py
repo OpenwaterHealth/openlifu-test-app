@@ -9,7 +9,7 @@ import argparse
 from pathlib import Path
 
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly
-from openlifu.io.LIFUInterface import LIFUInterface
+from openlifu_sdk import LIFUInterface
 from openlifu.bf.pulse import Pulse
 from openlifu.bf.sequence import Sequence
 from openlifu.geo import Point
@@ -53,6 +53,7 @@ TX_CONNECTED = 1
 CONFIGURED = 2
 READY = 3
 RUNNING = 4
+TEST_SCRIPT_READY = 5
 
 class LIFUConnector(QObject):
     # Ensure signals are correctly defined
@@ -87,6 +88,7 @@ class LIFUConnector(QObject):
         self._txConnected = False
         self._hvConnected = False
         self._configured = False
+        self._running = False
         self._state = DISCONNECTED
         self._trigger_state = False  # Internal state to track trigger status
         self._txconfigured_state = False  # Internal state to track trigger status
@@ -102,14 +104,23 @@ class LIFUConnector(QObject):
 
     def update_state(self):
         """Update system state based on connection and configuration."""
-        if not self._txConnected and not self._hvConnected:
+        if self._running:
+            self._state = RUNNING
+        elif not self._txConnected and not self._hvConnected:
             self._state = DISCONNECTED
+        elif self._hvConnected and not self._running: # script will auto turn on 12v
+            self._state = TEST_SCRIPT_READY
         elif self._txConnected and not self._configured:
             self._state = TX_CONNECTED
         elif self._txConnected and self._hvConnected and self._configured:
             self._state = READY
         elif self._txConnected and self._configured:
             self._state = CONFIGURED
+        # elif self._running:
+        #     self._state = RUNNING
+
+        # elif self._txConnected and not self._running:
+        #     self._state = TEST_SCRIPT_READY
         self.stateChanged.emit(self._state)  # Notify QML of state update
         logger.info(f"Updated state: {self._state}")
 
@@ -313,43 +324,43 @@ class LIFUConnector(QObject):
     def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, triggerHZ, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
         if self._txConnected:
-            # pulse = Pulse(frequency=float(freq), duration=float(durationS))
-            # pt = Point(position=(float(xInput),float(yInput),float(zInput)), units="mm")
-            # 
-            # self.queryNumModules()
-# 
-            # arr = load_transducer_from_file(fR".\pinmap_{self._num_modules_connected}x.json")
-            # logger.info(f"{self._num_modules_connected}x config file loaded")
-            # 
-            # focus = pt.get_position(units="mm")
-# 
-            # distances = np.sqrt(np.sum((focus - arr.get_positions(units="mm"))**2, 1))
-            # tof = distances*1e-3 / 1500
-            # delays = tof.max() - tof
-            # apodizations = np.ones(arr.numelements())
-            # sequence = Sequence(
-            #     pulse_interval=1.0/float(triggerHZ),
-            #     pulse_count=int(pulseCount),
-            #     pulse_train_interval=float(trainInterval),
-            #     pulse_train_count=int(trainCount)
-            # )
-# 
-            # solution = Solution(
-            #     id="solution",
-            #     name="Solution",
-            #     protocol_id="example_protocol",
-            #     transducer="example_transducer",
-            #     delays = delays,
-            #     apodizations = apodizations,
-            #     pulse = pulse,
-            #     sequence = sequence,
-            #     voltage=float(voltage),
-            #     target=pt,
-            #     foci=[pt],
-            #     approved=True
-            # )
-            # 
-            # self.interface.set_solution(solution, trigger_mode=mode)
+            pulse = Pulse(frequency=float(freq), duration=float(durationS))
+            pt = Point(position=(float(xInput),float(yInput),float(zInput)), units="mm")
+            
+            self.queryNumModules()
+
+            arr = load_transducer_from_file(fR".\pinmap_{self._num_modules_connected}x.json")
+            logger.info(f"{self._num_modules_connected}x config file loaded")
+            
+            focus = pt.get_position(units="mm")
+
+            distances = np.sqrt(np.sum((focus - arr.get_positions(units="mm"))**2, 1))
+            tof = distances*1e-3 / 1500
+            delays = tof.max() - tof
+            apodizations = np.ones(arr.numelements())
+            sequence = Sequence(
+                pulse_interval=1.0/float(triggerHZ),
+                pulse_count=int(pulseCount),
+                pulse_train_interval=float(trainInterval),
+                pulse_train_count=int(trainCount)
+            )
+
+            solution = Solution(
+                id="solution",
+                name="Solution",
+                protocol_id="example_protocol",
+                transducer="example_transducer",
+                delays = delays,
+                apodizations = apodizations,
+                pulse = pulse,
+                sequence = sequence,
+                voltage=float(voltage),
+                target=pt,
+                foci=[pt],
+                approved=True
+            )
+            
+            self.interface.set_solution(solution, trigger_mode=mode)
 
             self._configured = True
             self.update_state()
@@ -438,10 +449,10 @@ class LIFUConnector(QObject):
         """Expose state as a QML property."""
         return self._state
     
-    @pyqtProperty(bool, notify=connectionStatusChanged)
-    def txConnected(self):
-        """Expose TX connection status to QML."""
-        return self._txConnected
+    # @pyqtProperty(bool, notify=connectionStatusChanged)
+    # def txConnected(self):
+    #     """Expose TX connection status to QML."""
+    #     return self._txConnected
 
     @pyqtProperty(bool, notify=connectionStatusChanged)
     def hvConnected(self):
@@ -909,7 +920,10 @@ class LIFUConnector(QObject):
     def runThermalTest(self, frequency, num_modules, test_case):
         """Run the transmitter heating test."""
         try:
-
+            if hasattr(self, 'running_thread') and self.running_thread.is_alive():
+                logger.warning("Previous test still shutting down, ignoring start request")
+                return
+    
             args = parse_arguments()
             args.frequency = frequency
             args.num_modules = num_modules
@@ -918,13 +932,55 @@ class LIFUConnector(QObject):
             args.test_runthrough = True
 
             logger.info("Running thermal test...")
-            test = TransmitterHeatingPlaceholder(args=args)
-            test.run()
+            self.thermal_test_instance = TransmitterHeatingPlaceholder(args=args)
+            
+            # self.stateChanged.emit(self._state)
+            # logger.info(f"Updated state: {self._state}")
+
+            self.running_thread = threading.Thread(target=self._run_thermal_test_worker, daemon=True)
+            self.running_thread.start()
+            # test.run()
         except Exception as e:
             logger.error(f"\n !! Fatal error: {e}")
             with contextlib.suppress(Exception):
-                test.print_test_summary()
+                self.thermal_test_instance.print_test_summary()
             with contextlib.suppress(Exception):
-                test.turn_off_console_and_tx()
+                self.thermal_test_instance.turn_off_console_and_tx()
             with contextlib.suppress(Exception):
-                test.cleanup_interface()
+                self.thermal_test_instance.cleanup_interface()
+
+    def _run_thermal_test_worker(self):
+        try:
+            # self._state = RUNNING
+            # self.stateChanged.emit(self._state)
+
+            self._running = True
+            self.update_state()  # Notify QML of state update
+
+            self.thermal_test_instance.run()
+            # Notify QML of state update
+        except Exception as e:
+            logger.error(f"\n !! Fatal error in thermal test worker: {e}")
+            logger.info("Attempting to clean up after thermal test error...")
+            self.thermal_test_instance.shutdown_event.set()
+            # self._running = True
+            # self.update_state()  # Notify QML of state update
+            # logger.info(f"Updated state: {self._state}")
+        finally:
+            self._running = False
+            # self.stateChanged.emit(self._state) # Notify QML of state update
+            self.update_state()  # Notify QML of state update
+            logger.info(f"Updated state: {self._state}")
+
+    @pyqtSlot()
+    def _stop_thermal_test(self):
+        if self.thermal_test_instance:
+            self.thermal_test_instance.shutdown_event.set()
+            self.thermal_test_instance.test_status = "aborted by user"
+        # if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
+        #     self._worker_thread.join(timeout=5)
+        #     if self._worker_thread.is_alive():
+        #         logger.warning("Thermal test thread did not exit within timeout")
+
+        # self._state = TX_CONNECTED
+        # self.stateChanged.emit(self._state)  # Notify QML of state update
