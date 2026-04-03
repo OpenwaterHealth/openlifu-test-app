@@ -9,14 +9,7 @@ import base58
 import re
 import json
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly
-from openlifu_sdk.io.LIFUInterface import LIFUInterface
-
-# from openlifu.bf.pulse import Pulse
-# from openlifu.bf.sequence import Sequence
-# from openlifu.geo import Point
-# from openlifu.plan.solution import Solution
-# from openlifu.xdc import Transducer
-# from openlifu.xdc.util import load_transducer_from_file
+from openlifu_sdk.io import LIFUInterface
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
