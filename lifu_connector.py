@@ -6,6 +6,7 @@ import os
 import threading
 import numpy as np
 import re
+import base58
 import json
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly
 from openlifu_sdk.io import LIFUInterface
@@ -473,7 +474,12 @@ class LIFUConnector(QObject):
             fw_version = self.interface.hvcontroller.get_version()
             logger.info(f"Version: {fw_version}")
             hw_id = self.interface.hvcontroller.get_hardware_id()
-            device_id = hw_id if hw_id else 'N/A'
+            if hw_id:
+                if len(hw_id) > 20:
+                    hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                device_id = hw_id 
+            else:
+                device_id = 'N/A'
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
             logger.info(f"Device Info - Firmware: {fw_version}, Device ID: {device_id}")
         except Exception as e:
@@ -490,7 +496,9 @@ class LIFUConnector(QObject):
                 logger.info(f"Version: {fw_version}")
                 hw_id = self.interface.txdevice.get_hardware_id(module=module_idx)
                 if hw_id:
-                    device_id = hw_id
+                    if len(hw_id) > 20:
+                        hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                    device_id = hw_id 
                 else:
                     device_id = 'N/A'
                 logger.info(f"Module {module_idx} - Firmware: {fw_version}, Device ID: {device_id}")
