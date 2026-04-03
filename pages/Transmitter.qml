@@ -56,7 +56,7 @@ Rectangle {
         target: LIFUConnector
 
         // Handle TX Connected state
-        onTxConnectedChanged: {
+        function onTxConnectedChanged() {
         if (LIFUConnector.txConnected) {
             infoTimer.start()  // One-time info fetch
         } else {
@@ -71,7 +71,7 @@ Rectangle {
         }
 
         // Handle device info response
-        onTxDeviceInfoReceived: (modulesList) => {
+        function onTxDeviceInfoReceived(modulesList) {
             // Build modules array, preserving existing temperature data
             modules = modulesList.map(function(m, i) {
                 let existing = modules[i]
@@ -86,7 +86,7 @@ Rectangle {
         }
 
         // Handle temperature updates
-        onTemperatureTxUpdated: (module, tx_temp, amb_temp) => {
+        function onTemperatureTxUpdated(module, tx_temp, amb_temp) {
             if (module < modules.length) {
                 let updated = modules.slice()
                 updated[module] = Object.assign({}, updated[module], {
@@ -97,12 +97,12 @@ Rectangle {
             }
         }
 
-        onTriggerStateChanged: (state) => {
+        function onTriggerStateChanged(state) {
             triggerStatus.text = state ? "On" : "Off";
             triggerStatus.color = state ? "green" : "red";
         }
 
-        onTxConfigStateChanged: (state) => {
+        function onTxConfigStateChanged(state) {
             txconfigStatus.text = state ? "Configured" : "NOT Configured";
             txconfigStatus.color = state ? "green" : "red";
         }
