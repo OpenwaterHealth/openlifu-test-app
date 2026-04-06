@@ -974,6 +974,9 @@ class LIFUConnector(QObject):
 
     @pyqtSlot()
     def _stop_thermal_test(self):
+        if not self._running:
+            logger.warning("Stop called but no test is running, ignoring.")
+            return
         if self.thermal_test_instance:
             self.thermal_test_instance.shutdown_event.set()
             self.thermal_test_instance.test_status = "aborted by user"
