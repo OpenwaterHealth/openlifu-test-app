@@ -415,7 +415,7 @@ Rectangle {
                     Button {
                         text: "Load Solution"
                         Layout.fillWidth: true
-                        enabled: !solutionLoaded && LIFUConnector._state <2
+                        enabled: (!solutionLoaded) && (LIFUConnector.state <2)
                         background: Rectangle {
                             color: "#3A3F4B"
                             radius: 4
