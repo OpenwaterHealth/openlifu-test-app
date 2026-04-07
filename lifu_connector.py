@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
 import numpy as np
 import base58
@@ -936,7 +936,7 @@ class LIFUConnector(QObject):
             
             # self.stateChanged.emit(self._state)
             # logger.info(f"Updated state: {self._state}")
-
+            self._start_progress_timer()
             self.running_thread = threading.Thread(target=self._run_thermal_test_worker, daemon=True)
             self.running_thread.start()
             # test.run()
@@ -959,6 +959,7 @@ class LIFUConnector(QObject):
 
             self.thermal_test_instance.run()
             # Notify QML of state update
+
         except Exception as e:
             logger.error(f"\n !! Fatal error in thermal test worker: {e}")
             logger.info("Attempting to clean up after thermal test error...")
@@ -987,3 +988,71 @@ class LIFUConnector(QObject):
 
         # self._state = TX_CONNECTED
         # self.stateChanged.emit(self._state)  # Notify QML of state update
+
+    # In your LIFUConnector QObject class
+
+    testProgressUpdated = pyqtSignal(float, float, str, str, str)
+    # args: total_frac, case_frac, total_label, case_label, status_color
+    # status_color: "#2ECC71" pass, "#E74C3C" fail, "#E2A84A" running, "#BDC3C7" idle
+
+    def _start_progress_timer(self):
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(250)
+        self._progress_timer.timeout.connect(self._emit_test_progress)
+        self._progress_timer.start()
+
+    def _stop_progress_timer(self):
+        if hasattr(self, "_progress_timer"):
+            self._progress_timer.stop()
+
+    def _emit_test_progress(self):
+        runner = self.thermal_test_instance  # however you reference ThermalStressTest
+
+        # print("_emit_test_progress called")  # add this as first line
+
+        total_cases = len(TEST_CASES)
+        starting_case = getattr(runner, "starting_test_case", 1)
+        current_case = getattr(runner, "test_case_num", starting_case)
+        status = getattr(runner, "test_status", "not started")
+        sequence_duration = getattr(runner, "sequence_duration", 0)
+        test_case_start_time = getattr(runner, "test_case_start_time", 0.0)
+        start_time = getattr(runner, "start_time", 0.0)
+
+        # Per-case fraction
+        if status == "running" and sequence_duration > 0 and test_case_start_time > 0:
+            elapsed_case = time.time() - test_case_start_time
+            case_frac = min(elapsed_case / sequence_duration, 1.0)
+        elif status in ("passed", "temperature shutdown", "voltage deviation"):
+            case_frac = 1.0
+        else:
+            case_frac = 0.0
+
+        # Total fraction
+        cases_done = current_case - starting_case
+        total_frac = min((cases_done + case_frac) / total_cases, 1.0)
+
+        # Labels
+        elapsed_total = time.time() - start_time if start_time else 0.0
+        total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
+        case_label = f"Test case {current_case} of {total_cases}  —  {status}"
+
+        # Case bar color
+        if status == "running":
+            status_color = "#E2A84A"       # yellow
+        elif status == "passed":
+            status_color = "#2ECC71"       # green
+        elif status in ("temperature shutdown", "voltage deviation", "error"):
+            status_color = "#E74C3C"       # red
+        elif status == "aborted by user":
+            status_color = "#F39C12"       # orange
+        else:
+            status_color = "#BDC3C7"       # grey/idle
+
+        self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color)
+        # print(f"Signal emitted: {total_frac:.2f}, {case_frac:.2f}")
+
+        # Stop when terminal
+        if status in ("aborted by user", "error") or (
+            current_case >= (starting_case + total_cases - 1) and case_frac >= 1.0
+        ):
+            self._stop_progress_timer()

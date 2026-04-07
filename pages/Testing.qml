@@ -103,6 +103,16 @@ Rectangle {
             rgbLedResult.text = stateText  // Display the state as text
             rgbLedDropdown.currentIndex = stateValue  // Sync ComboBox to received state
         }
+
+        function onTestProgressUpdated(totalFrac, caseFrac, totalLabel, caseLabel, statusColor) {
+            // console.log(`Progress Update - Total: ${totalFrac.toFixed(2)}, Case: ${caseFrac.toFixed(2)}`)
+            testProgressSection.visible = true
+            totalProgressBar.value  = totalFrac
+            caseProgressBar.value   = caseFrac
+            totalProgressLabel.text = totalLabel
+            caseProgressLabel.text  = caseLabel
+            testProgressSection.caseStatusColor = statusColor
+        }
     }
 
     ColumnLayout {
@@ -404,6 +414,103 @@ Rectangle {
                             Behavior on color {
                                 ColorAnimation { duration: 200 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Test Progress Section ---
+        Rectangle {
+            id: testProgressSection
+            Layout.fillWidth: true
+            height: progressColumn.implicitHeight + 32
+            color: "#1E1E20"
+            radius: 10
+            border.color: "#3E4E6F"
+            border.width: 2
+            visible: false
+
+            property string caseStatusColor: "#BDC3C7"
+
+            ColumnLayout {
+                id: progressColumn
+                anchors {
+                    top: parent.top
+                    left: parent.left
+                    right: parent.right
+                    margins: 16
+                }
+                spacing: 10
+
+                Text {
+                    text: "Test Progress"
+                    font.pixelSize: 14
+                    font.weight: Font.Bold
+                    color: "white"
+                    Layout.alignment: Qt.AlignHCenter
+                }
+
+                Text {
+                    id: totalProgressLabel
+                    text: "Overall: waiting..."
+                    color: "#BDC3C7"
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                }
+
+                ProgressBar {
+                    id: totalProgressBar
+                    Layout.fillWidth: true
+                    from: 0.0
+                    to: 1.0
+                    value: 0.0
+
+                    background: Rectangle {
+                        implicitHeight: 14
+                        color: "#2A2F3B"
+                        radius: 7
+                        border.color: "#3E4E6F"
+                    }
+                    contentItem: Item {
+                        implicitHeight: 14
+                        Rectangle {
+                            width: totalProgressBar.visualPosition * parent.width
+                            height: parent.height
+                            radius: 7
+                            color: totalProgressBar.value >= 1.0 ? "#2ECC71" : "#4A90E2"
+                        }
+                    }
+                }
+
+                Text {
+                    id: caseProgressLabel
+                    text: "Test case: waiting..."
+                    color: "#BDC3C7"
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                }
+
+                ProgressBar {
+                    id: caseProgressBar
+                    Layout.fillWidth: true
+                    from: 0.0
+                    to: 1.0
+                    value: 0.0
+
+                    background: Rectangle {
+                        implicitHeight: 14
+                        color: "#2A2F3B"
+                        radius: 7
+                        border.color: "#3E4E6F"
+                    }
+                    contentItem: Item {
+                        implicitHeight: 14
+                        Rectangle {
+                            width: caseProgressBar.visualPosition * parent.width
+                            height: parent.height
+                            radius: 7
+                            color: testProgressSection.caseStatusColor
                         }
                     }
                 }
