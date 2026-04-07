@@ -307,7 +307,7 @@ Rectangle {
                             id: durationInput
                             Layout.preferredHeight: 32
                             font.pixelSize: 14
-                            text: "2e-5"
+                            text: "2e-4"
                             color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
