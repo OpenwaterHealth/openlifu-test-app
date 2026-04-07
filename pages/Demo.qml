@@ -524,6 +524,7 @@ Rectangle {
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
+                            postReadyTimer.stop()
                             
                             var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
                             LIFUConnector.configure_transmitter(xInput.text, yInput.text, 
@@ -941,14 +942,13 @@ Rectangle {
 
             if (previousConnectorState === 4 && state !== 4) {
                 clearStatusTelemetry();
+                if (state === 3) {
+                    postReadyTimer.start();
+                }
             }
 
             if (state >= 2 && configuredModuleCount <= 0) {
                 configuredModuleCount = LIFUConnector.queryNumModulesConnected
-            }
-
-            if (state === 3) {
-                postReadyTimer.start();
             }
 
             previousConnectorState = state;

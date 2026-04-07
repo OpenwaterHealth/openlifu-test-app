@@ -1,5 +1,3 @@
-from turtle import mode
-
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
 import os
@@ -8,7 +6,7 @@ import numpy as np
 import re
 import base58
 import json
-from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly\nfrom scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
+from scripts.generate_ultrasound_plot import generate_ultrasound_plot
 from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface
 
@@ -104,6 +102,11 @@ class LIFUConnector(QObject):
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
+
+        # Serialize low-level UART access and avoid overlapping poll calls.
+        self._uart_lock = threading.RLock()
+        self._tx_poll_lock = threading.Lock()
+        self._hv_poll_lock = threading.Lock()
 
         self.connect_signals()
 
@@ -328,8 +331,12 @@ class LIFUConnector(QObject):
         if not self._txConnected:
             logger.error("Cannot configure transmitter: No TX device connected")
             return
-        self.queryNumModules()
-        num_modules = self._num_modules_connected
+
+        with self._uart_lock:
+            num_modules = self.interface.txdevice.get_tx_module_count()
+        self._num_modules_connected = num_modules
+        self.numModulesUpdated.emit()
+
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
             solution = self._loaded_solution_data
@@ -393,7 +400,8 @@ class LIFUConnector(QObject):
                 "sequence": sequence,
                 "voltage": float(voltage)}
 
-        self.interface.set_solution(solution, trigger_mode=mode)
+        with self._uart_lock:
+            self.interface.set_solution(solution, trigger_mode=mode)
 
         self._configured = True
         self.update_state()
@@ -410,8 +418,10 @@ class LIFUConnector(QObject):
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
         if self._state == READY:
-            self.interface.hvcontroller.turn_hv_on()
-            if self.interface.txdevice.start_trigger():
+            with self._uart_lock:
+                self.interface.hvcontroller.turn_hv_on()
+                started = self.interface.txdevice.start_trigger()
+            if started:
                 self._state = RUNNING
             else:
                 logger.info("Failed to start trigger")
@@ -422,7 +432,9 @@ class LIFUConnector(QObject):
     def stop_sonication(self):
         """Stop the beam and return to READY state."""
         if self._state == RUNNING:
-            if self.interface.stop_sonication():
+            with self._uart_lock:
+                stopped = self.interface.stop_sonication()
+            if stopped:
                 self._state = READY
             else:
                 logger.info("Failed to stop trigger")
@@ -534,26 +546,40 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def queryTxTemperature(self):
         """Fetch and emit temperature data."""
-        try:
-            for module in range(0, self._num_modules_connected):
-                tx_temp = self.interface.txdevice.get_temperature(module=module)  
-                amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)  
+        if not self._tx_poll_lock.acquire(blocking=False):
+            logger.debug("Skipping TX temperature poll because a TX poll is already in progress")
+            return
 
-                self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
-                logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
+        try:
+            with self._uart_lock:
+                for module in range(0, self._num_modules_connected):
+                    tx_temp = self.interface.txdevice.get_temperature(module=module)
+                    amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
+
+                    self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
+                    logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
         except Exception as e:
-            logger.error(f"Error querying Module: {module} temperature data: {e}")
+            logger.error(f"Error querying TX temperature data: {e}")
+        finally:
+            self._tx_poll_lock.release()
 
     @pyqtSlot()
     def queryNumModules(self):
         """Fetch and emit number of connected TX modules."""
+        if not self._tx_poll_lock.acquire(blocking=False):
+            logger.debug("Skipping module-count poll because a TX poll is already in progress")
+            return
+
         try:
-            self._num_modules_connected = self.interface.txdevice.get_tx_module_count()
+            with self._uart_lock:
+                self._num_modules_connected = self.interface.txdevice.get_tx_module_count()
             self.numModulesUpdated.emit()
             logger.info(f"Number of connected TX modules: {self._num_modules_connected}")
 
         except Exception as e:
             logger.error(f"Error querying number of TX modules: {e}")
+        finally:
+            self._tx_poll_lock.release()
 
     @pyqtSlot(int)
     def setRGBState(self, state):
@@ -598,7 +624,8 @@ class LIFUConnector(QObject):
     def setAsyncMode(self, enable: bool):
         """Set the async mode for the interface."""
         try:
-            ret = self.interface.txdevice.async_mode(enable)
+            with self._uart_lock:
+                ret = self.interface.txdevice.async_mode(enable)
             logger.info(f"Async mode set to: {ret}")
         except Exception as e:
             logger.error(f"Error setting async mode: {e}")
@@ -887,13 +914,20 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def getMonitorVoltages(self):
         """Get voltage monitor readings from console."""
+        if not self._hv_poll_lock.acquire(blocking=False):
+            logger.debug("Skipping HV voltage poll because another HV poll is already in progress")
+            return
+
         try:
-            voltages = self.interface.hvcontroller.get_vmon_values()
+            with self._uart_lock:
+                voltages = self.interface.hvcontroller.get_vmon_values()
             logger.debug(f"Voltage readings: {voltages}")
             # Emit the voltage readings to QML
             self.monVoltagesReceived.emit(voltages)
         except Exception as e:
             logger.error(f"Error getting voltages: {e}")
+        finally:
+            self._hv_poll_lock.release()
 
     @pyqtSlot()
     def softResetTX(self):
