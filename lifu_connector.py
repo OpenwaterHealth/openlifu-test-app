@@ -111,6 +111,7 @@ class LIFUConnector(QObject):
         self._uart_queue = queue.Queue()
         self._uart_worker_stop = threading.Event()
         self._uart_active = False
+        self._uart_active_op_name = ""
         self._shutdown_requested = False
         self._uart_worker = threading.Thread(target=self._uart_worker_loop, daemon=True)
         self._uart_worker.start()
@@ -130,6 +131,7 @@ class LIFUConnector(QObject):
                 break
 
             self._uart_active = True
+            self._uart_active_op_name = task.get("op_name", "")
             try:
                 with self._uart_lock:
                     result = task["op"](*task["args"], **task["kwargs"])
@@ -138,11 +140,12 @@ class LIFUConnector(QObject):
                 task["error"] = e
             finally:
                 self._uart_active = False
+                self._uart_active_op_name = ""
                 if task["done"] is not None:
                     task["done"].set()
                 self._uart_queue.task_done()
 
-    def _run_uart(self, op, *args, wait=True, timeout=10.0, drop_if_busy=False, op_name="", **kwargs):
+    def _run_uart(self, op, *args, wait=True, timeout=10.0, drop_if_busy=False, op_name="", droppable=False, **kwargs):
         """Queue an operation onto the UART worker and optionally wait for the result."""
         if self._shutdown_requested:
             logger.debug(f"Skipping UART operation during shutdown: {op_name or getattr(op, '__name__', 'op')}")
@@ -160,6 +163,8 @@ class LIFUConnector(QObject):
             "done": done,
             "result": None,
             "error": None,
+            "op_name": op_name or getattr(op, "__name__", "op"),
+            "droppable": droppable,
         }
         self._uart_queue.put(task)
 
@@ -167,10 +172,26 @@ class LIFUConnector(QObject):
             return None
 
         if not done.wait(timeout):
-            raise TimeoutError(f"UART operation timed out: {op_name or getattr(op, '__name__', 'op')}")
+            raise TimeoutError(
+                f"UART operation timed out: {op_name or getattr(op, '__name__', 'op')} "
+                f"(active={self._uart_active_op_name}, queued={self._uart_queue.qsize()})"
+            )
         if task["error"] is not None:
             raise task["error"]
         return task["result"]
+
+    def _purge_droppable_uart_tasks(self):
+        """Drop queued polling tasks so command operations can proceed immediately."""
+        try:
+            with self._uart_queue.mutex:
+                kept = [task for task in self._uart_queue.queue if task is None or not task.get("droppable", False)]
+                dropped = len(self._uart_queue.queue) - len(kept)
+                if dropped > 0:
+                    self._uart_queue.queue.clear()
+                    self._uart_queue.queue.extend(kept)
+                    logger.debug(f"Purged {dropped} droppable UART tasks before command operation")
+        except Exception as e:
+            logger.debug(f"Unable to purge droppable UART tasks: {e}")
 
     def _stop_uart_worker(self):
         if self._uart_worker_stop.is_set():
@@ -199,11 +220,30 @@ class LIFUConnector(QObject):
         if self._shutdown_requested:
             return
 
-        self._shutdown_requested = True
         try:
             self.stop_monitoring()
         except Exception as e:
             logger.error(f"Error during monitoring shutdown: {e}")
+
+        # Best-effort hardware quieting before shutting worker down.
+        try:
+            with self._uart_lock:
+                try:
+                    self.interface.txdevice.async_mode(False)
+                except Exception:
+                    pass
+                try:
+                    self.interface.txdevice.stop_trigger()
+                except Exception:
+                    pass
+                try:
+                    self.interface.hvcontroller.turn_hv_off()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Could not fully quiet hardware during shutdown: {e}")
+
+        self._shutdown_requested = True
 
         self._stop_uart_worker()
 
@@ -443,6 +483,26 @@ class LIFUConnector(QObject):
             logger.error("Cannot configure transmitter: No TX device connected")
             return
 
+        self._purge_droppable_uart_tasks()
+
+        def _prepare_tx_for_config():
+            # Ensure TX is in command mode before applying a new solution.
+            try:
+                self.interface.txdevice.async_mode(False)
+            except Exception as e:
+                logger.debug(f"Could not set async mode false before config: {e}")
+            try:
+                self.interface.txdevice.stop_trigger()
+            except Exception as e:
+                logger.debug(f"Could not stop trigger before config: {e}")
+
+        self._run_uart(
+            _prepare_tx_for_config,
+            wait=True,
+            timeout=10.0,
+            op_name="prepare_tx_for_config",
+        )
+
         num_modules = self._run_uart(
             self.interface.txdevice.get_tx_module_count,
             wait=True,
@@ -520,7 +580,7 @@ class LIFUConnector(QObject):
             solution,
             trigger_mode=mode,
             wait=True,
-            timeout=20.0,
+            timeout=60.0,
             op_name="set_solution",
         )
 
@@ -678,6 +738,9 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def queryTxTemperature(self):
         """Fetch and emit temperature data."""
+        if self._state != RUNNING:
+            return
+
         if not self._tx_poll_lock.acquire(blocking=False):
             logger.debug("Skipping TX temperature poll because a TX poll is already in progress")
             return
@@ -698,6 +761,7 @@ class LIFUConnector(QObject):
                 timeout=10.0,
                 drop_if_busy=True,
                 op_name="query_tx_temperature",
+                droppable=True,
             )
             if temp_values is None:
                 return
@@ -724,6 +788,7 @@ class LIFUConnector(QObject):
                 timeout=10.0,
                 drop_if_busy=True,
                 op_name="query_num_modules",
+                droppable=True,
             )
             if module_count is None:
                 return
@@ -769,8 +834,17 @@ class LIFUConnector(QObject):
     def queryPowerStatus(self):
         """Fetch and emit HV state."""
         try:
-            hv_state = self.interface.hvcontroller.get_hv_status()            
-            v12_state = self.interface.hvcontroller.get_12v_status()
+            def _read_power_status():
+                hv_state = self.interface.hvcontroller.get_hv_status()
+                v12_state = self.interface.hvcontroller.get_12v_status()
+                return hv_state, v12_state
+
+            hv_state, v12_state = self._run_uart(
+                _read_power_status,
+                wait=True,
+                timeout=10.0,
+                op_name="query_power_status",
+            )
             logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
@@ -909,7 +983,13 @@ class LIFUConnector(QObject):
         try:
             json_trigger_data = json.loads(triggerjson)
             
-            trigger_setting = self.interface.txdevice.set_trigger_json(data=json_trigger_data)
+            trigger_setting = self._run_uart(
+                self.interface.txdevice.set_trigger_json,
+                data=json_trigger_data,
+                wait=True,
+                timeout=20.0,
+                op_name="set_trigger_json",
+            )
 
             if trigger_setting:
                 self._update_trigger_state(trigger_setting)  # Update trigger state dynamically
@@ -937,8 +1017,16 @@ class LIFUConnector(QObject):
         try:
             if self._trigger_state:
                 # Stop the trigger
-                self.interface.txdevice.async_mode(False)
-                success = self.interface.txdevice.stop_trigger()
+                def _stop_trigger_seq():
+                    self.interface.txdevice.async_mode(False)
+                    return self.interface.txdevice.stop_trigger()
+
+                success = self._run_uart(
+                    _stop_trigger_seq,
+                    wait=True,
+                    timeout=10.0,
+                    op_name="toggle_trigger_stop",
+                )
                 if success:
                     logger.info("Trigger stopped successfully.")
                     self._trigger_state = False
@@ -946,8 +1034,16 @@ class LIFUConnector(QObject):
                     logger.error("Failed to stop trigger.")
             else:
                 # Start the trigger
-                self.interface.txdevice.async_mode(True)
-                success = self.interface.txdevice.start_trigger()
+                def _start_trigger_seq():
+                    self.interface.txdevice.async_mode(True)
+                    return self.interface.txdevice.start_trigger()
+
+                success = self._run_uart(
+                    _start_trigger_seq,
+                    wait=True,
+                    timeout=10.0,
+                    op_name="toggle_trigger_start",
+                )
                 if success:
                     logger.info("Trigger started successfully.")
                     self._trigger_state = True
@@ -974,7 +1070,12 @@ class LIFUConnector(QObject):
             bool: True if the query was successful, False otherwise.
         """
         try:
-            trigger_data = self.interface.txdevice.get_trigger_json()
+            trigger_data = self._run_uart(
+                self.interface.txdevice.get_trigger_json,
+                wait=True,
+                timeout=10.0,
+                op_name="get_trigger_json",
+            )
 
             if isinstance(trigger_data, str):
                 trigger_data = json.loads(trigger_data)
@@ -1033,16 +1134,19 @@ class LIFUConnector(QObject):
     def turnOffHV(self):
         """Toggle HV on console."""
         try:
-            # Check the current state of HV
-            if self.interface.hvcontroller.get_hv_status():
-                # If HV is on, turn it off
-                if self.interface.hvcontroller.turn_hv_off():
-                    logger.info("HV turned off successfully")
-                else:
-                    logger.error("Failed to turn off HV")
+            def _turn_off_hv_and_read():
+                if self.interface.hvcontroller.get_hv_status():
+                    self.interface.hvcontroller.turn_hv_off()
+                hv_state = self.interface.hvcontroller.get_hv_status()
+                v12_state = self.interface.hvcontroller.get_12v_status()
+                return hv_state, v12_state
 
-            hv_state = self.interface.hvcontroller.get_hv_status()            
-            v12_state = self.interface.hvcontroller.get_12v_status()
+            hv_state, v12_state = self._run_uart(
+                _turn_off_hv_and_read,
+                wait=True,
+                timeout=10.0,
+                op_name="turn_off_hv",
+            )
             logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
@@ -1075,6 +1179,9 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def getMonitorVoltages(self):
         """Get voltage monitor readings from console."""
+        if self._state != RUNNING:
+            return
+
         if not self._hv_poll_lock.acquire(blocking=False):
             logger.debug("Skipping HV voltage poll because another HV poll is already in progress")
             return
@@ -1086,6 +1193,7 @@ class LIFUConnector(QObject):
                 timeout=10.0,
                 drop_if_busy=True,
                 op_name="get_monitor_voltages",
+                droppable=True,
             )
             if voltages is None:
                 return
