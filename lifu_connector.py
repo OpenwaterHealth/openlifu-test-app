@@ -424,9 +424,21 @@ class LIFUConnector(QObject):
         logger.info(f"Data received from {descriptor}: {message}")
         self.signalDataReceived.emit(descriptor, message)
 
-        if descriptor == "TX":
+        if descriptor.strip().upper().startswith("TX"):
             try:
                 parsed = self.parse_status_string(message)
+                if parsed["temp_tx"] is not None and parsed["temp_ambient"] is not None:
+                    module_index = _parse_tx_module(descriptor)
+                    if module_index is None and self._num_modules_connected == 1:
+                        module_index = 0
+
+                    if module_index is not None:
+                        self.temperatureTxUpdated.emit(
+                            module_index,
+                            parsed["temp_tx"],
+                            parsed["temp_ambient"],
+                        )
+
                 if parsed["status"] in {"RUNNING", "STOPPED"}:
                     # Update internal trigger state based on parsed status
                     new_trigger_state = parsed["status"] == "RUNNING"

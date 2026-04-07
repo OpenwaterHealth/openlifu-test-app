@@ -85,13 +85,6 @@ Rectangle {
     }
 
     function refreshStatusTelemetry() {
-        if (LIFUConnector.txConnected) {
-            if (configuredModuleCount <= 0) {
-                LIFUConnector.queryNumModules()
-            }
-            LIFUConnector.queryTxTemperature()
-        }
-
         if (LIFUConnector.hvConnected) {
             LIFUConnector.getMonitorVoltages()
         }
