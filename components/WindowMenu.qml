@@ -74,21 +74,63 @@ Rectangle {
                 Layout.alignment: Qt.AlignVCenter
 
                 // App Version
-                Text {
-                    text: "APP: "+windowMenu.appVerText
-                    color: "#AAAAAA"
-                    font.pixelSize: 12
-                    font.weight: Font.Medium
-                    horizontalAlignment: Text.AlignRight
+                RowLayout {
+                    spacing: 0
+                    Layout.alignment: Qt.AlignLeft
+                    
+                    Text {
+                        text: "APP: v"
+                        color: "#AAAAAA"
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                    }
+                    
+                    TextField {
+                        text: windowMenu.appVerText
+                        color: "#AAAAAA"
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                        readOnly: true
+                        selectByMouse: true
+                        leftPadding: 0
+                        rightPadding: 0
+                        topPadding: 0
+                        bottomPadding: 0
+                        background: Rectangle {
+                            color: "transparent"
+                            border.color: "transparent"
+                        }
+                    }
                 }
 
                 // SDK Version
-                Text {
-                    text: "SDK: "+windowMenu.sdkVerText
-                    color: "#AAAAAA"
-                    font.pixelSize: 12
-                    font.weight: Font.Medium
-                    horizontalAlignment: Text.AlignRight
+                RowLayout {
+                    spacing: 0
+                    Layout.alignment: Qt.AlignLeft
+                    
+                    Text {
+                        text: "SDK: v"
+                        color: "#AAAAAA"
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                    }
+                    
+                    TextField {
+                        text: windowMenu.sdkVerText
+                        color: "#AAAAAA"
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                        readOnly: true
+                        selectByMouse: true
+                        leftPadding: 0
+                        rightPadding: 0
+                        topPadding: 0
+                        bottomPadding: 0
+                        background: Rectangle {
+                            color: "transparent"
+                            border.color: "transparent"
+                        }
+                    }
                 }
             }
         }

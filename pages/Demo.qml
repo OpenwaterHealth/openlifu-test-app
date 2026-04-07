@@ -13,7 +13,13 @@ Rectangle {
 
     // Properties to track solution loading state
     property bool solutionLoaded: LIFUConnector.solutionLoaded
-    property bool controlsReadOnly: solutionLoaded
+    property bool controlsReadOnly: solutionLoaded || LIFUConnector.state >= 2
+    property var txTemperatures: []
+    property real hvPositiveRail: NaN
+    property real hvNegativeRail: NaN
+    property string statusOverrideText: ""
+    property int configuredModuleCount: 0
+    property int previousConnectorState: LIFUConnector.state
     
     // Properties to track field activity based on trigger mode
     property bool pulseIntervalActive: true
@@ -41,6 +47,80 @@ Rectangle {
         }
         
         trainIntervalTooShort = trainInterval < (pulseInterval * pulseCount)
+    }
+
+    function getSystemStateText() {
+        return "System State: " + (LIFUConnector.state === 0 ? "Disconnected"
+                            : LIFUConnector.state === 1 ? "TX Connected, Not Configured"
+                            : LIFUConnector.state === 2 ? "Configured"
+                            : LIFUConnector.state === 3 ? "Ready"
+                            : "Running")
+    }
+
+    function getTxTemperatureText() {
+        if (!LIFUConnector.txConnected) {
+            return "Temp [--.-]"
+        }
+
+        let displayCount = Math.max(configuredModuleCount, txTemperatures.length)
+        if (displayCount === 0) {
+            return "Temp [--.-]"
+        }
+
+        let displayValues = []
+        for (let index = 0; index < displayCount; index++) {
+            let temp = txTemperatures[index]
+            displayValues.push(typeof temp === "number" && !isNaN(temp) ? temp.toFixed(1) : "--")
+        }
+
+        return "Temp [" + displayValues.join(", ") + "] C"
+    }
+
+    function getHvRailText() {
+        if (!LIFUConnector.hvConnected || isNaN(hvPositiveRail) || isNaN(hvNegativeRail)) {
+            return "Rails +--.-- / ----.-- V"
+        }
+
+        return "Rails +" + hvPositiveRail.toFixed(2) + " / -" + Math.abs(hvNegativeRail).toFixed(2) + " V"
+    }
+
+    function refreshStatusTelemetry() {
+        if (LIFUConnector.txConnected) {
+            if (configuredModuleCount <= 0) {
+                LIFUConnector.queryNumModules()
+            }
+            LIFUConnector.queryTxTemperature()
+        }
+
+        if (LIFUConnector.hvConnected) {
+            LIFUConnector.getMonitorVoltages()
+        }
+    }
+
+    function clearStatusTelemetry() {
+        txTemperatures = []
+        hvPositiveRail = NaN
+        hvNegativeRail = NaN
+    }
+
+    function getIndicatorColor(isConnected) {
+        if (!isConnected) {
+            return "#C0392B"
+        }
+
+        if (LIFUConnector.state === 4) {
+            return "#43bb57"
+        }
+
+        if (LIFUConnector.state === 1) {
+            return "#5BC0EB"
+        }
+
+        if (LIFUConnector.state === 2 || LIFUConnector.state === 3) {
+            return "#31aa63"
+        }
+
+        return "#5BC0EB"
     }
 
     // File dialog for loading solutions
@@ -227,7 +307,7 @@ Rectangle {
                             id: durationInput
                             Layout.preferredHeight: 32
                             font.pixelSize: 14
-                            text: "2e-5"
+                            text: "2e-4"
                             color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -267,7 +347,7 @@ Rectangle {
 							Layout.preferredHeight: 32
 							model: ["Single", "Continuous", "Sequence"]
                             currentIndex: 1
-							enabled: true
+                            enabled: !controlsReadOnly
 							
 							background: Rectangle {
                                 color: "#222"
@@ -407,7 +487,7 @@ Rectangle {
                     Button {
                         text: "Load Solution"
                         Layout.fillWidth: true
-                        enabled: !solutionLoaded
+                        enabled: (!solutionLoaded) && (LIFUConnector.state <2)
                         background: Rectangle {
                             color: "#3A3F4B"
                             radius: 4
@@ -421,21 +501,23 @@ Rectangle {
                     Button {
                         text: "Edit Solution"
                         Layout.fillWidth: true
-                        enabled: solutionLoaded
+                        enabled: controlsReadOnly && (LIFUConnector.state <4)
                         background: Rectangle {
                             color: "#2E86AB"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
+                            LIFUConnector.reset_configuration()
                             LIFUConnector.makeLoadedSolutionEditable()
+                            statusOverrideText = ""
                         }
                     }
 
                     Button {
                         text: "Send to Device"
                         Layout.fillWidth: true
-                        enabled: LIFUConnector.state === 1  // TX_CONNECTED
+                        enabled: LIFUConnector.state === 1  // TX connected and not configured
                         background: Rectangle {
                             color: "#3A3F4B"
                             radius: 4
@@ -448,11 +530,13 @@ Rectangle {
                                 zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text, 
                                 triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text, 
                                 triggerModeDropdown.currentText);
+                            configuredModuleCount = LIFUConnector.queryNumModulesConnected
                             LIFUConnector.generate_plot(
                                  xInput.text, yInput.text, zInput.text,
                                  frequencyInput.text, "100", frequency,
                                  "buffer"
                             );
+                            statusOverrideText = ""
                         }
                     }
                 }
@@ -490,6 +574,7 @@ Rectangle {
                         }
                         onClicked: {
                             console.log("Stopping Sonication...");
+                            clearStatusTelemetry()
                             LIFUConnector.stop_sonication();
                             // LIFUConnector.setAsyncMode(false)
                         }
@@ -663,7 +748,7 @@ Rectangle {
             Rectangle {
                 id: statusPanel
                 width: 500
-                height: 130
+                height: 170
                 color: "#252525"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -676,15 +761,17 @@ Rectangle {
                     // Connection status text
                     Text {
                         id: statusText
-                        text: "System State: " + (LIFUConnector.state === 0 ? "Disconnected"
-                                        : LIFUConnector.state === 1 ? "TX Connected"
-                                        : LIFUConnector.state === 2 ? "Configured"
-                                        : LIFUConnector.state === 3 ? "Ready"
-                                        : "Running")
+                        text: statusOverrideText !== "" ? statusOverrideText : getSystemStateText()
                         font.pixelSize: 16
-                        color: "#BDC3C7"
+                        color: getIndicatorColor(LIFUConnector.txConnected && LIFUConnector.hvConnected)
                         horizontalAlignment: Text.AlignHCenter
                         anchors.horizontalCenter: parent.horizontalCenter
+                        SequentialAnimation on opacity {
+                            running: LIFUConnector.state === 4
+                            loops: Animation.Infinite
+                            NumberAnimation { from: 1.0; to: 0.35; duration: 500 }
+                            NumberAnimation { from: 0.35; to: 1.0; duration: 500 }
+                        }
                     }
 
                     // Connection Indicators (TX, HV)
@@ -697,10 +784,11 @@ Rectangle {
                             spacing: 5
                             // LED circle
                             Rectangle {
+                                id: txIndicator
                                 width: 20
                                 height: 20
                                 radius: 10
-                                color: LIFUConnector.txConnected ? "green" : "red"
+                                color: getIndicatorColor(LIFUConnector.txConnected)
                                 border.color: "black"
                                 border.width: 1
                             }
@@ -711,6 +799,13 @@ Rectangle {
                                 color: "#BDC3C7"
                                 verticalAlignment: Text.AlignVCenter
                             }
+
+                            Text {
+                                text: getTxTemperatureText()
+                                font.pixelSize: 12
+                                color: "#9FB3C8"
+                                verticalAlignment: Text.AlignVCenter
+                            }
                         }
 
                         // HV LED
@@ -718,10 +813,11 @@ Rectangle {
                             spacing: 5
                             // LED circle
                             Rectangle {
+                                id: hvIndicator
                                 width: 20
                                 height: 20
                                 radius: 10
-                                color: LIFUConnector.hvConnected ? "green" : "red"
+                                color: getIndicatorColor(LIFUConnector.hvConnected)
                                 border.color: "black"
                                 border.width: 1
                             }
@@ -730,6 +826,13 @@ Rectangle {
                                 text: "HV"
                                 font.pixelSize: 16
                                 color: "#BDC3C7"
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            Text {
+                                text: getHvRailText()
+                                font.pixelSize: 12
+                                color: "#9FB3C8"
                                 verticalAlignment: Text.AlignVCenter
                             }
                         }
@@ -751,58 +854,104 @@ Rectangle {
         }
     }
 
+    Timer {
+        id: telemetryPollTimer
+        interval: 1000
+        repeat: true
+        running: LIFUConnector.state === 4
+        onTriggered: {
+            refreshStatusTelemetry()
+        }
+    }
+
     // **Connections for LIFUConnector signals**
     Connections {
         target: LIFUConnector
 
         function onSignalConnected(descriptor, port) {
             console.log(descriptor + " connected on " + port);
-            statusText.text = "Connected: " + descriptor + " on " + port;
+            statusOverrideText = ""
         }
 
         function onSignalDisconnected(descriptor, port) {
             console.log(descriptor + " disconnected from " + port);
-            statusText.text = "Disconnected: " + descriptor + " from " + port;
+            if (descriptor === "TX") {
+                txTemperatures = [];
+                configuredModuleCount = 0;
+            }
+            if (descriptor === "HV") {
+                hvPositiveRail = NaN;
+                hvNegativeRail = NaN;
+            }
+            statusOverrideText = ""
         }
 
         function onSignalDataReceived(descriptor, message) {
             console.log("Data from " + descriptor + ": " + message);
         }
 
-        function onTriggerStateChanged(state) {
-            triggerStatus.text = state ? "On" : "Off";
-            triggerStatus.color = state ? "green" : "red";
-        }
-
-        function onStateChanged(state) {
-            if (state === 3) {
-                postReadyTimer.start();
-            }
-        }
-
         function onPlotGenerated(imageData) {
             console.log("Received image data for display.");
             ultrasoundGraph.updateImage("data:image/png;base64," + imageData);
-            statusText.text = "Status: Plot updated!";
+            statusOverrideText = "";
         }
 
         // Solution loading signal handlers
         function onSolutionFileLoaded(solutionName, message) {
             console.log("Solution loaded: " + solutionName + " - " + message);
-            statusText.text = "Status: " + message;
+            LIFUConnector.reset_configuration();
             applySolutionSettings();
+            statusOverrideText = "";
         }
 
         function onSolutionLoadError(errorMessage) {
             console.error("Solution load error: " + errorMessage);
-            statusText.text = "Error: " + errorMessage;
+            statusOverrideText = "Error: " + errorMessage;
         }
 
         function onSolutionStateChanged() {
             console.log("Solution state changed - loaded:", LIFUConnector.solutionLoaded);
             if (!LIFUConnector.solutionLoaded) {
-                statusText.text = "Status: Solution cleared - controls are now editable";
+                statusOverrideText = "";
             }
+        }
+
+        function onTemperatureTxUpdated(module, tx_temp, amb_temp) {
+            let updated = txTemperatures.slice()
+            while (updated.length <= module) {
+                updated.push(NaN)
+            }
+            updated[module] = tx_temp
+            txTemperatures = updated
+        }
+
+        function onNumModulesUpdated() {
+            configuredModuleCount = LIFUConnector.queryNumModulesConnected
+        }
+
+        function onMonVoltagesReceived(voltages) {
+            if (voltages.length >= 4) {
+                hvPositiveRail = voltages[0].converted_voltage
+                hvNegativeRail = voltages[3].converted_voltage
+            }
+        }
+
+        function onStateChanged(state) {
+            statusOverrideText = "";
+
+            if (previousConnectorState === 4 && state !== 4) {
+                clearStatusTelemetry();
+            }
+
+            if (state >= 2 && configuredModuleCount <= 0) {
+                configuredModuleCount = LIFUConnector.queryNumModulesConnected
+            }
+
+            if (state === 3) {
+                postReadyTimer.start();
+            }
+
+            previousConnectorState = state;
         }
     }
 
