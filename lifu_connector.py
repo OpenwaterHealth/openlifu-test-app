@@ -2,6 +2,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
 import os
 import threading
+import queue
 import numpy as np
 import re
 import base58
@@ -107,8 +108,118 @@ class LIFUConnector(QObject):
         self._uart_lock = threading.RLock()
         self._tx_poll_lock = threading.Lock()
         self._hv_poll_lock = threading.Lock()
+        self._uart_queue = queue.Queue()
+        self._uart_worker_stop = threading.Event()
+        self._uart_active = False
+        self._shutdown_requested = False
+        self._uart_worker = threading.Thread(target=self._uart_worker_loop, daemon=True)
+        self._uart_worker.start()
 
         self.connect_signals()
+
+    def _uart_worker_loop(self):
+        """Run UART operations serially to avoid TX/HV command collisions."""
+        while not self._uart_worker_stop.is_set():
+            try:
+                task = self._uart_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if task is None:
+                self._uart_queue.task_done()
+                break
+
+            self._uart_active = True
+            try:
+                with self._uart_lock:
+                    result = task["op"](*task["args"], **task["kwargs"])
+                task["result"] = result
+            except Exception as e:
+                task["error"] = e
+            finally:
+                self._uart_active = False
+                if task["done"] is not None:
+                    task["done"].set()
+                self._uart_queue.task_done()
+
+    def _run_uart(self, op, *args, wait=True, timeout=10.0, drop_if_busy=False, op_name="", **kwargs):
+        """Queue an operation onto the UART worker and optionally wait for the result."""
+        if self._shutdown_requested:
+            logger.debug(f"Skipping UART operation during shutdown: {op_name or getattr(op, '__name__', 'op')}")
+            return None
+
+        if drop_if_busy and (self._uart_active or not self._uart_queue.empty()):
+            logger.debug(f"Skipping busy UART operation: {op_name or getattr(op, '__name__', 'op')}")
+            return None
+
+        done = threading.Event() if wait else None
+        task = {
+            "op": op,
+            "args": args,
+            "kwargs": kwargs,
+            "done": done,
+            "result": None,
+            "error": None,
+        }
+        self._uart_queue.put(task)
+
+        if not wait:
+            return None
+
+        if not done.wait(timeout):
+            raise TimeoutError(f"UART operation timed out: {op_name or getattr(op, '__name__', 'op')}")
+        if task["error"] is not None:
+            raise task["error"]
+        return task["result"]
+
+    def _stop_uart_worker(self):
+        if self._uart_worker_stop.is_set():
+            return
+        self._uart_worker_stop.set()
+        self._uart_queue.put(None)
+        if self._uart_worker.is_alive():
+            self._uart_worker.join(timeout=2.0)
+
+    def _safe_close(self, obj, label):
+        if obj is None:
+            return
+        for name in ("close", "shutdown"):
+            fn = getattr(obj, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                    logger.info(f"Closed {label} via {name}()")
+                    return
+                except Exception as e:
+                    logger.warning(f"Failed closing {label} via {name}(): {e}")
+
+    @pyqtSlot()
+    def shutdown(self):
+        """Graceful connector shutdown that stops monitoring and closes resources."""
+        if self._shutdown_requested:
+            return
+
+        self._shutdown_requested = True
+        try:
+            self.stop_monitoring()
+        except Exception as e:
+            logger.error(f"Error during monitoring shutdown: {e}")
+
+        self._stop_uart_worker()
+
+        try:
+            self._safe_close(getattr(self.interface, "txdevice", None), "txdevice")
+            self._safe_close(getattr(self.interface, "hvcontroller", None), "hvcontroller")
+            self._safe_close(getattr(self.interface, "interface", None), "interface")
+            self._safe_close(self.interface, "LIFUInterface")
+        except Exception as e:
+            logger.error(f"Error closing interface resources: {e}")
+
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            pass
 
     def connect_signals(self):
         """Connect LIFUInterface signals to QML."""
@@ -332,8 +443,12 @@ class LIFUConnector(QObject):
             logger.error("Cannot configure transmitter: No TX device connected")
             return
 
-        with self._uart_lock:
-            num_modules = self.interface.txdevice.get_tx_module_count()
+        num_modules = self._run_uart(
+            self.interface.txdevice.get_tx_module_count,
+            wait=True,
+            timeout=10.0,
+            op_name="get_tx_module_count",
+        )
         self._num_modules_connected = num_modules
         self.numModulesUpdated.emit()
 
@@ -400,8 +515,14 @@ class LIFUConnector(QObject):
                 "sequence": sequence,
                 "voltage": float(voltage)}
 
-        with self._uart_lock:
-            self.interface.set_solution(solution, trigger_mode=mode)
+        self._run_uart(
+            self.interface.set_solution,
+            solution,
+            trigger_mode=mode,
+            wait=True,
+            timeout=20.0,
+            op_name="set_solution",
+        )
 
         self._configured = True
         self.update_state()
@@ -418,9 +539,16 @@ class LIFUConnector(QObject):
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
         if self._state == READY:
-            with self._uart_lock:
+            def _start_tx_trigger():
                 self.interface.hvcontroller.turn_hv_on()
-                started = self.interface.txdevice.start_trigger()
+                return self.interface.txdevice.start_trigger()
+
+            started = self._run_uart(
+                _start_tx_trigger,
+                wait=True,
+                timeout=10.0,
+                op_name="start_sonication",
+            )
             if started:
                 self._state = RUNNING
             else:
@@ -432,8 +560,12 @@ class LIFUConnector(QObject):
     def stop_sonication(self):
         """Stop the beam and return to READY state."""
         if self._state == RUNNING:
-            with self._uart_lock:
-                stopped = self.interface.stop_sonication()
+            stopped = self._run_uart(
+                self.interface.stop_sonication,
+                wait=True,
+                timeout=10.0,
+                op_name="stop_sonication",
+            )
             if stopped:
                 self._state = READY
             else:
@@ -551,13 +683,28 @@ class LIFUConnector(QObject):
             return
 
         try:
-            with self._uart_lock:
-                for module in range(0, self._num_modules_connected):
+            def _read_tx_temps(module_count: int):
+                values = []
+                for module in range(0, module_count):
                     tx_temp = self.interface.txdevice.get_temperature(module=module)
                     amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
+                    values.append((module, tx_temp, amb_temp))
+                return values
 
-                    self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
-                    logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
+            temp_values = self._run_uart(
+                _read_tx_temps,
+                self._num_modules_connected,
+                wait=True,
+                timeout=10.0,
+                drop_if_busy=True,
+                op_name="query_tx_temperature",
+            )
+            if temp_values is None:
+                return
+
+            for module, tx_temp, amb_temp in temp_values:
+                self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
+                logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
         except Exception as e:
             logger.error(f"Error querying TX temperature data: {e}")
         finally:
@@ -571,8 +718,17 @@ class LIFUConnector(QObject):
             return
 
         try:
-            with self._uart_lock:
-                self._num_modules_connected = self.interface.txdevice.get_tx_module_count()
+            module_count = self._run_uart(
+                self.interface.txdevice.get_tx_module_count,
+                wait=True,
+                timeout=10.0,
+                drop_if_busy=True,
+                op_name="query_num_modules",
+            )
+            if module_count is None:
+                return
+
+            self._num_modules_connected = module_count
             self.numModulesUpdated.emit()
             logger.info(f"Number of connected TX modules: {self._num_modules_connected}")
 
@@ -624,8 +780,13 @@ class LIFUConnector(QObject):
     def setAsyncMode(self, enable: bool):
         """Set the async mode for the interface."""
         try:
-            with self._uart_lock:
-                ret = self.interface.txdevice.async_mode(enable)
+            ret = self._run_uart(
+                self.interface.txdevice.async_mode,
+                enable,
+                wait=True,
+                timeout=10.0,
+                op_name="set_async_mode",
+            )
             logger.info(f"Async mode set to: {ret}")
         except Exception as e:
             logger.error(f"Error setting async mode: {e}")
@@ -919,8 +1080,15 @@ class LIFUConnector(QObject):
             return
 
         try:
-            with self._uart_lock:
-                voltages = self.interface.hvcontroller.get_vmon_values()
+            voltages = self._run_uart(
+                self.interface.hvcontroller.get_vmon_values,
+                wait=True,
+                timeout=10.0,
+                drop_if_busy=True,
+                op_name="get_monitor_voltages",
+            )
+            if voltages is None:
+                return
             logger.debug(f"Voltage readings: {voltages}")
             # Emit the voltage readings to QML
             self.monVoltagesReceived.emit(voltages)
