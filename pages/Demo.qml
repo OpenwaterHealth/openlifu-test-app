@@ -13,7 +13,7 @@ Rectangle {
 
     // Properties to track solution loading state
     property bool solutionLoaded: LIFUConnector.solutionLoaded
-    property bool controlsReadOnly: solutionLoaded
+    property bool controlsReadOnly: solutionLoaded || LIFUConnector.state >= 2
     
     // Properties to track field activity based on trigger mode
     property bool pulseIntervalActive: true
@@ -41,6 +41,14 @@ Rectangle {
         }
         
         trainIntervalTooShort = trainInterval < (pulseInterval * pulseCount)
+    }
+
+    function getSystemStateText() {
+        return "System State: " + (LIFUConnector.state === 0 ? "Disconnected"
+                            : LIFUConnector.state === 1 ? "TX Connected, Not Configured"
+                            : LIFUConnector.state === 2 ? "Configured"
+                            : LIFUConnector.state === 3 ? "Ready"
+                            : "Running")
     }
 
     // File dialog for loading solutions
@@ -267,7 +275,7 @@ Rectangle {
 							Layout.preferredHeight: 32
 							model: ["Single", "Continuous", "Sequence"]
                             currentIndex: 1
-							enabled: true
+                            enabled: !controlsReadOnly
 							
 							background: Rectangle {
                                 color: "#222"
@@ -421,21 +429,23 @@ Rectangle {
                     Button {
                         text: "Edit Solution"
                         Layout.fillWidth: true
-                        enabled: solutionLoaded
+                        enabled: controlsReadOnly
                         background: Rectangle {
                             color: "#2E86AB"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
+                            LIFUConnector.reset_configuration()
                             LIFUConnector.makeLoadedSolutionEditable()
+                            statusText.text = getSystemStateText()
                         }
                     }
 
                     Button {
                         text: "Send to Device"
                         Layout.fillWidth: true
-                        enabled: LIFUConnector.state === 1  // TX_CONNECTED
+                        enabled: LIFUConnector.state === 1  // TX connected and not configured
                         background: Rectangle {
                             color: "#3A3F4B"
                             radius: 4
@@ -453,6 +463,7 @@ Rectangle {
                                  frequencyInput.text, "100", frequency,
                                  "buffer"
                             );
+                            statusText.text = getSystemStateText()
                         }
                     }
                 }
@@ -676,11 +687,7 @@ Rectangle {
                     // Connection status text
                     Text {
                         id: statusText
-                        text: "System State: " + (LIFUConnector.state === 0 ? "Disconnected"
-                                        : LIFUConnector.state === 1 ? "TX Connected"
-                                        : LIFUConnector.state === 2 ? "Configured"
-                                        : LIFUConnector.state === 3 ? "Ready"
-                                        : "Running")
+                        text: getSystemStateText()
                         font.pixelSize: 16
                         color: "#BDC3C7"
                         horizontalAlignment: Text.AlignHCenter
@@ -774,12 +781,6 @@ Rectangle {
             triggerStatus.color = state ? "green" : "red";
         }
 
-        function onStateChanged(state) {
-            if (state === 3) {
-                postReadyTimer.start();
-            }
-        }
-
         function onPlotGenerated(imageData) {
             console.log("Received image data for display.");
             ultrasoundGraph.updateImage("data:image/png;base64," + imageData);
@@ -789,8 +790,9 @@ Rectangle {
         // Solution loading signal handlers
         function onSolutionFileLoaded(solutionName, message) {
             console.log("Solution loaded: " + solutionName + " - " + message);
-            statusText.text = "Status: " + message;
+            LIFUConnector.reset_configuration();
             applySolutionSettings();
+            statusText.text = getSystemStateText();
         }
 
         function onSolutionLoadError(errorMessage) {
@@ -802,6 +804,14 @@ Rectangle {
             console.log("Solution state changed - loaded:", LIFUConnector.solutionLoaded);
             if (!LIFUConnector.solutionLoaded) {
                 statusText.text = "Status: Solution cleared - controls are now editable";
+            }
+        }
+
+        function onStateChanged(state) {
+            statusText.text = getSystemStateText();
+
+            if (state === 3) {
+                postReadyTimer.start();
             }
         }
     }
