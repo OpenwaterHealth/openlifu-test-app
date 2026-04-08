@@ -13,7 +13,9 @@ Rectangle {
 
     // Properties to track solution loading state
     property bool solutionLoaded: LIFUConnector.solutionLoaded
-    property bool controlsReadOnly: solutionLoaded
+    property bool uiLockedAfterSend: false
+    property bool uiNeedsResend: false
+    property bool controlsReadOnly: solutionLoaded || uiLockedAfterSend
     property var txTemperatures: []
     property real hvPositiveRail: NaN
     property real hvNegativeRail: NaN
@@ -478,7 +480,7 @@ Rectangle {
                     Button {
                         text: "Load Solution"
                         Layout.fillWidth: true
-                        enabled: (!solutionLoaded) && (LIFUConnector.state <2)
+                        enabled: !controlsReadOnly
                         background: Rectangle {
                             color: "#3A3F4B"
                             radius: 4
@@ -499,6 +501,8 @@ Rectangle {
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
+                            uiLockedAfterSend = false
+                            uiNeedsResend = true
                             LIFUConnector.makeLoadedSolutionEditable()
                             statusOverrideText = ""
                         }
@@ -507,7 +511,7 @@ Rectangle {
                     Button {
                         text: "Send to Device"
                         Layout.fillWidth: true
-                        enabled: LIFUConnector.state === 1  // TX connected and not configured
+                        enabled: LIFUConnector.txConnected && LIFUConnector.state !== 4 && (!controlsReadOnly || uiNeedsResend)
                         background: Rectangle {
                             color: "#3A3F4B"
                             radius: 4
@@ -526,6 +530,8 @@ Rectangle {
                                  frequencyInput.text, "100", frequency,
                                  "buffer"
                             );
+                            uiLockedAfterSend = true
+                            uiNeedsResend = false
                             statusOverrideText = ""
                         }
                     }
@@ -539,7 +545,7 @@ Rectangle {
                     Button {
                         text: "Start"
                         Layout.fillWidth: true
-                        enabled: LIFUConnector.state === 3  // READY
+                        enabled: LIFUConnector.state === 3 && !uiNeedsResend  // READY and synced
                         background: Rectangle {
                             color: "#3A3F4B"
                             radius: 4
@@ -587,6 +593,8 @@ Rectangle {
                             frequencyInput.text = "400e3";
                             voltage.text = "12.0";
                             triggerPulseInterval.text = "0.1";
+                            uiLockedAfterSend = false;
+                            uiNeedsResend = false;
                             LIFUConnector.reset_configuration();
                         }
                     }
@@ -868,6 +876,8 @@ Rectangle {
             if (descriptor === "TX") {
                 txTemperatures = [];
                 configuredModuleCount = 0;
+                uiLockedAfterSend = false;
+                uiNeedsResend = false;
             }
             if (descriptor === "HV") {
                 hvPositiveRail = NaN;
@@ -889,6 +899,7 @@ Rectangle {
         // Solution loading signal handlers
         function onSolutionFileLoaded(solutionName, message) {
             console.log("Solution loaded: " + solutionName + " - " + message);
+            uiNeedsResend = true;
             applySolutionSettings();
             statusOverrideText = "";
         }
