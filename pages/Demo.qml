@@ -627,7 +627,7 @@ Rectangle {
             Rectangle {
                 id: messagePanel
                 width: 500
-                height: 150
+                height: 130
                 color: "#1E1E20"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -737,7 +737,7 @@ Rectangle {
             Rectangle {
                 id: statusPanel
                 width: 500
-                height: 170
+                height: 150
                 color: "#252525"
                 radius: 10
                 border.color: "#3E4E6F"
