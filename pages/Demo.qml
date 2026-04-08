@@ -830,13 +830,6 @@ Rectangle {
                                 color: "#BDC3C7"
                                 verticalAlignment: Text.AlignVCenter
                             }
-
-                            Text {
-                                text: getTxTemperatureText()
-                                font.pixelSize: 12
-                                color: "#9FB3C8"
-                                verticalAlignment: Text.AlignVCenter
-                            }
                         }
 
                         // HV LED
@@ -857,13 +850,6 @@ Rectangle {
                                 text: "HV"
                                 font.pixelSize: 16
                                 color: "#BDC3C7"
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            Text {
-                                text: getHvRailText()
-                                font.pixelSize: 12
-                                color: "#9FB3C8"
                                 verticalAlignment: Text.AlignVCenter
                             }
                         }
