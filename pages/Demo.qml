@@ -13,7 +13,7 @@ Rectangle {
 
     // Properties to track solution loading state
     property bool solutionLoaded: LIFUConnector.solutionLoaded
-    property bool controlsReadOnly: solutionLoaded || LIFUConnector.state >= 2
+    property bool controlsReadOnly: solutionLoaded
     property var txTemperatures: []
     property real hvPositiveRail: NaN
     property real hvNegativeRail: NaN
@@ -85,9 +85,7 @@ Rectangle {
     }
 
     function refreshStatusTelemetry() {
-        if (LIFUConnector.hvConnected) {
-            LIFUConnector.getMonitorVoltages()
-        }
+        // Disabled for stability: no active telemetry polling on Demo page.
     }
 
     function clearStatusTelemetry() {
@@ -501,7 +499,6 @@ Rectangle {
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
-                            LIFUConnector.reset_configuration()
                             LIFUConnector.makeLoadedSolutionEditable()
                             statusOverrideText = ""
                         }
@@ -524,7 +521,6 @@ Rectangle {
                                 zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text, 
                                 triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text, 
                                 triggerModeDropdown.currentText);
-                            configuredModuleCount = LIFUConnector.queryNumModulesConnected
                             LIFUConnector.generate_plot(
                                  xInput.text, yInput.text, zInput.text,
                                  frequencyInput.text, "100", frequency,
@@ -852,7 +848,7 @@ Rectangle {
         id: telemetryPollTimer
         interval: 1000
         repeat: true
-        running: LIFUConnector.state === 4
+        running: false
         onTriggered: {
             refreshStatusTelemetry()
         }
@@ -893,7 +889,6 @@ Rectangle {
         // Solution loading signal handlers
         function onSolutionFileLoaded(solutionName, message) {
             console.log("Solution loaded: " + solutionName + " - " + message);
-            LIFUConnector.reset_configuration();
             applySolutionSettings();
             statusOverrideText = "";
         }
@@ -910,26 +905,6 @@ Rectangle {
             }
         }
 
-        function onTemperatureTxUpdated(module, tx_temp, amb_temp) {
-            let updated = txTemperatures.slice()
-            while (updated.length <= module) {
-                updated.push(NaN)
-            }
-            updated[module] = tx_temp
-            txTemperatures = updated
-        }
-
-        function onNumModulesUpdated() {
-            configuredModuleCount = LIFUConnector.queryNumModulesConnected
-        }
-
-        function onMonVoltagesReceived(voltages) {
-            if (voltages.length >= 4) {
-                hvPositiveRail = voltages[0].converted_voltage
-                hvNegativeRail = voltages[3].converted_voltage
-            }
-        }
-
         function onStateChanged(state) {
             statusOverrideText = "";
 
@@ -938,10 +913,6 @@ Rectangle {
                 if (state === 3) {
                     postReadyTimer.start();
                 }
-            }
-
-            if (state >= 2 && configuredModuleCount <= 0) {
-                configuredModuleCount = LIFUConnector.queryNumModulesConnected
             }
 
             previousConnectorState = state;

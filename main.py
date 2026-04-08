@@ -75,7 +75,7 @@ def main():
     def handle_exit():
         """Stop monitoring and cancel pending tasks synchronously on app quit."""
         logger.info("Application closing...")
-        lifu_connector.shutdown()
+        lifu_connector.stop_monitoring()
 
         pending_tasks = [t for t in asyncio.all_tasks() if not t.done()]
         if pending_tasks:
