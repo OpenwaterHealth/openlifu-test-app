@@ -14,6 +14,11 @@ Rectangle {
     // Properties to track solution loading state
     property bool solutionLoaded: LIFUConnector.solutionLoaded
     property bool controlsReadOnly: solutionLoaded || LIFUConnector.state >= 2
+    property bool uiLockedAfterSend: false
+    property bool uiNeedsResend: false
+    property bool controlsReadOnly: solutionLoaded || uiLockedAfterSend
+    property int solutionConfigLabelWidth: 190
+    property int solutionConfigInputWidth: 160
     property var txTemperatures: []
     property real hvPositiveRail: NaN
     property real hvNegativeRail: NaN
@@ -226,6 +231,8 @@ Rectangle {
                         Text { 
                             text: "Voltage per Rail (+/-):" 
                             color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: voltageHover
@@ -239,7 +246,9 @@ Rectangle {
                         }
                         TextField { 
                             id: voltage 
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32 
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14 
                             text: "12.0"
                             color: controlsReadOnly ? "#BBB" : "white" 
@@ -264,6 +273,8 @@ Rectangle {
                         Text { 
                             text: "Frequency (Hz):" 
                             color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: frequencyHover
@@ -277,7 +288,9 @@ Rectangle {
                         }
                         TextField { 
                             id: frequencyInput
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "400e3"
                             color: controlsReadOnly ? "#BBB" : "white" 
@@ -292,6 +305,8 @@ Rectangle {
                         Text { 
                             text: "Duration (S):" 
                             color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: durationHover
@@ -305,7 +320,9 @@ Rectangle {
                         }
                         TextField { 
                             id: durationInput
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "2e-4"
                             color: controlsReadOnly ? "#BBB" : "white" 
@@ -329,6 +346,8 @@ Rectangle {
                         Text { 
                             text: "Trigger Mode:" 
                             color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: triggerModeHover
@@ -343,8 +362,9 @@ Rectangle {
 
 						ComboBox {
 							id: triggerModeDropdown
-							Layout.preferredWidth: 150
+                            Layout.preferredWidth: solutionConfigInputWidth
 							Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
 							model: ["Single", "Continuous", "Sequence"]
                             currentIndex: 1
                             enabled: !controlsReadOnly
@@ -365,6 +385,8 @@ Rectangle {
                         Text { 
                             text: "Pulse Interval (S):" 
                             color: pulseIntervalActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: pulseIntervalHover
@@ -378,7 +400,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseInterval
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "0.1"
                             color: controlsReadOnly ? (pulseIntervalActive ? "#BBB" : "#777") : (pulseIntervalActive ? "white" : "#888")
@@ -394,6 +418,8 @@ Rectangle {
                         Text { 
                             text: "Pulses per Pulse Train:" 
                             color: pulseCountActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: pulseCountHover
@@ -407,7 +433,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseCount
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
                             color: controlsReadOnly ? (pulseCountActive ? "#BBB" : "#777") : (pulseCountActive ? "white" : "#888")
@@ -423,6 +451,8 @@ Rectangle {
                         Text { 
                             text: trainIntervalTooShort ? "Pulse Train Interval (S)*:" : "Pulse Train Interval (S): "
                             color: trainIntervalActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: labelHover
@@ -436,7 +466,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseTrainInterval
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "0"
                             color: controlsReadOnly ? (trainIntervalActive ? "#BBB" : "#777") : (trainIntervalActive ? "white" : "#888")
@@ -452,6 +484,8 @@ Rectangle {
                         Text { 
                             text: "Pulse Train Count:" 
                             color: trainCountActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: trainCountHover
@@ -465,7 +499,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseTrainCount
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
                             color: controlsReadOnly ? (trainCountActive ? "#BBB" : "#777") : (trainCountActive ? "white" : "#888")
