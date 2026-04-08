@@ -18,11 +18,7 @@ Rectangle {
     property bool controlsReadOnly: solutionLoaded || uiLockedAfterSend
     property int solutionConfigLabelWidth: 190
     property int solutionConfigInputWidth: 160
-    property var txTemperatures: []
-    property real hvPositiveRail: NaN
-    property real hvNegativeRail: NaN
     property string statusOverrideText: ""
-    property int configuredModuleCount: 0
     property int previousConnectorState: LIFUConnector.state
     
     // Properties to track field activity based on trigger mode
@@ -59,43 +55,6 @@ Rectangle {
                             : LIFUConnector.state === 2 ? "Configured"
                             : LIFUConnector.state === 3 ? "Ready"
                             : "Running")
-    }
-
-    function getTxTemperatureText() {
-        if (!LIFUConnector.txConnected) {
-            return "Temp [--.-]"
-        }
-
-        let displayCount = Math.max(configuredModuleCount, txTemperatures.length)
-        if (displayCount === 0) {
-            return "Temp [--.-]"
-        }
-
-        let displayValues = []
-        for (let index = 0; index < displayCount; index++) {
-            let temp = txTemperatures[index]
-            displayValues.push(typeof temp === "number" && !isNaN(temp) ? temp.toFixed(1) : "--")
-        }
-
-        return "Temp [" + displayValues.join(", ") + "] C"
-    }
-
-    function getHvRailText() {
-        if (!LIFUConnector.hvConnected || isNaN(hvPositiveRail) || isNaN(hvNegativeRail)) {
-            return "Rails +--.-- / ----.-- V"
-        }
-
-        return "Rails +" + hvPositiveRail.toFixed(2) + " / -" + Math.abs(hvNegativeRail).toFixed(2) + " V"
-    }
-
-    function refreshStatusTelemetry() {
-        // Disabled for stability: no active telemetry polling on Demo page.
-    }
-
-    function clearStatusTelemetry() {
-        txTemperatures = []
-        hvPositiveRail = NaN
-        hvNegativeRail = NaN
     }
 
     function getIndicatorColor(isConnected) {
@@ -603,7 +562,6 @@ Rectangle {
                         }
                         onClicked: {
                             console.log("Stopping Sonication...");
-                            clearStatusTelemetry()
                             LIFUConnector.stop_sonication();
                             // LIFUConnector.setAsyncMode(false)
                         }
@@ -871,16 +829,6 @@ Rectangle {
         }
     }
 
-    Timer {
-        id: telemetryPollTimer
-        interval: 1000
-        repeat: true
-        running: false
-        onTriggered: {
-            refreshStatusTelemetry()
-        }
-    }
-
     // **Connections for LIFUConnector signals**
     Connections {
         target: LIFUConnector
@@ -893,14 +841,8 @@ Rectangle {
         function onSignalDisconnected(descriptor, port) {
             console.log(descriptor + " disconnected from " + port);
             if (descriptor === "TX") {
-                txTemperatures = [];
-                configuredModuleCount = 0;
                 uiLockedAfterSend = false;
                 uiNeedsResend = false;
-            }
-            if (descriptor === "HV") {
-                hvPositiveRail = NaN;
-                hvNegativeRail = NaN;
             }
             statusOverrideText = ""
         }
@@ -939,7 +881,6 @@ Rectangle {
             statusOverrideText = "";
 
             if (previousConnectorState === 4 && state !== 4) {
-                clearStatusTelemetry();
                 if (state === 3) {
                     postReadyTimer.start();
                 }
