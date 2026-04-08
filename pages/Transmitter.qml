@@ -876,6 +876,10 @@ Rectangle {
                                                 text: modules[moduleIndex] ? modules[moduleIndex].deviceId : "N/A"
                                                 readOnly: true
                                                 color: "#3498DB"; font.pixelSize: 14
+                                                leftPadding: 0
+                                                rightPadding: 0
+                                                topPadding: 0
+                                                bottomPadding: 0
                                                 background: Rectangle {
                                                     color: "transparent"
                                                     border.color: "transparent"
@@ -891,6 +895,10 @@ Rectangle {
                                                 text: modules[moduleIndex] ? modules[moduleIndex].firmwareVersion : "N/A"
                                                 readOnly: true
                                                 color: "#2ECC71"; font.pixelSize: 14
+                                                leftPadding: 0
+                                                rightPadding: 0
+                                                topPadding: 0
+                                                bottomPadding: 0
                                                 background: Rectangle {
                                                     color: "transparent"
                                                     border.color: "transparent"
