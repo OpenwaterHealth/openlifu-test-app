@@ -80,7 +80,7 @@ jobs:
         shell: bash -el {0}
         run: |
           conda activate olifu
-          python -m PyInstaller -y openwater.spec
+          python -m PyInstaller -y OpenLIFU-TestApp.spec
 
       # ── package ──────────────────────────────────────────────────
       - name: Determine version tag
