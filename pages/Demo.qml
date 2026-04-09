@@ -976,14 +976,11 @@ Rectangle {
 
             if (previousConnectorState === 4 && state !== 4) {
                 clearStatusTelemetry();
+                postReadyTimer.stop();
             }
 
             if (state >= 2 && configuredModuleCount <= 0) {
                 configuredModuleCount = LIFUConnector.queryNumModulesConnected
-            }
-
-            if (state === 3) {
-                postReadyTimer.start();
             }
 
             previousConnectorState = state;
