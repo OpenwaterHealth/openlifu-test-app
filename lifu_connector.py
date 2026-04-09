@@ -3,6 +3,14 @@ from turtle import mode
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
 import os
+import sys
+
+def _base_path():
+    """Return the directory containing bundled data files.
+    Works in both frozen (PyInstaller) and normal Python execution."""
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
 import threading
 import numpy as np
 import re
@@ -373,7 +381,7 @@ class LIFUConnector(QObject):
                     "amplitude": 1.0
                     }
             focus = np.array([float(xInput), float(yInput), float(zInput)])
-            element_positions = load_element_positions_from_file(fR".\pinmap_{num_modules}x.json")
+            element_positions = load_element_positions_from_file(os.path.join(_base_path(), f"pinmap_{num_modules}x.json"))
             numelements = element_positions.shape[0]
             print(f"{num_modules}x config file loaded")
             distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
