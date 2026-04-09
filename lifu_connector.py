@@ -425,11 +425,10 @@ class LIFUConnector(QObject):
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
         if self._state == READY:
-            self.interface.hvcontroller.turn_hv_on()
-            if self.interface.txdevice.start_trigger():
+            if self.interface.start_sonication():
                 self._state = RUNNING
             else:
-                logger.info("Failed to start trigger")
+                raise RuntimeError("Failed to start sonication")
             self.stateChanged.emit(self._state)
             logger.info("Sonication started")
 
@@ -440,7 +439,7 @@ class LIFUConnector(QObject):
             if self.interface.stop_sonication():
                 self._state = READY
             else:
-                logger.info("Failed to stop trigger")
+                raise RuntimeError("Failed to stop sonication")
             self.stateChanged.emit(self._state)
             logger.info("Sonication stopped")
 
