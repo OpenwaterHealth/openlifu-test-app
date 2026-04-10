@@ -107,6 +107,22 @@ Rectangle {
         hvNegativeRail = NaN
     }
 
+    // Keep a button visually depressed while its click work executes.
+    function runWithButtonFeedback(button, action) {
+        if (!button || !action || button.visualPressed) {
+            return
+        }
+
+        button.visualPressed = true
+        Qt.callLater(function() {
+            try {
+                action()
+            } finally {
+                button.visualPressed = false
+            }
+        })
+    }
+
     function getIndicatorColor(isConnected) {
         if (!isConnected) {
             return "#C0392B"
@@ -631,32 +647,40 @@ Rectangle {
                     spacing: 10
 
                     Button {
+                        id: loadSolutionButton
+                        property bool visualPressed: false
                         text: "Load Solution"
                         Layout.fillWidth: true
-                        enabled: (!solutionLoaded) && (LIFUConnector.state <2)
+                        enabled: (!solutionLoaded) && (LIFUConnector.state <2) && !visualPressed
                         background: Rectangle {
-                            color: "#3A3F4B"
+                            color: (loadSolutionButton.down || loadSolutionButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
-                            solutionFileDialog.open()
+                            runWithButtonFeedback(loadSolutionButton, function() {
+                                solutionFileDialog.open()
+                            })
                         }
                     }
 
                     Button {
+                        id: editSolutionButton
+                        property bool visualPressed: false
                         text: "Edit Solution"
                         Layout.fillWidth: true
-                        enabled: controlsReadOnly && (LIFUConnector.state <4)
+                        enabled: controlsReadOnly && (LIFUConnector.state <4) && !visualPressed
                         background: Rectangle {
-                            color: "#2E86AB"
+                            color: (editSolutionButton.down || editSolutionButton.visualPressed) ? "#256F8C" : "#2E86AB"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
-                            LIFUConnector.reset_configuration()
-                            LIFUConnector.makeLoadedSolutionEditable()
-                            statusOverrideText = ""
+                            runWithButtonFeedback(editSolutionButton, function() {
+                                LIFUConnector.reset_configuration()
+                                LIFUConnector.makeLoadedSolutionEditable()
+                                statusOverrideText = ""
+                            })
                         }
                     }
                 }
@@ -795,80 +819,96 @@ Rectangle {
                         spacing: 10
 
                         Button {
+                            id: configureButton
+                            property bool visualPressed: false
                             text: "Configure"
                             Layout.fillWidth: true
-                            enabled: LIFUConnector.state === 1  // TX connected and not configured
+                            enabled: (LIFUConnector.state === 1) && !visualPressed  // TX connected and not configured
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (configureButton.down || configureButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
-                                LIFUConnector.configure_transmitter(xInput.text, yInput.text,
-                                    zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
-                                    triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
-                                    triggerModeDropdown.currentText);
-                                configuredModuleCount = LIFUConnector.queryNumModulesConnected
-                                LIFUConnector.generate_plot(
-                                     xInput.text, yInput.text, zInput.text,
-                                     frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                                     triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                                     durationInput.text, "buffer"
-                                );
-                                statusOverrideText = ""
+                                runWithButtonFeedback(configureButton, function() {
+                                    var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
+                                    LIFUConnector.configure_transmitter(xInput.text, yInput.text,
+                                        zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
+                                        triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
+                                        triggerModeDropdown.currentText);
+                                    configuredModuleCount = LIFUConnector.queryNumModulesConnected
+                                    LIFUConnector.generate_plot(
+                                         xInput.text, yInput.text, zInput.text,
+                                         frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                                         triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                                         durationInput.text, "buffer"
+                                    );
+                                    statusOverrideText = ""
+                                })
                             }
                         }
 
                         Button {
+                            id: startButton
+                            property bool visualPressed: false
                             text: "Start"
                             Layout.fillWidth: true
-                            enabled: LIFUConnector.state === 3  // READY
+                            enabled: (LIFUConnector.state === 3) && !visualPressed  // READY
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (startButton.down || startButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                console.log("Starting Sonication...");
-                                LIFUConnector.start_sonication();
+                                runWithButtonFeedback(startButton, function() {
+                                    console.log("Starting Sonication...");
+                                    LIFUConnector.start_sonication();
+                                })
                             }
                         }
 
                         Button {
+                            id: stopButton
+                            property bool visualPressed: false
                             text: "Stop"
                             Layout.fillWidth: true
-                            enabled: LIFUConnector.state === 4  // RUNNING
+                            enabled: (LIFUConnector.state === 4) && !visualPressed  // RUNNING
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (stopButton.down || stopButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                console.log("Stopping Sonication...");
-                                clearStatusTelemetry()
-                                LIFUConnector.stop_sonication();
+                                runWithButtonFeedback(stopButton, function() {
+                                    console.log("Stopping Sonication...");
+                                    clearStatusTelemetry()
+                                    LIFUConnector.stop_sonication();
+                                })
                             }
                         }
 
                         Button {
+                            id: resetButton
+                            property bool visualPressed: false
                             text: "Reset"
                             Layout.fillWidth: true
-                            enabled: (LIFUConnector.state > 1 && LIFUConnector.state != 4)  // CONFIGURED
+                            enabled: (LIFUConnector.state > 1 && LIFUConnector.state != 4) && !visualPressed  // CONFIGURED
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (resetButton.down || resetButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                console.log("Resetting parameters...");
-                                xInput.text = "0";
-                                yInput.text = "0";
-                                zInput.text = "25";
-                                frequencyInput.text = "400e3";
-                                voltage.text = "12.0";
-                                triggerPulseInterval.text = "0.1";
-                                LIFUConnector.reset_configuration();
+                                runWithButtonFeedback(resetButton, function() {
+                                    console.log("Resetting parameters...");
+                                    xInput.text = "0";
+                                    yInput.text = "0";
+                                    zInput.text = "25";
+                                    frequencyInput.text = "400e3";
+                                    voltage.text = "12.0";
+                                    triggerPulseInterval.text = "0.1";
+                                    LIFUConnector.reset_configuration();
+                                })
                             }
                         }
                     }
