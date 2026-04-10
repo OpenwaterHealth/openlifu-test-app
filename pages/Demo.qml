@@ -14,6 +14,10 @@ Rectangle {
     // Properties to track solution loading state
     property bool solutionLoaded: LIFUConnector.solutionLoaded
     property bool controlsReadOnly: solutionLoaded || LIFUConnector.state >= 2
+    property bool uiLockedAfterSend: false
+    property bool uiNeedsResend: false
+    property int solutionConfigLabelWidth: 190
+    property int solutionConfigInputWidth: 160
     property var txTemperatures: []
     property real hvPositiveRail: NaN
     property real hvNegativeRail: NaN
@@ -148,6 +152,12 @@ Rectangle {
             
             console.log("Converted file path: " + filePath)
             LIFUConnector.loadSolutionFromFile(filePath)
+            LIFUConnector.generate_plot(
+                    xInput.text, yInput.text, zInput.text,
+                    frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                    triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                    durationInput.text, "buffer"
+            );
         }
     }
 
@@ -204,7 +214,7 @@ Rectangle {
         Rectangle {
             id: inputContainer
             width: 500
-            height: 620
+            height: 630
             color: "#1E1E20"
             radius: 10
             border.color: "#3E4E6F"
@@ -216,44 +226,6 @@ Rectangle {
                 spacing: 15
 
                 GroupBox {
-                    title: "High Voltage"
-                    Layout.fillWidth: true
-
-                    GridLayout {
-                        columns: 2
-                        width: parent.width
-
-                        Text { 
-                            text: "Voltage per Rail (+/-):" 
-                            color: "white" 
-                            
-                            HoverHandler {
-                                id: voltageHover
-                            }
-                            
-                            ToolTip {
-                                visible: voltageHover.hovered
-                                text: "High voltage setting applied to the ultrasound transducer.\nPeak to Peak Voltage will be double this value"
-                                delay: 500
-                            }
-                        }
-                        TextField { 
-                            id: voltage 
-                            Layout.preferredHeight: 32 
-                            font.pixelSize: 14 
-                            text: "12.0"
-                            color: controlsReadOnly ? "#BBB" : "white" 
-                            enabled: !controlsReadOnly
-                            background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
-                                radius: 4
-                            }
-                        }
-                    }
-                }
-
-                GroupBox {
                     title: "Pulse Profile"
                     Layout.fillWidth: true
 
@@ -261,9 +233,43 @@ Rectangle {
                         columns: 2
                         width: parent.width
 
+                        Text {
+                            text: "Voltage per Rail (+/-):"
+                            color: "white"
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
+
+                            HoverHandler {
+                                id: voltageHover
+                            }
+
+                            ToolTip {
+                                visible: voltageHover.hovered
+                                text: "High voltage setting applied to the ultrasound transducer.\nPeak to Peak Voltage will be double this value"
+                                delay: 500
+                            }
+                        }
+                        TextField {
+                            id: voltage
+                            Layout.preferredWidth: solutionConfigInputWidth
+                            Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
+                            font.pixelSize: 14
+                            text: "12.0"
+                            color: controlsReadOnly ? "#BBB" : "white"
+                            enabled: !controlsReadOnly
+                            background: Rectangle {
+                                color: controlsReadOnly ? "#333" : "#222"
+                                border.color: controlsReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                        }
+
                         Text { 
                             text: "Frequency (Hz):" 
                             color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: frequencyHover
@@ -277,7 +283,9 @@ Rectangle {
                         }
                         TextField { 
                             id: frequencyInput
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "400e3"
                             color: controlsReadOnly ? "#BBB" : "white" 
@@ -292,6 +300,8 @@ Rectangle {
                         Text { 
                             text: "Duration (S):" 
                             color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: durationHover
@@ -305,7 +315,9 @@ Rectangle {
                         }
                         TextField { 
                             id: durationInput
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "2e-4"
                             color: controlsReadOnly ? "#BBB" : "white" 
@@ -329,6 +341,8 @@ Rectangle {
                         Text { 
                             text: "Trigger Mode:" 
                             color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: triggerModeHover
@@ -343,8 +357,9 @@ Rectangle {
 
 						ComboBox {
 							id: triggerModeDropdown
-							Layout.preferredWidth: 150
+                            Layout.preferredWidth: solutionConfigInputWidth
 							Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
 							model: ["Single", "Continuous", "Sequence"]
                             currentIndex: 1
                             enabled: !controlsReadOnly
@@ -365,6 +380,8 @@ Rectangle {
                         Text { 
                             text: "Pulse Interval (S):" 
                             color: pulseIntervalActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: pulseIntervalHover
@@ -378,7 +395,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseInterval
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "0.1"
                             color: controlsReadOnly ? (pulseIntervalActive ? "#BBB" : "#777") : (pulseIntervalActive ? "white" : "#888")
@@ -394,6 +413,8 @@ Rectangle {
                         Text { 
                             text: "Pulses per Pulse Train:" 
                             color: pulseCountActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: pulseCountHover
@@ -407,7 +428,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseCount
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
                             color: controlsReadOnly ? (pulseCountActive ? "#BBB" : "#777") : (pulseCountActive ? "white" : "#888")
@@ -423,6 +446,8 @@ Rectangle {
                         Text { 
                             text: trainIntervalTooShort ? "Pulse Train Interval (S)*:" : "Pulse Train Interval (S): "
                             color: trainIntervalActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: labelHover
@@ -436,7 +461,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseTrainInterval
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "0"
                             color: controlsReadOnly ? (trainIntervalActive ? "#BBB" : "#777") : (trainIntervalActive ? "white" : "#888")
@@ -452,6 +479,8 @@ Rectangle {
                         Text { 
                             text: "Pulse Train Count:" 
                             color: trainCountActive ? "white" : "#888" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
                             
                             HoverHandler {
                                 id: trainCountHover
@@ -465,7 +494,9 @@ Rectangle {
                         }
                         TextField { 
                             id: triggerPulseTrainCount
+                            Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
                             color: controlsReadOnly ? (trainCountActive ? "#BBB" : "#777") : (trainCountActive ? "white" : "#888")
@@ -474,6 +505,121 @@ Rectangle {
                                 color: controlsReadOnly ? "#333" : "#222"
                                 border.color: controlsReadOnly ? "#777" : "#999"
                                 radius: 4
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: solutionLoaded ? "Beam Focus (Delays and Apodizations Loaded Directly from Solution)" : "Beam Focus"
+                    Layout.fillWidth: true
+
+                    RowLayout {
+                        width: parent.width
+                        spacing: 16
+
+                        RowLayout {
+                            spacing: 6
+
+                            Text {
+                                text: "Lateral (X):"
+                                color: "white"
+
+                                HoverHandler {
+                                    id: xPositionHover
+                                }
+
+                                ToolTip {
+                                    visible: xPositionHover.hovered
+                                    text: "Lateral beam focus position (mm)"
+                                    delay: 500
+                                }
+                            }
+                            TextField {
+                                id: xInput
+                                Layout.preferredWidth: 56
+                                Layout.minimumWidth: 56
+                                Layout.maximumWidth: 56
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 14
+                                text: "0"
+                                color: controlsReadOnly ? "#BBB" : "white"
+                                enabled: !controlsReadOnly
+                                background: Rectangle {
+                                    color: controlsReadOnly ? "#333" : "#222"
+                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    radius: 4
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            spacing: 6
+
+                            Text {
+                                text: "Elevation (Y):"
+                                color: "white"
+
+                                HoverHandler {
+                                    id: yPositionHover
+                                }
+
+                                ToolTip {
+                                    visible: yPositionHover.hovered
+                                    text: "Elevational beam focus position (mm)"
+                                    delay: 500
+                                }
+                            }
+                            TextField {
+                                id: yInput
+                                Layout.preferredWidth: 56
+                                Layout.minimumWidth: 56
+                                Layout.maximumWidth: 56
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 14
+                                text: "0"
+                                color: controlsReadOnly ? "#BBB" : "white"
+                                enabled: !controlsReadOnly
+                                background: Rectangle {
+                                    color: controlsReadOnly ? "#333" : "#222"
+                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    radius: 4
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            spacing: 6
+
+                            Text {
+                                text: "Axial (Z):"
+                                color: "white"
+
+                                HoverHandler {
+                                    id: zPositionHover
+                                }
+
+                                ToolTip {
+                                    visible: zPositionHover.hovered
+                                    text: "Axial beam focus position (mm)"
+                                    delay: 500
+                                }
+                            }
+                            TextField {
+                                id: zInput
+                                Layout.preferredWidth: 56
+                                Layout.minimumWidth: 56
+                                Layout.maximumWidth: 56
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 14
+                                text: "25"
+                                color: controlsReadOnly ? "#BBB" : "white"
+                                enabled: !controlsReadOnly
+                                background: Rectangle {
+                                    color: controlsReadOnly ? "#333" : "#222"
+                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    radius: 4
+                                }
                             }
                         }
                     }
@@ -513,105 +659,23 @@ Rectangle {
                             statusOverrideText = ""
                         }
                     }
-
-                    Button {
-                        text: "Send to Device"
-                        Layout.fillWidth: true
-                        enabled: LIFUConnector.state === 1  // TX connected and not configured
-                        background: Rectangle {
-                            color: "#3A3F4B"
-                            radius: 4
-                            border.color: "#BDC3C7"
-                        }
-                        onClicked: {
-                            
-                            var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
-                            LIFUConnector.configure_transmitter(xInput.text, yInput.text, 
-                                zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text, 
-                                triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text, 
-                                triggerModeDropdown.currentText);
-                            configuredModuleCount = LIFUConnector.queryNumModulesConnected
-                            LIFUConnector.generate_plot(
-                                 xInput.text, yInput.text, zInput.text,
-                                 frequencyInput.text, "100", frequency,
-                                 "buffer"
-                            );
-                            statusOverrideText = ""
-                        }
-                    }
-                }
-
-                // Second row of buttons
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
-
-                    Button {
-                        text: "Start"
-                        Layout.fillWidth: true
-                        enabled: LIFUConnector.state === 3  // READY
-                        background: Rectangle {
-                            color: "#3A3F4B"
-                            radius: 4
-                            border.color: "#BDC3C7"
-                        }
-                        onClicked: {
-                            console.log("Starting Sonication...");
-                            
-                            // LIFUConnector.setAsyncMode(true)
-                            LIFUConnector.start_sonication();
-                        }
-                    }
-
-                    Button {
-                        text: "Stop"
-                        Layout.fillWidth: true
-                        enabled: LIFUConnector.state === 4  // RUNNING
-                        background: Rectangle {
-                            color: "#3A3F4B"
-                            radius: 4
-                            border.color: "#BDC3C7"
-                        }
-                        onClicked: {
-                            console.log("Stopping Sonication...");
-                            clearStatusTelemetry()
-                            LIFUConnector.stop_sonication();
-                            // LIFUConnector.setAsyncMode(false)
-                        }
-                    }
-
-                    Button {
-                        text: "Reset"
-                        Layout.fillWidth: true
-                        enabled: (LIFUConnector.state > 1 && LIFUConnector.state != 4)  // CONFIGURED
-                        background: Rectangle {
-                            color: "#3A3F4B"
-                            radius: 4
-                            border.color: "#BDC3C7"
-                        }
-                        onClicked: {
-                            console.log("Resetting parameters...");
-                            xInput.text = "0";
-                            yInput.text = "0";
-                            zInput.text = "25";
-                            frequencyInput.text = "400e3";
-                            voltage.text = "12.0";
-                            triggerPulseInterval.text = "0.1";
-                            LIFUConnector.reset_configuration();
-                        }
-                    }
                 }
             }
         }
 
-        // RIGHT COLUMN (Status Panel + Graph)
+        // RIGHT COLUMN (Graph + Status Panel)
         ColumnLayout {
+            width: 500
+            height: 630
             spacing: 20
-			
+
             Rectangle {
                 id: graphContainer
-                width: 500
-                height: 300
+                Layout.fillWidth: true
+                Layout.fillHeight: false
+                Layout.preferredHeight: 440
+                Layout.maximumHeight: 460
+                Layout.minimumHeight: 320
                 color: "#1E1E20"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -634,128 +698,20 @@ Rectangle {
                     }
                 }
             }
-            
+
+            // Status Panel (Connection Indicators + Controls)
             Rectangle {
-                id: messagePanel
-                width: 500
-                height: 150
-                color: "#1E1E20"
+                id: statusPanel
+                Layout.fillWidth: true
+                Layout.preferredHeight: 170
+                color: "#252525"
                 radius: 10
                 border.color: "#3E4E6F"
                 border.width: 2
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 20
-                    spacing: 15
-
-                    GroupBox {
-                        title: solutionLoaded ? "Beam Focus (Delays and Apodizations Loaded Directly from Solution)" : "Beam Focus"
-                        Layout.fillWidth: true
-
-                        GridLayout {
-                            columns: 6
-                            width: parent.width
-
-                            Text { 
-                                text: "Lateral (X):" 
-                                color: "white" 
-                                
-                                HoverHandler {
-                                    id: xPositionHover
-                                }
-                                
-                                ToolTip {
-                                    visible: xPositionHover.hovered
-                                    text: "Lateral beam focus position (mm)"
-                                    delay: 500
-                                }
-                            }
-                            TextField { 
-                                id: xInput
-                                Layout.preferredHeight: 32
-                                font.pixelSize: 14
-                                text: "0"
-                                color: controlsReadOnly ? "#BBB" : "white" 
-                                enabled: !controlsReadOnly
-                                background: Rectangle {
-                                    color: controlsReadOnly ? "#333" : "#222"
-                                    border.color: controlsReadOnly ? "#777" : "#999"
-                                    radius: 4
-                                }
-                            }
-
-                            Text { 
-                                text: "Elevation (Y):" 
-                                color: "white" 
-                                
-                                HoverHandler {
-                                    id: yPositionHover
-                                }
-                                
-                                ToolTip {
-                                    visible: yPositionHover.hovered
-                                    text: "Elevational beam focus position (mm)"
-                                    delay: 500
-                                }
-                            }
-                            TextField { 
-                                id: yInput
-                                Layout.preferredHeight: 32
-                                font.pixelSize: 14
-                                text: "0"
-                                color: controlsReadOnly ? "#BBB" : "white" 
-                                enabled: !controlsReadOnly
-                                background: Rectangle {
-                                    color: controlsReadOnly ? "#333" : "#222"
-                                    border.color: controlsReadOnly ? "#777" : "#999"
-                                    radius: 4
-                                }
-                            }
-
-                            Text { 
-                                text: "Axial (Z):" 
-                                color: "white" 
-                                
-                                HoverHandler {
-                                    id: zPositionHover
-                                }
-                                
-                                ToolTip {
-                                    visible: zPositionHover.hovered
-                                    text: "Axial beam focus position (mm)"
-                                    delay: 500
-                                }
-                            }
-                            TextField { 
-                                id: zInput
-                                Layout.preferredHeight: 32
-                                font.pixelSize: 14
-                                text: "25"
-                                color: controlsReadOnly ? "#BBB" : "white" 
-                                enabled: !controlsReadOnly
-                                background: Rectangle {
-                                    color: controlsReadOnly ? "#333" : "#222"
-                                    border.color: controlsReadOnly ? "#777" : "#999"
-                                    radius: 4
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-			// Status Panel (Connection Indicators)
-            Rectangle {
-                id: statusPanel
-                width: 500
-                height: 170
-                color: "#252525"
-                radius: 10
-                border.color: "#3E4E6F"
-                border.width: 2
-
-                Column {
-                    anchors.centerIn: parent
+                    anchors.margins: 12
                     spacing: 10
 
                     // Connection status text
@@ -765,7 +721,7 @@ Rectangle {
                         font.pixelSize: 16
                         color: getIndicatorColor(LIFUConnector.txConnected && LIFUConnector.hvConnected)
                         horizontalAlignment: Text.AlignHCenter
-                        anchors.horizontalCenter: parent.horizontalCenter
+                        Layout.alignment: Qt.AlignHCenter
                         SequentialAnimation on opacity {
                             running: LIFUConnector.state === 4
                             loops: Animation.Infinite
@@ -777,12 +733,11 @@ Rectangle {
                     // Connection Indicators (TX, HV)
                     RowLayout {
                         spacing: 20
-                        anchors.horizontalCenter: parent.horizontalCenter
+                        Layout.alignment: Qt.AlignHCenter
 
                         // TX LED
                         RowLayout {
                             spacing: 5
-                            // LED circle
                             Rectangle {
                                 id: txIndicator
                                 width: 20
@@ -792,7 +747,6 @@ Rectangle {
                                 border.color: "black"
                                 border.width: 1
                             }
-                            // Label for TX
                             Text {
                                 text: "TX"
                                 font.pixelSize: 16
@@ -811,7 +765,6 @@ Rectangle {
                         // HV LED
                         RowLayout {
                             spacing: 5
-                            // LED circle
                             Rectangle {
                                 id: hvIndicator
                                 width: 20
@@ -821,7 +774,6 @@ Rectangle {
                                 border.color: "black"
                                 border.width: 1
                             }
-                            // Label for HV
                             Text {
                                 text: "HV"
                                 font.pixelSize: 16
@@ -834,6 +786,89 @@ Rectangle {
                                 font.pixelSize: 12
                                 color: "#9FB3C8"
                                 verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        Button {
+                            text: "Configure"
+                            Layout.fillWidth: true
+                            enabled: LIFUConnector.state === 1  // TX connected and not configured
+                            background: Rectangle {
+                                color: "#3A3F4B"
+                                radius: 4
+                                border.color: "#BDC3C7"
+                            }
+                            onClicked: {
+                                var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
+                                LIFUConnector.configure_transmitter(xInput.text, yInput.text,
+                                    zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
+                                    triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
+                                    triggerModeDropdown.currentText);
+                                configuredModuleCount = LIFUConnector.queryNumModulesConnected
+                                LIFUConnector.generate_plot(
+                                     xInput.text, yInput.text, zInput.text,
+                                     frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                                     triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                                     durationInput.text, "buffer"
+                                );
+                                statusOverrideText = ""
+                            }
+                        }
+
+                        Button {
+                            text: "Start"
+                            Layout.fillWidth: true
+                            enabled: LIFUConnector.state === 3  // READY
+                            background: Rectangle {
+                                color: "#3A3F4B"
+                                radius: 4
+                                border.color: "#BDC3C7"
+                            }
+                            onClicked: {
+                                console.log("Starting Sonication...");
+                                LIFUConnector.start_sonication();
+                            }
+                        }
+
+                        Button {
+                            text: "Stop"
+                            Layout.fillWidth: true
+                            enabled: LIFUConnector.state === 4  // RUNNING
+                            background: Rectangle {
+                                color: "#3A3F4B"
+                                radius: 4
+                                border.color: "#BDC3C7"
+                            }
+                            onClicked: {
+                                console.log("Stopping Sonication...");
+                                clearStatusTelemetry()
+                                LIFUConnector.stop_sonication();
+                            }
+                        }
+
+                        Button {
+                            text: "Reset"
+                            Layout.fillWidth: true
+                            enabled: (LIFUConnector.state > 1 && LIFUConnector.state != 4)  // CONFIGURED
+                            background: Rectangle {
+                                color: "#3A3F4B"
+                                radius: 4
+                                border.color: "#BDC3C7"
+                            }
+                            onClicked: {
+                                console.log("Resetting parameters...");
+                                xInput.text = "0";
+                                yInput.text = "0";
+                                zInput.text = "25";
+                                frequencyInput.text = "400e3";
+                                voltage.text = "12.0";
+                                triggerPulseInterval.text = "0.1";
+                                LIFUConnector.reset_configuration();
                             }
                         }
                     }
@@ -941,14 +976,11 @@ Rectangle {
 
             if (previousConnectorState === 4 && state !== 4) {
                 clearStatusTelemetry();
+                postReadyTimer.stop();
             }
 
             if (state >= 2 && configuredModuleCount <= 0) {
                 configuredModuleCount = LIFUConnector.queryNumModulesConnected
-            }
-
-            if (state === 3) {
-                postReadyTimer.start();
             }
 
             previousConnectorState = state;

@@ -147,7 +147,7 @@ Rectangle {
 
             // Minimize Button
             IconWindowButton {
-                buttonIcon: "\ue9e4" // Minimize icon
+                iconType: 1
                 Layout.alignment: Qt.AlignHCenter
                 onClicked: {
                     window.showMinimized(); // Minimize the window
@@ -169,7 +169,7 @@ Rectangle {
 */
             // Exit Button
             IconWindowButton {
-                buttonIcon: "\ue9b3" // Exit (close) icon
+                iconType: 2
                 Layout.alignment: Qt.AlignHCenter
                 onClicked: {
                     Qt.quit(); // Close the application

@@ -245,6 +245,10 @@ ROW_FW_VER = 'B.5'
 ROW_VOLTAGE = 'E.1'
 
 logger = logging.getLogger(__name__)
+ch = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
 def read_test_report(filename: str) -> pd.DataFrame:
     sections = [{"name": "info", "start_row": "A"},
@@ -282,8 +286,7 @@ def report_to_matrix_dict(report_df: pd.DataFrame, focal_gain_lut=FOCAL_GAIN_LUT
     freq_df["Frequency"] = freq_df['Item'].apply(lambda x: float(re.search(r"(?<=^PNP \()\d+(?= kHz\)$)", x).group(0)))
     freq_df['focal_gain'] = freq_df['Frequency'].apply(lambda f: focal_gain_lut.interp(f0=f*1e3, crosstalk=matrix_dict['crosstalk_frac']).item())
     freq_df['Sensitivity'] = freq_df['PNP'].astype(float)*1e6/freq_df['focal_gain']/voltage
-    matrix_dict['sensitivity'] = {'freq_Hz':[float(f)*1e3 for f in freq_df['Frequency']],
-                                  'values_Pa_per_V':[float(sens) for sens in freq_df['Sensitivity']]}
+    matrix_dict['sensitivity'] = [(int(float(f)*1e3), int(float(sens))) for f, sens in zip(freq_df['Frequency'], freq_df['Sensitivity'])]
     matrix_dict['id'] = matrix_dict['id'].format(sn=sn.lower())
     matrix_dict['name'] = matrix_dict['name'].format(sn=sn)
     return matrix_dict
@@ -300,21 +303,21 @@ def test_report_to_config(report_df):
     config = {'sn': sn,
               'hwid': hwid,
               'freq': freq,
-              'hw_version': hw_version,
-              'fw_version': fw_version,
-              'sdk_version': sdk_version,
-              'last_updated': now,
+              'hw_ver': hw_version,
+              'fw_ver': fw_version,
+              'sdk_ver': sdk_version,
+              'updated': now,
               'module': matrix_dict,
               'device':{}}
     return config
 
 def check_config_against_device(ifx, config, module=0):
     sdk_version = ifx.get_sdk_version()
-    if sdk_version != config['sdk_version']:
-        logger.warning(f"SDK version of the config {config['sdk_version']} does not match the current SDK version {sdk_version}")
+    if sdk_version != config['sdk_ver']:
+        logger.warning(f"SDK version of the config {config['sdk_ver']} does not match the current SDK version {sdk_version}")
     fw_version = ifx.txdevice.get_version(module)
-    if fw_version != config['fw_version']:
-        logger.warning(f"Firmware version of the config ({config['fw_version']}) does not match the version of the device ({fw_version})")
+    if fw_version != config['fw_ver']:
+        logger.warning(f"Firmware version of the config ({config['fw_ver']}) does not match the version of the device ({fw_version})")
         return False
     hwid = ifx.txdevice.get_hardware_id(module)
     if hwid != config['hwid']:

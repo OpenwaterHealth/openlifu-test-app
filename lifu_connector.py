@@ -16,24 +16,25 @@ import numpy as np
 import re
 import base58
 import json
-from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly\nfrom scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
+from scripts.generate_ultrasound_plot import generate_ultrasound_plot_from_solution  # Import the function directly
 from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
-logger.setLevel(logging.INFO)
-logger.propagate = False
 
 # Create console handler and set level to debug
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
-# Create formatter
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-# Add formatter to ch
 ch.setFormatter(formatter)
-# Add ch to logger
 logger.addHandler(ch)
+logger.setLevel(logging.INFO)
+logger.propagate = True
+
+sdklogger = logging.getLogger('openlifu_sdk.io')
+sdklogger.setLevel(logging.INFO)
+#print(sdklogger)
 
 
 def _parse_tx_module(target: str):
@@ -132,7 +133,7 @@ class LIFUConnector(QObject):
         elif self._txConnected and self._configured:
             self._state = CONFIGURED
         self.stateChanged.emit(self._state)  # Notify QML of state update
-        logger.info(f"Updated state: {self._state}")
+        logger.debug(f"Updated state: {self._state}")
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
@@ -314,13 +315,14 @@ class LIFUConnector(QObject):
             logger.error("Error configuring solution: %s", e)
             self.solutionConfigured.emit("Configuration error.")
 
-    @pyqtSlot(str, str, str, str, str, str, str)
-    def generate_plot(self, x, y, z, freq, cycles, trigger, mode):
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
+    def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer"):
         """Generates an ultrasound plot and emits data to QML."""
         try:
-            logger.info(f"Generating plot: X={x}, Y={y}, Z={z}, Frequency={freq}, Cycles={cycles}, Trigger={trigger}, Mode={mode}")
-            image_data = generate_ultrasound_plot(x, y, z, freq, cycles, trigger, mode)
-
+            #logger.info(f"Generating plot: X={x}, Y={y}, Z={z}, Frequency={freq}, Cycles={cycles}, Trigger={trigger}, Mode={mode}")
+            solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=self._txConnected)
+            image_data = generate_ultrasound_plot_from_solution(solution, mode)
+            #image_data = generate_ultrasound_plot(x, y, z, freq, cycles, trigger, mode)
             if image_data == "ERROR":
                 logger.error("Plot generation failed")
             else:
@@ -330,36 +332,32 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error generating plot: {e}")
 
-    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
-    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
+    def get_solution(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=False):
         """Simulate configuring the transmitter."""
-        if not self._txConnected:
-            logger.error("Cannot configure transmitter: No TX device connected")
-            return
-        self.queryNumModules()
         num_modules = self._num_modules_connected
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
             solution = self._loaded_solution_data
             #check if delays and apodizations match the number of elements in the loaded solution
-            delays_arr = np.array(solution["delays"])
-            apodizations_arr = np.array(solution["apodizations"])
-            if delays_arr.ndim == 1:
-                n_delays = delays_arr.shape[0]
-            else:
-                n_delays = delays_arr.shape[1]
-            if n_delays != num_modules * NUM_ELEMENTS_PER_MODULE:
-                logger.error(f"Loaded solution has {delays_arr.shape[0]} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                self.solutionLoadError.emit(f"Loaded solution has {delays_arr.shape[0]} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                return
-            if apodizations_arr.ndim == 1:
-                n_apodizations = apodizations_arr.shape[0]
-            else:
-                n_apodizations = apodizations_arr.shape[1]
-            if n_apodizations != num_modules * NUM_ELEMENTS_PER_MODULE:
-                logger.error(f"Loaded solution has {apodizations_arr.shape[0]} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                self.solutionLoadError.emit(f"Loaded solution has {apodizations_arr.shape[0]} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                return
+            delays_arr = np.array(solution["delays"]).reshape(-1)  # Ensure it's a 1D array
+            apodizations_arr = np.array(solution["apodizations"]).reshape(-1)  # Ensure it's a 1D array
+            if validate:
+                if delays_arr.ndim == 1:
+                    n_delays = delays_arr.shape[0]
+                else:
+                    n_delays = delays_arr.shape[1]
+                if n_delays != num_modules * NUM_ELEMENTS_PER_MODULE:
+                    logger.error(f"Loaded solution has {len(delays_arr)} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    self.solutionLoadError.emit(f"Loaded solution has {len(delays_arr)} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    return
+                if apodizations_arr.ndim == 1:
+                    n_apodizations = apodizations_arr.shape[0]
+                else:
+                    n_apodizations = apodizations_arr.shape[1]
+                if n_apodizations != num_modules * NUM_ELEMENTS_PER_MODULE:
+                    logger.error(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    self.solutionLoadError.emit(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    return
         else:
             def load_element_positions_from_file(filepath):
                 with open(filepath, 'r') as f:
@@ -392,6 +390,7 @@ class LIFUConnector(QObject):
                         "pulse_count": int(pulseCount),
                         "pulse_train_interval": float(trainInterval),
                         "pulse_train_count": int(trainCount)}
+            transducer_dummy = {"elements": [{"position": pos.tolist()} for pos in element_positions]}
             solution = {
                 "id": "solution",
                 "name": "Solution",
@@ -399,10 +398,19 @@ class LIFUConnector(QObject):
                 "apodizations": apodizations,
                 "pulse": pulse,
                 "sequence": sequence,
-                "voltage": float(voltage)}
+                "voltage": float(voltage),
+                "transducer": transducer_dummy}
+        return solution
 
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
+    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
+        """Simulate configuring the transmitter."""
+        if not self._txConnected:
+            logger.error("Cannot configure transmitter: No TX device connected")
+            return
+        self.queryNumModules()
+        solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS)        
         self.interface.set_solution(solution, trigger_mode=mode)
-
         self._configured = True
         self.update_state()
         logger.info("Transmitter configured")
@@ -418,11 +426,10 @@ class LIFUConnector(QObject):
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
         if self._state == READY:
-            self.interface.hvcontroller.turn_hv_on()
-            if self.interface.txdevice.start_trigger():
+            if self.interface.start_sonication():
                 self._state = RUNNING
             else:
-                logger.info("Failed to start trigger")
+                raise RuntimeError("Failed to start sonication")
             self.stateChanged.emit(self._state)
             logger.info("Sonication started")
 
@@ -433,7 +440,7 @@ class LIFUConnector(QObject):
             if self.interface.stop_sonication():
                 self._state = READY
             else:
-                logger.info("Failed to stop trigger")
+                raise RuntimeError("Failed to stop sonication")
             self.stateChanged.emit(self._state)
             logger.info("Sonication stopped")
 
@@ -607,7 +614,7 @@ class LIFUConnector(QObject):
         """Set the async mode for the interface."""
         try:
             ret = self.interface.txdevice.async_mode(enable)
-            logger.info(f"Async mode set to: {ret}")
+            logger.debug(f"Async mode set to: {ret}")
         except Exception as e:
             logger.error(f"Error setting async mode: {e}")
 
@@ -863,7 +870,7 @@ class LIFUConnector(QObject):
 
             hv_state = self.interface.hvcontroller.get_hv_status()            
             v12_state = self.interface.hvcontroller.get_12v_status()
-            logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
+            logger.debug(f"HV State: {hv_state} - 12V State: {v12_state}")
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
             logger.error(f"Error toggling HV: {e}")
