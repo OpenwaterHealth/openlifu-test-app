@@ -6,10 +6,17 @@ import os
 import time
 import base64
 from io import BytesIO
+import logging
 
 # ✅ Fix: Set the non-GUI backend before using matplotlib
 import matplotlib
 matplotlib.use("Agg")  # Prevents QWidget errors
+
+logger = logging.getLogger(__name__)
+ch = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
 def generate_ultrasound_plot_from_solution(solution, mode="file"):
     plt.style.use('dark_background')
@@ -140,16 +147,16 @@ def generate_ultrasound_plot(x_focus, y_focus, z_focus, frequency, cycles, trigg
             return base64_image
 
     except Exception as e:
-        print(f"Error generating ultrasound plot: {e}", file=sys.stderr)
+        logger.error(f"Error generating ultrasound plot: {e}", file=sys.stderr)
         return "ERROR"
 
 # If running as script
 if __name__ == "__main__":
     if len(sys.argv) < 7:
-        print("ERROR: Not enough arguments provided", file=sys.stderr)
+        logger.error("ERROR: Not enough arguments provided", file=sys.stderr)
         sys.exit(1)
 
     x, y, z, freq, cycles, trigger = sys.argv[1:7]
     mode = sys.argv[7] if len(sys.argv) > 7 else "file"  # Default to file mode
     output = generate_ultrasound_plot(x, y, z, freq, cycles, trigger, mode)
-    print(output)  # Print Base64 image or file path
+    logger.info(output)  # Print Base64 image or file path

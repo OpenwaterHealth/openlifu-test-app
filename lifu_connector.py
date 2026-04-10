@@ -22,18 +22,19 @@ from openlifu_sdk.io import LIFUInterface
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
-logger.setLevel(logging.INFO)
-logger.propagate = False
 
 # Create console handler and set level to debug
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
-# Create formatter
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-# Add formatter to ch
 ch.setFormatter(formatter)
-# Add ch to logger
 logger.addHandler(ch)
+logger.setLevel(logging.INFO)
+logger.propagate = True
+
+sdklogger = logging.getLogger('openlifu_sdk.io')
+sdklogger.setLevel(logging.INFO)
+#print(sdklogger)
 
 
 def _parse_tx_module(target: str):
@@ -132,7 +133,7 @@ class LIFUConnector(QObject):
         elif self._txConnected and self._configured:
             self._state = CONFIGURED
         self.stateChanged.emit(self._state)  # Notify QML of state update
-        logger.info(f"Updated state: {self._state}")
+        logger.debug(f"Updated state: {self._state}")
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
@@ -613,7 +614,7 @@ class LIFUConnector(QObject):
         """Set the async mode for the interface."""
         try:
             ret = self.interface.txdevice.async_mode(enable)
-            logger.info(f"Async mode set to: {ret}")
+            logger.debug(f"Async mode set to: {ret}")
         except Exception as e:
             logger.error(f"Error setting async mode: {e}")
 
@@ -869,7 +870,7 @@ class LIFUConnector(QObject):
 
             hv_state = self.interface.hvcontroller.get_hv_status()            
             v12_state = self.interface.hvcontroller.get_12v_status()
-            logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
+            logger.debug(f"HV State: {hv_state} - 12V State: {v12_state}")
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
             logger.error(f"Error toggling HV: {e}")
