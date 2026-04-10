@@ -11,7 +11,7 @@ hidden = []
 binaries = []
 
 # --- your existing resource folders (keep what you already had) ---
-for item in ("main.qml",):
+for item in ("main.qml", "pinmap_1x.json", "pinmap_2x.json"):
     if os.path.exists(item):
         datas.append((item, "."))
 for folder in ("pages", "components", "assets", "models"):

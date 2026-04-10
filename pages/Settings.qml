@@ -19,6 +19,7 @@ Rectangle {
     property int txModuleCount: 0
     property bool txLoading: false
     property var configTargetModel: []
+    property var modules: []  // Device info for all modules
 
     function rebuildConfigTargets() {
         var items = []
@@ -131,6 +132,7 @@ Rectangle {
                 settingsPage.txLoading = false
                 settingsPage.txModuleCount = 0
                 txCurrentVersion.text = "\u2014"
+                modules = []  // Clear device info when disconnected
             }
             rebuildConfigTargets()
         }
@@ -142,6 +144,8 @@ Rectangle {
             if (settingsPage.txModuleCount > 0) {
                 txCurrentVersion.text = "Reading…"
                 LIFUConnector.readTxFirmwareVersion(txModuleSelector.currentIndex)
+                // Also fetch device info for all modules
+                LIFUConnector.queryTxInfo()
             }
             rebuildConfigTargets()
         }
@@ -156,6 +160,24 @@ Rectangle {
             userConfigStatusText.color = success ? "#2ECC71" : "#E74C3C"
             userConfigStatusText.visible = true
             userConfigStatusHideTimer.restart()
+        }
+
+        function onTestReportLoaded(success, message) {
+            // Flash the status text briefly; reuse the editor placeholder area
+            userConfigStatusText.text = message
+            userConfigStatusText.color = success ? "#2ECC71" : "#E74C3C"
+            userConfigStatusText.visible = true
+            userConfigStatusHideTimer.restart()
+        }
+
+        function onTxDeviceInfoReceived(modulesList) {
+            // Store device info for all modules
+            modules = modulesList.map(function(m) {
+                return {
+                    firmwareVersion: m.firmwareVersion,
+                    deviceId: m.deviceId
+                }
+            })
         }
     }
 
@@ -174,6 +196,16 @@ Rectangle {
         title: "Select Transmitter Firmware File"
         nameFilters: ["Signed firmware (*.bin *.signed.bin)", "All files (*)"]
         onAccepted: transmitterFwPath.text = selectedFile.toString().replace("file:///", "")
+    }
+    
+    FileDialog {
+        id: testReportDialog
+        title: "Select Excel Test Report"
+        nameFilters: ["Excel files (*.xlsx *.xls)", "All files (*)"]
+        onAccepted: {
+            var target = configTargetSelector.currentText.toLowerCase()
+            LIFUConnector.loadTestReport(selectedFile, target)
+        }
     }
 
     // ----------------------------------------------------------------
@@ -437,6 +469,65 @@ Rectangle {
                             }
                         }
 
+                        // Device Info for selected target
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            visible: configTargetSelector.enabled && configTargetSelector.currentText.startsWith("TX")
+                            
+                            Text { 
+                                text: "Device ID:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                            }
+                            Text { 
+                                Layout.fillWidth: true
+                                text: {
+                                    if (!configTargetSelector.enabled || !configTargetSelector.currentText.startsWith("TX")) {
+                                        return "N/A"
+                                    }
+                                    // Extract module index from "TX 0", "TX 1", etc.
+                                    var parts = configTargetSelector.currentText.split(" ")
+                                    if (parts.length >= 2) {
+                                        var moduleIndex = parseInt(parts[1])
+                                        return modules[moduleIndex] ? modules[moduleIndex].deviceId : "N/A"
+                                    }
+                                    return "N/A"
+                                }
+                                color: "#3498DB"
+                                font.pixelSize: 12
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            visible: configTargetSelector.enabled && configTargetSelector.currentText.startsWith("TX")
+                            
+                            Text { 
+                                text: "Firmware Version:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: {
+                                    if (!configTargetSelector.enabled || !configTargetSelector.currentText.startsWith("TX")) {
+                                        return "N/A"
+                                    }
+                                    // Extract module index from "TX 0", "TX 1", etc.
+                                    var parts = configTargetSelector.currentText.split(" ")
+                                    if (parts.length >= 2) {
+                                        var moduleIndex = parseInt(parts[1])
+                                        return modules[moduleIndex] ? modules[moduleIndex].firmwareVersion : "N/A"
+                                    }
+                                    return "N/A"
+                                }
+                                color: "#2ECC71"
+                                font.pixelSize: 12
+                            }
+                        }
+
                         // Read Config
                         Rectangle {
                             Layout.fillWidth: true
@@ -460,6 +551,34 @@ Rectangle {
                                 onClicked: {
                                     var target = configTargetSelector.currentText.toLowerCase()
                                     LIFUConnector.readUserConfig(target)
+                                }
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Load Test Report
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            color: testReportArea.containsMouse ? "#F39C12" : "#3A3F4B"
+                            border.color: testReportArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Load Test Report"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: testReportArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: {
+                                    testReportDialog.open()
                                 }
                             }
 

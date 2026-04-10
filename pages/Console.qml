@@ -914,14 +914,34 @@ Rectangle {
                         RowLayout {
                             spacing: 8
                             Text { text: "Device ID:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                            Text { text: deviceId; color: "#3498DB"; font.pixelSize: 14 }
+                            TextField { 
+                                text: deviceId
+                                color: "#3498DB"
+                                font.pixelSize: 14 
+                                readOnly: true
+                                background: Rectangle {
+                                    color: "transparent"
+                                    border.color: "transparent"
+                                    radius: 0
+                                }
+                            }
                         }
 
                         // Display Firmware Version (Smaller Text)
                         RowLayout {
                             spacing: 8
                             Text { text: "Firmware Version:"; color: "#BDC3C7"; font.pixelSize: 14 }
-                            Text { text: firmwareVersion; color: "#2ECC71"; font.pixelSize: 14 }
+                            TextField {
+                                text: firmwareVersion
+                                color: "#2ECC71"
+                                font.pixelSize: 14
+                                readOnly: true
+                                background: Rectangle {
+                                    color: "transparent"
+                                    border.color: "transparent"
+                                    radius: 0
+                                }
+                            }
                         }
 
 
