@@ -41,16 +41,18 @@ Rectangle {
             return
         }
         
-        var pulseInterval = parseFloat(triggerPulseInterval.text || "0.1")
+        var pulseIntervalMs = parseFloat(triggerPulseInterval.text || "100")
         var pulseCount = parseFloat(triggerPulseCount.text || "1")
         var trainInterval = parseFloat(triggerPulseTrainInterval.text || "0")
         
-        if (isNaN(pulseInterval) || isNaN(pulseCount) || isNaN(trainInterval)) {
+        if (isNaN(pulseIntervalMs) || isNaN(pulseCount) || isNaN(trainInterval)) {
             trainIntervalTooShort = false
             return
         }
+
+        var pulseIntervalSeconds = pulseIntervalMs / 1000.0
         
-        trainIntervalTooShort = trainInterval < (pulseInterval * pulseCount)
+        trainIntervalTooShort = trainInterval < (pulseIntervalSeconds * pulseCount)
     }
 
     function getSystemStateText() {
@@ -282,7 +284,7 @@ Rectangle {
                         }
 
                         Text { 
-                            text: "Frequency (Hz):" 
+                            text: "Frequency (kHz):" 
                             color: "white" 
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
@@ -293,7 +295,7 @@ Rectangle {
                             
                             ToolTip {
                                 visible: frequencyHover.hovered
-                                text: "Ultrasound center frequency (Hz)"
+                                text: "Ultrasound center frequency (kHz)"
                                 delay: 500
                             }
                         }
@@ -303,7 +305,7 @@ Rectangle {
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
-                            text: "400e3"
+                            text: "400"
                             color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -314,7 +316,7 @@ Rectangle {
                         }
 
                         Text { 
-                            text: "Duration (S):" 
+                            text: "Duration (uS):" 
                             color: "white" 
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
@@ -325,7 +327,7 @@ Rectangle {
                             
                             ToolTip {
                                 visible: durationHover.hovered
-                                text: "Duration of each ultrasound pulse (S)"
+                                text: "Duration of each ultrasound pulse (uS)"
                                 delay: 500
                             }
                         }
@@ -335,7 +337,7 @@ Rectangle {
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
-                            text: "2e-4"
+                            text: "200"
                             color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -394,7 +396,7 @@ Rectangle {
 						}
 
                         Text { 
-                            text: "Pulse Interval (S):" 
+                            text: "Pulse Interval (ms):" 
                             color: pulseIntervalActive ? "white" : "#888" 
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
@@ -405,7 +407,7 @@ Rectangle {
                             
                             ToolTip {
                                 visible: pulseIntervalHover.hovered
-                                text: "Time interval between initiation of successive pulses (S)"
+                                text: "Time interval between initiation of successive pulses (ms)"
                                 delay: 500
                             }
                         }
@@ -415,7 +417,7 @@ Rectangle {
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
-                            text: "0.1"
+                            text: "100"
                             color: controlsReadOnly ? (pulseIntervalActive ? "#BBB" : "#777") : (pulseIntervalActive ? "white" : "#888")
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -671,7 +673,7 @@ Rectangle {
                         Layout.fillWidth: true
                         enabled: controlsReadOnly && (LIFUConnector.state <4) && !visualPressed
                         background: Rectangle {
-                            color: (editSolutionButton.down || editSolutionButton.visualPressed) ? "#256F8C" : "#2E86AB"
+                            color: (editSolutionButton.down || editSolutionButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
@@ -904,9 +906,10 @@ Rectangle {
                                     xInput.text = "0";
                                     yInput.text = "0";
                                     zInput.text = "25";
-                                    frequencyInput.text = "400e3";
+                                    frequencyInput.text = "400";
+                                    durationInput.text = "200";
                                     voltage.text = "12.0";
-                                    triggerPulseInterval.text = "0.1";
+                                    triggerPulseInterval.text = "100";
                                     LIFUConnector.reset_configuration();
                                 })
                             }

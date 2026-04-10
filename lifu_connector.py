@@ -359,6 +359,11 @@ class LIFUConnector(QObject):
                     self.solutionLoadError.emit(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
                     return
         else:
+            # Demo UI displays frequency in kHz, duration in microseconds, and pulse interval in ms.
+            frequency_hz = float(freq) * 1e3
+            duration_seconds = float(durationS) * 1e-6
+            pulse_interval_seconds = float(pulseInterval) * 1e-3
+
             def load_element_positions_from_file(filepath):
                 with open(filepath, 'r') as f:
                     data = json.load(f)
@@ -374,8 +379,9 @@ class LIFUConnector(QObject):
                 else:
                     element_positions = np.array([elem['position'] for elem in data['elements']])
                 return element_positions
-            pulse = {"frequency": float(freq),
-                    "duration": float(durationS),
+
+            pulse = {"frequency": frequency_hz,
+                    "duration": duration_seconds,
                     "amplitude": 1.0
                     }
             focus = np.array([float(xInput), float(yInput), float(zInput)])
@@ -386,7 +392,7 @@ class LIFUConnector(QObject):
             tof = distances*1e-3 / SPEED_OF_SOUND
             delays = tof.max() - tof
             apodizations = np.ones(numelements)
-            sequence = {"pulse_interval": float(pulseInterval),
+            sequence = {"pulse_interval": pulse_interval_seconds,
                         "pulse_count": int(pulseCount),
                         "pulse_train_interval": float(trainInterval),
                         "pulse_train_count": int(trainCount)}
@@ -1314,10 +1320,10 @@ class LIFUConnector(QObject):
                 'xInput': float(focus_position[0]),
                 'yInput': float(focus_position[1]),
                 'zInput': float(focus_position[2]),
-                'frequency': float(frequency),
-                'duration': float(duration),
+                'frequency': float(frequency) / 1e3,
+                'duration': float(duration) * 1e6,
                 'voltage': float(voltage),
-                'pulseInterval': float(pulse_interval),
+                'pulseInterval': float(pulse_interval) * 1e3,
                 'pulseCount': int(pulse_count),
                 'trainInterval': float(pulse_train_interval),
                 'trainCount': int(pulse_train_count)
