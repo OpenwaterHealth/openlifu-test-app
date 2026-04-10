@@ -55,6 +55,22 @@ Python example UI for OPEN LIFU used for Hardware Testing and Basic Usage
    python main.py
    ```
 
+## Demo Input Units
+
+The Demo page displays a few timing and frequency fields in operator-friendly units. Internally, solution data and device configuration still use SI base units.
+
+- **Frequency** in the UI is shown in **kHz**.
+   - Example: `400` in the UI is stored/sent as `400000` Hz.
+- **Duration** in the UI is shown in **uS**.
+   - Example: `200` in the UI is stored/sent as `0.0002` s.
+- **Pulse Interval** in the UI is shown in **ms**.
+   - Example: `100` in the UI is stored/sent as `0.1` s.
+
+Additional notes:
+- **Pulse Train Interval** remains in seconds in the UI.
+- Loading a solution from JSON converts SI values back to UI units for these fields.
+- Sending a solution to configuration/plot paths converts those displayed values back to SI units.
+
 ## Building Executable
 
 ### Quick Build (Windows)

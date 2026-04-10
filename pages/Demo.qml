@@ -41,16 +41,18 @@ Rectangle {
             return
         }
         
-        var pulseInterval = parseFloat(triggerPulseInterval.text || "0.1")
+        var pulseIntervalMs = parseFloat(triggerPulseInterval.text || "100")
         var pulseCount = parseFloat(triggerPulseCount.text || "1")
         var trainInterval = parseFloat(triggerPulseTrainInterval.text || "0")
         
-        if (isNaN(pulseInterval) || isNaN(pulseCount) || isNaN(trainInterval)) {
+        if (isNaN(pulseIntervalMs) || isNaN(pulseCount) || isNaN(trainInterval)) {
             trainIntervalTooShort = false
             return
         }
+
+        var pulseIntervalSeconds = pulseIntervalMs / 1000.0
         
-        trainIntervalTooShort = trainInterval < (pulseInterval * pulseCount)
+        trainIntervalTooShort = trainInterval < (pulseIntervalSeconds * pulseCount)
     }
 
     function getSystemStateText() {
@@ -105,6 +107,22 @@ Rectangle {
         txTemperatures = []
         hvPositiveRail = NaN
         hvNegativeRail = NaN
+    }
+
+    // Keep a button visually depressed while its click work executes.
+    function runWithButtonFeedback(button, action) {
+        if (!button || !action || button.visualPressed) {
+            return
+        }
+
+        button.visualPressed = true
+        Qt.callLater(function() {
+            try {
+                action()
+            } finally {
+                button.visualPressed = false
+            }
+        })
     }
 
     function getIndicatorColor(isConnected) {
@@ -266,7 +284,7 @@ Rectangle {
                         }
 
                         Text { 
-                            text: "Frequency (Hz):" 
+                            text: "Frequency (kHz):" 
                             color: "white" 
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
@@ -277,7 +295,7 @@ Rectangle {
                             
                             ToolTip {
                                 visible: frequencyHover.hovered
-                                text: "Ultrasound center frequency (Hz)"
+                                text: "Ultrasound center frequency (kHz)"
                                 delay: 500
                             }
                         }
@@ -287,7 +305,7 @@ Rectangle {
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
-                            text: "400e3"
+                            text: "400"
                             color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -298,7 +316,7 @@ Rectangle {
                         }
 
                         Text { 
-                            text: "Duration (S):" 
+                            text: "Duration (uS):" 
                             color: "white" 
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
@@ -309,7 +327,7 @@ Rectangle {
                             
                             ToolTip {
                                 visible: durationHover.hovered
-                                text: "Duration of each ultrasound pulse (S)"
+                                text: "Duration of each ultrasound pulse (uS)"
                                 delay: 500
                             }
                         }
@@ -319,7 +337,7 @@ Rectangle {
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
-                            text: "2e-4"
+                            text: "200"
                             color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -378,7 +396,7 @@ Rectangle {
 						}
 
                         Text { 
-                            text: "Pulse Interval (S):" 
+                            text: "Pulse Interval (ms):" 
                             color: pulseIntervalActive ? "white" : "#888" 
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
@@ -389,7 +407,7 @@ Rectangle {
                             
                             ToolTip {
                                 visible: pulseIntervalHover.hovered
-                                text: "Time interval between initiation of successive pulses (S)"
+                                text: "Time interval between initiation of successive pulses (ms)"
                                 delay: 500
                             }
                         }
@@ -399,7 +417,7 @@ Rectangle {
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
-                            text: "0.1"
+                            text: "100"
                             color: controlsReadOnly ? (pulseIntervalActive ? "#BBB" : "#777") : (pulseIntervalActive ? "white" : "#888")
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -631,32 +649,40 @@ Rectangle {
                     spacing: 10
 
                     Button {
+                        id: loadSolutionButton
+                        property bool visualPressed: false
                         text: "Load Solution"
                         Layout.fillWidth: true
-                        enabled: (!solutionLoaded) && (LIFUConnector.state <2)
+                        enabled: (!solutionLoaded) && (LIFUConnector.state <2) && !visualPressed
                         background: Rectangle {
-                            color: "#3A3F4B"
+                            color: (loadSolutionButton.down || loadSolutionButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
-                            solutionFileDialog.open()
+                            runWithButtonFeedback(loadSolutionButton, function() {
+                                solutionFileDialog.open()
+                            })
                         }
                     }
 
                     Button {
+                        id: editSolutionButton
+                        property bool visualPressed: false
                         text: "Edit Solution"
                         Layout.fillWidth: true
-                        enabled: controlsReadOnly && (LIFUConnector.state <4)
+                        enabled: controlsReadOnly && (LIFUConnector.state <4) && !visualPressed
                         background: Rectangle {
-                            color: "#2E86AB"
+                            color: (editSolutionButton.down || editSolutionButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
-                            LIFUConnector.reset_configuration()
-                            LIFUConnector.makeLoadedSolutionEditable()
-                            statusOverrideText = ""
+                            runWithButtonFeedback(editSolutionButton, function() {
+                                LIFUConnector.reset_configuration()
+                                LIFUConnector.makeLoadedSolutionEditable()
+                                statusOverrideText = ""
+                            })
                         }
                     }
                 }
@@ -795,80 +821,97 @@ Rectangle {
                         spacing: 10
 
                         Button {
+                            id: configureButton
+                            property bool visualPressed: false
                             text: "Configure"
                             Layout.fillWidth: true
-                            enabled: LIFUConnector.state === 1  // TX connected and not configured
+                            enabled: (LIFUConnector.state === 1) && !visualPressed  // TX connected and not configured
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (configureButton.down || configureButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
-                                LIFUConnector.configure_transmitter(xInput.text, yInput.text,
-                                    zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
-                                    triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
-                                    triggerModeDropdown.currentText);
-                                configuredModuleCount = LIFUConnector.queryNumModulesConnected
-                                LIFUConnector.generate_plot(
-                                     xInput.text, yInput.text, zInput.text,
-                                     frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                                     triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                                     durationInput.text, "buffer"
-                                );
-                                statusOverrideText = ""
+                                runWithButtonFeedback(configureButton, function() {
+                                    var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
+                                    LIFUConnector.configure_transmitter(xInput.text, yInput.text,
+                                        zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
+                                        triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
+                                        triggerModeDropdown.currentText);
+                                    configuredModuleCount = LIFUConnector.queryNumModulesConnected
+                                    LIFUConnector.generate_plot(
+                                         xInput.text, yInput.text, zInput.text,
+                                         frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                                         triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                                         durationInput.text, "buffer"
+                                    );
+                                    statusOverrideText = ""
+                                })
                             }
                         }
 
                         Button {
+                            id: startButton
+                            property bool visualPressed: false
                             text: "Start"
                             Layout.fillWidth: true
-                            enabled: LIFUConnector.state === 3  // READY
+                            enabled: (LIFUConnector.state === 3) && !visualPressed  // READY
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (startButton.down || startButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                console.log("Starting Sonication...");
-                                LIFUConnector.start_sonication();
+                                runWithButtonFeedback(startButton, function() {
+                                    console.log("Starting Sonication...");
+                                    LIFUConnector.start_sonication();
+                                })
                             }
                         }
 
                         Button {
+                            id: stopButton
+                            property bool visualPressed: false
                             text: "Stop"
                             Layout.fillWidth: true
-                            enabled: LIFUConnector.state === 4  // RUNNING
+                            enabled: (LIFUConnector.state === 4) && !visualPressed  // RUNNING
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (stopButton.down || stopButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                console.log("Stopping Sonication...");
-                                clearStatusTelemetry()
-                                LIFUConnector.stop_sonication();
+                                runWithButtonFeedback(stopButton, function() {
+                                    console.log("Stopping Sonication...");
+                                    clearStatusTelemetry()
+                                    LIFUConnector.stop_sonication();
+                                })
                             }
                         }
 
                         Button {
+                            id: resetButton
+                            property bool visualPressed: false
                             text: "Reset"
                             Layout.fillWidth: true
-                            enabled: (LIFUConnector.state > 1 && LIFUConnector.state != 4)  // CONFIGURED
+                            enabled: (LIFUConnector.state > 1 && LIFUConnector.state != 4) && !visualPressed  // CONFIGURED
                             background: Rectangle {
-                                color: "#3A3F4B"
+                                color: (resetButton.down || resetButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
                             onClicked: {
-                                console.log("Resetting parameters...");
-                                xInput.text = "0";
-                                yInput.text = "0";
-                                zInput.text = "25";
-                                frequencyInput.text = "400e3";
-                                voltage.text = "12.0";
-                                triggerPulseInterval.text = "0.1";
-                                LIFUConnector.reset_configuration();
+                                runWithButtonFeedback(resetButton, function() {
+                                    console.log("Resetting parameters...");
+                                    xInput.text = "0";
+                                    yInput.text = "0";
+                                    zInput.text = "25";
+                                    frequencyInput.text = "400";
+                                    durationInput.text = "200";
+                                    voltage.text = "12.0";
+                                    triggerPulseInterval.text = "100";
+                                    LIFUConnector.reset_configuration();
+                                })
                             }
                         }
                     }
