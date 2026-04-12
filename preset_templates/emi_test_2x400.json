@@ -1,6 +1,6 @@
 {
-    "id": "emi_test_2x",
-    "name": "2x EMI Test",
+    "id": "emi_test_2x400",
+    "name": "2x400 EMI Test",
     "protocol_id": "",
     "transducer": {
         "id": "openlifu_2x_emi",
