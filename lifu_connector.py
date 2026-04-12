@@ -503,7 +503,7 @@ class LIFUConnector(QObject):
     def _extract_solution_settings(self, data):
         """Extract UI-editable settings from a solution-like dict."""
         target = data.get('target', {})
-        focus_position = target.get('position', [0, 0, 25])
+        focus_position = target.get('position', [0, 0, 50])
 
         pulse = data.get('pulse', {})
         frequency = pulse.get('frequency', 400000)
@@ -609,7 +609,7 @@ class LIFUConnector(QObject):
                 "default_solution",
                 "Default Solution",
                 1,
-                "0", "0", "25",
+                "0", "0", "50",
                 "400", "12.0",
                 "100", "1", "1", "1", "200"
             )
