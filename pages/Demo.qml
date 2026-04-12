@@ -262,6 +262,47 @@ Rectangle {
     }
 
     Dialog {
+        id: solutionLoadErrorDialog
+        title: "Solution Load Error"
+        modal: true
+        focus: true
+        width: 480
+        height: 200
+        property string errorMessage: ""
+        x: (demoPage.width - width) / 2
+        y: (demoPage.height - height) / 2
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#7A2E2E"
+            border.width: 2
+            radius: 8
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Text {
+                text: solutionLoadErrorDialog.errorMessage
+                color: "#FFD3D3"
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 10
+
+            Item { Layout.fillWidth: true }
+
+            Button {
+                text: "OK"
+                onClicked: solutionLoadErrorDialog.close()
+            }
+        }
+    }
+
+    Dialog {
         id: loadPresetDialog
         title: "Load Preset"
         modal: true
@@ -1381,6 +1422,8 @@ Rectangle {
         function onSolutionLoadError(errorMessage) {
             console.error("Solution load error: " + errorMessage);
             statusOverrideText = "Error: " + errorMessage;
+            solutionLoadErrorDialog.errorMessage = errorMessage
+            solutionLoadErrorDialog.open()
         }
 
         function onSolutionStateChanged() {
