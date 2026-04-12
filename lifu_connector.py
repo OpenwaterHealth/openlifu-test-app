@@ -104,7 +104,11 @@ class LIFUConnector(QObject):
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
-        self.interface = LIFUInterface(HV_test_mode=hv_test_mode, run_async=True)
+        self.interface = LIFUInterface(HV_test_mode=hv_test_mode, 
+                                       run_async=True, 
+                                       voltage_table_selection="evt0",
+                                       sequence_time_selection="stress_test",
+                                       duty_cycle_selection="stress_test")
         self._txConnected = False
         self._hvConnected = False
         self._configured = False
