@@ -507,7 +507,7 @@ class LIFUConnector(QObject):
 
         pulse = data.get('pulse', {})
         frequency = pulse.get('frequency', 400000)
-        duration = pulse.get('duration', 2e-5)
+        duration = pulse.get('duration', 2e-4)
 
         sequence = data.get('sequence', {})
         pulse_interval = sequence.get('pulse_interval', 0.1)
@@ -517,16 +517,19 @@ class LIFUConnector(QObject):
 
         voltage = data.get('voltage', 12.0)
 
+        def _r(value, digits):
+            return round(float(value), digits)
+
         return {
-            'xInput': float(focus_position[0]),
-            'yInput': float(focus_position[1]),
-            'zInput': float(focus_position[2]),
-            'frequency': float(frequency) / 1e3,
-            'duration': float(duration) * 1e6,
-            'voltage': float(voltage),
-            'pulseInterval': float(pulse_interval) * 1e3,
+            'xInput': _r(focus_position[0], 3),
+            'yInput': _r(focus_position[1], 3),
+            'zInput': _r(focus_position[2], 3),
+            'frequency': _r(float(frequency) / 1e3, 3),
+            'duration': _r(float(duration) * 1e6, 3),
+            'voltage': _r(voltage, 3),
+            'pulseInterval': _r(float(pulse_interval) * 1e3, 3),
             'pulseCount': int(pulse_count),
-            'trainInterval': float(pulse_train_interval),
+            'trainInterval': _r(pulse_train_interval, 6),
             'trainCount': int(pulse_train_count),
             'numModules': self._infer_num_modules_from_solution(data),
         }

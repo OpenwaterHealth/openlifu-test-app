@@ -962,7 +962,7 @@ Rectangle {
                                 Layout.maximumWidth: 56
                                 Layout.preferredHeight: 32
                                 font.pixelSize: 14
-                                text: "25"
+                                text: "50"
                                 color: controlsReadOnly ? "#BBB" : "white"
                                 enabled: !controlsReadOnly
                                 background: Rectangle {
@@ -1305,13 +1305,7 @@ Rectangle {
                             onClicked: {
                                 runWithButtonFeedback(resetButton, function() {
                                     console.log("Resetting parameters...");
-                                    xInput.text = "0";
-                                    yInput.text = "0";
-                                    zInput.text = "25";
-                                    frequencyInput.text = "400";
-                                    durationInput.text = "200";
-                                    voltage.text = "12.0";
-                                    triggerPulseInterval.text = "100";
+                                    applySettingsToUi(LIFUConnector.getDefaultSolutionSettings())
                                     LIFUConnector.reset_configuration();
                                 })
                             }
