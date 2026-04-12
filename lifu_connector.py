@@ -359,9 +359,9 @@ class LIFUConnector(QObject):
                     self.solutionLoadError.emit(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
                     return
         else:
-            # Demo UI displays frequency in kHz, duration in microseconds, and pulse interval in ms.
+            # Demo UI displays frequency in kHz, duration in ms, and pulse interval in ms.
             frequency_hz = float(freq) * 1e3
-            duration_seconds = float(durationS) * 1e-6
+            duration_seconds = float(durationS) * 1e-3
             pulse_interval_seconds = float(pulseInterval) * 1e-3
 
             def load_element_positions_from_file(filepath):
@@ -1299,7 +1299,7 @@ class LIFUConnector(QObject):
             
             # Extract focus point (target)
             target = data.get('target', {})
-            focus_position = target.get('position', [0, 0, 25])
+            focus_position = target.get('position', [0, 0, 50])
             
             # Extract pulse settings
             pulse = data.get('pulse', {})
@@ -1310,23 +1310,23 @@ class LIFUConnector(QObject):
             sequence = data.get('sequence', {})
             pulse_interval = sequence.get('pulse_interval', 0.1)
             pulse_count = sequence.get('pulse_count', 1)
-            pulse_train_interval = sequence.get('pulse_train_interval', 1)
+            pulse_train_interval = sequence.get('pulse_train_interval', 0)
             pulse_train_count = sequence.get('pulse_train_count', 1)
             
             # Extract voltage
             voltage = data.get('voltage', 12.0)
             
             return {
-                'xInput': float(focus_position[0]),
-                'yInput': float(focus_position[1]),
-                'zInput': float(focus_position[2]),
-                'frequency': float(frequency) / 1e3,
-                'duration': float(duration) * 1e6,
+                'x_focus_mm': float(focus_position[0]),
+                'y_focus_mm': float(focus_position[1]),
+                'z_focus_mm': float(focus_position[2]),
+                'frequency_kHz': float(frequency) / 1e3,
+                'duration_msec': float(duration) * 1e3,
                 'voltage': float(voltage),
-                'pulseInterval': float(pulse_interval) * 1e3,
-                'pulseCount': int(pulse_count),
-                'trainInterval': float(pulse_train_interval),
-                'trainCount': int(pulse_train_count)
+                'pulse_interval_msec': float(pulse_interval) * 1e3,
+                'pulse_count': int(pulse_count),
+                'pulse_train_interval_sec': float(pulse_train_interval),
+                'pulse_train_count': int(pulse_train_count)
             }
             
         except Exception as e:

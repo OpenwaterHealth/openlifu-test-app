@@ -61,8 +61,8 @@ The Demo page displays a few timing and frequency fields in operator-friendly un
 
 - **Frequency** in the UI is shown in **kHz**.
    - Example: `400` in the UI is stored/sent as `400000` Hz.
-- **Duration** in the UI is shown in **uS**.
-   - Example: `200` in the UI is stored/sent as `0.0002` s.
+- **Duration** in the UI is shown in **ms**.
+   - Example: `0.2` in the UI is stored/sent as `0.0002` s.
 - **Pulse Interval** in the UI is shown in **ms**.
    - Example: `100` in the UI is stored/sent as `0.1` s.
 

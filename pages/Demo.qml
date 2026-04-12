@@ -36,23 +36,19 @@ Rectangle {
     
     // Function to update the validation
     function updateTrainIntervalValidation() {
-        if (!triggerPulseInterval || !triggerPulseCount || !triggerPulseTrainInterval) {
+        if (!pulseInterval_msec || !pulseCount || !pulseTrainInterval_sec) {
             trainIntervalTooShort = false
             return
         }
         
-        var pulseIntervalMs = parseFloat(triggerPulseInterval.text || "100")
-        var pulseCount = parseFloat(triggerPulseCount.text || "1")
-        var trainInterval = parseFloat(triggerPulseTrainInterval.text || "0")
-        
-        if (isNaN(pulseIntervalMs) || isNaN(pulseCount) || isNaN(trainInterval)) {
+        if (isNaN(pulseInterval_msec) || isNaN(pulseCount) || isNaN(trainInterval)) {
             trainIntervalTooShort = false
             return
         }
 
-        var pulseIntervalSeconds = pulseIntervalMs / 1000.0
+        var pulseIntervalSeconds = pulseInterval_msec / 1000.0
         
-        trainIntervalTooShort = trainInterval < (pulseIntervalSeconds * pulseCount)
+        trainIntervalTooShort = pulseTrainInterval_sec < (pulseIntervalSeconds * pulseCount)
     }
 
     function getSystemStateText() {
@@ -171,10 +167,10 @@ Rectangle {
             console.log("Converted file path: " + filePath)
             LIFUConnector.loadSolutionFromFile(filePath)
             LIFUConnector.generate_plot(
-                    xInput.text, yInput.text, zInput.text,
-                    frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                    triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                    durationInput.text, "buffer"
+                    xFocus_mm.text, yFocus_mm.text, zFocus_mm.text,
+                    frequency_kHz.text, voltage_V.text, pulseInterval_msec.text,
+                    pulseCount.text, pulseTrainInterval_sec.text, pulseTrainCount.text,
+                    pulseDuration_msec.text, "buffer"
             );
         }
     }
@@ -185,20 +181,20 @@ Rectangle {
             var settings = LIFUConnector.getLoadedSolutionSettings()
             
             // Apply focus settings
-            xInput.text = settings.xInput.toString()
-            yInput.text = settings.yInput.toString()
-            zInput.text = settings.zInput.toString()
+            xFocus_mm.text = settings.x_focus_mm.toString()
+            yFocus_mm.text = settings.y_focus_mm.toString()
+            zFocus_mm.text = settings.z_focus_mm.toString()
             
             // Apply pulse settings
-            frequencyInput.text = settings.frequency.toString()
-            durationInput.text = settings.duration.toString()
-            voltage.text = settings.voltage.toString()
+            frequency_kHz.text = settings.frequency_kHz.toString()
+            pulseDuration_msec.text = settings.duration_msec.toString()
+            voltage_V.text = settings.voltage.toString()
             
             // Apply trigger settings
-            triggerPulseInterval.text = settings.pulseInterval.toString()
-            triggerPulseCount.text = settings.pulseCount.toString()
-            triggerPulseTrainInterval.text = settings.trainInterval.toString()
-            triggerPulseTrainCount.text = settings.trainCount.toString()
+            pulseInterval_msec.text = settings.pulse_interval_msec.toString()
+            pulseCount.text = settings.pulse_count.toString()
+            pulseTrainInterval_sec.text = settings.pulse_train_interval_sec.toString()
+            pulseTrainCount.text = settings.pulse_train_count.toString()
         }
     }
 
@@ -268,7 +264,7 @@ Rectangle {
                             }
                         }
                         TextField {
-                            id: voltage
+                            id: voltage_V
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
@@ -300,7 +296,7 @@ Rectangle {
                             }
                         }
                         TextField { 
-                            id: frequencyInput
+                            id: frequency_kHz
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
@@ -316,7 +312,7 @@ Rectangle {
                         }
 
                         Text { 
-                            text: "Duration (uS):" 
+                            text: "Duration (ms):" 
                             color: "white" 
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
@@ -327,17 +323,17 @@ Rectangle {
                             
                             ToolTip {
                                 visible: durationHover.hovered
-                                text: "Duration of each ultrasound pulse (uS)"
+                                text: "Duration of each ultrasound pulse (ms)"
                                 delay: 500
                             }
                         }
                         TextField { 
-                            id: durationInput
+                            id: pulseDuration_msec
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
-                            text: "200"
+                            text: "0.2"
                             color: controlsReadOnly ? "#BBB" : "white" 
                             enabled: !controlsReadOnly
                             background: Rectangle {
@@ -412,7 +408,7 @@ Rectangle {
                             }
                         }
                         TextField { 
-                            id: triggerPulseInterval
+                            id: pulseInterval_msec
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
@@ -445,7 +441,7 @@ Rectangle {
                             }
                         }
                         TextField { 
-                            id: triggerPulseCount
+                            id: pulseCount
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
@@ -478,7 +474,7 @@ Rectangle {
                             }
                         }
                         TextField { 
-                            id: triggerPulseTrainInterval
+                            id: pulseTrainInterval_sec
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
@@ -511,7 +507,7 @@ Rectangle {
                             }
                         }
                         TextField { 
-                            id: triggerPulseTrainCount
+                            id: pulseTrainCount
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
@@ -554,7 +550,7 @@ Rectangle {
                                 }
                             }
                             TextField {
-                                id: xInput
+                                id: xFocus_mm
                                 Layout.preferredWidth: 56
                                 Layout.minimumWidth: 56
                                 Layout.maximumWidth: 56
@@ -589,7 +585,7 @@ Rectangle {
                                 }
                             }
                             TextField {
-                                id: yInput
+                                id: yFocus_mm
                                 Layout.preferredWidth: 56
                                 Layout.minimumWidth: 56
                                 Layout.maximumWidth: 56
@@ -624,13 +620,13 @@ Rectangle {
                                 }
                             }
                             TextField {
-                                id: zInput
+                                id: zFocus_mm
                                 Layout.preferredWidth: 56
                                 Layout.minimumWidth: 56
                                 Layout.maximumWidth: 56
                                 Layout.preferredHeight: 32
                                 font.pixelSize: 14
-                                text: "25"
+                                text: "50"
                                 color: controlsReadOnly ? "#BBB" : "white"
                                 enabled: !controlsReadOnly
                                 background: Rectangle {
@@ -833,17 +829,17 @@ Rectangle {
                             }
                             onClicked: {
                                 runWithButtonFeedback(configureButton, function() {
-                                    var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
-                                    LIFUConnector.configure_transmitter(xInput.text, yInput.text,
-                                        zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
-                                        triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
+                                    var frequency = (1.0 / parseFloat(pulseInterval_msec.text)).toString()
+                                    LIFUConnector.configure_transmitter(xFocus_mm.text, yFocus_mm.text,
+                                        zFocus_mm.text,  frequency_kHz.text, voltage_V.text, pulseInterval_msec.text, pulseCount.text,
+                                        pulseTrainInterval_sec.text, pulseTrainCount.text, pulseDuration_msec.text,
                                         triggerModeDropdown.currentText);
                                     configuredModuleCount = LIFUConnector.queryNumModulesConnected
                                     LIFUConnector.generate_plot(
-                                         xInput.text, yInput.text, zInput.text,
-                                         frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                                         triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                                         durationInput.text, "buffer"
+                                         xFocus_mm.text, yFocus_mm.text, zFocus_mm.text,
+                                         frequency_kHz.text, voltage_V.text, pulseInterval_msec.text,
+                                         pulseCount.text, pulseTrainInterval_sec.text, pulseTrainCount.text,
+                                         pulseDuration_msec.text, "buffer"
                                     );
                                     statusOverrideText = ""
                                 })
@@ -903,13 +899,13 @@ Rectangle {
                             onClicked: {
                                 runWithButtonFeedback(resetButton, function() {
                                     console.log("Resetting parameters...");
-                                    xInput.text = "0";
-                                    yInput.text = "0";
-                                    zInput.text = "25";
-                                    frequencyInput.text = "400";
-                                    durationInput.text = "200";
-                                    voltage.text = "12.0";
-                                    triggerPulseInterval.text = "100";
+                                    xFocus_mm.text = "0";
+                                    yFocus_mm.text = "0";
+                                    zFocus_mm.text = "50";
+                                    frequency_kHz.text = "400";
+                                    pulseDuration_msec.text = "0.2";
+                                    voltage_V.text = "12.0";
+                                    pulseInterval_msec.text = "100";
                                     LIFUConnector.reset_configuration();
                                 })
                             }
