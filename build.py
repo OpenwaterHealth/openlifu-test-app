@@ -44,6 +44,7 @@ def build_app():
         '--add-data=assets;assets',    # Include assets folder
         '--add-data=components;components',  # Include QML components
         '--add-data=pages;pages',      # Include QML pages
+        '--add-data=preset_templates;preset_templates',  # Include seed preset JSON files
         '--add-data=*.qml;.',          # Include QML files in root
         '--add-data=*.json;.',         # Include JSON files
         '--hidden-import=PyQt6.QtCore',

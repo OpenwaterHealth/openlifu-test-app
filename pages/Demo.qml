@@ -33,6 +33,9 @@ Rectangle {
     
     // Property to track if train interval is less than pulse interval x pulse count
     property bool trainIntervalTooShort: false
+    property var presetSolutions: []
+    property string saveSolutionPath: ""
+    property bool savePathAuto: true
     
     // Function to update the validation
     function updateTrainIntervalValidation() {
@@ -53,6 +56,90 @@ Rectangle {
         var pulseIntervalSeconds = pulseIntervalMs / 1000.0
         
         trainIntervalTooShort = trainInterval < (pulseIntervalSeconds * pulseCount)
+    }
+
+    function loadSolutionAndRefreshPlot(filePath) {
+        if (!filePath || filePath === "") {
+            return
+        }
+
+        LIFUConnector.loadSolutionFromFile(filePath)
+        LIFUConnector.generate_plot(
+                xInput.text, yInput.text, zInput.text,
+                frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                durationInput.text, "buffer"
+        )
+    }
+
+    function refreshPresetSolutions() {
+        var presets = LIFUConnector.getPresetSolutions()
+        presetSolutions = presets ? presets : []
+    }
+
+    function sanitizeSolutionId(rawId) {
+        var cleaned = (rawId || "").trim()
+        if (cleaned === "") {
+            return "solution"
+        }
+        // Keep file names safe across common platforms.
+        return cleaned.replace(/[^a-zA-Z0-9._-]/g, "_")
+    }
+
+    function getDefaultSavePath(solutionId) {
+        var safeId = sanitizeSolutionId(solutionId)
+        var presetsDir = LIFUConnector.getPresetSolutionsPath()
+        if (!presetsDir || presetsDir === "") {
+            presetsDir = "."
+        }
+        var sep = Qt.platform.os === "windows" ? "\\" : "/"
+        if (presetsDir.endsWith("/") || presetsDir.endsWith("\\")) {
+            return presetsDir + safeId + ".json"
+        }
+        return presetsDir + sep + safeId + ".json"
+    }
+
+    function localPathToFileUrl(path) {
+        if (!path || path === "") {
+            return ""
+        }
+
+        var normalized = path.replace(/\\/g, "/")
+        if (/^[A-Za-z]:\//.test(normalized)) {
+            return "file:///" + normalized
+        }
+        if (normalized.startsWith("/")) {
+            return "file://" + normalized
+        }
+        return "file:///" + normalized
+    }
+
+    function applySettingsToUi(settings) {
+        if (!settings || settings.xInput === undefined) {
+            return
+        }
+
+        xInput.text = settings.xInput.toString()
+        yInput.text = settings.yInput.toString()
+        zInput.text = settings.zInput.toString()
+
+        frequencyInput.text = settings.frequency.toString()
+        durationInput.text = settings.duration.toString()
+        voltage.text = settings.voltage.toString()
+
+        triggerPulseInterval.text = settings.pulseInterval.toString()
+        triggerPulseCount.text = settings.pulseCount.toString()
+        triggerPulseTrainInterval.text = settings.trainInterval.toString()
+        triggerPulseTrainCount.text = settings.trainCount.toString()
+
+        if (!LIFUConnector.txConnected && settings.numModules && settings.numModules > 0) {
+            var idx = numModulesComboBox.model.indexOf(settings.numModules)
+            if (idx >= 0) {
+                numModulesComboBox.currentIndex = idx
+            }
+        }
+
+        updateTrainIntervalValidation()
     }
 
     function getSystemStateText() {
@@ -169,36 +256,280 @@ Rectangle {
             }
             
             console.log("Converted file path: " + filePath)
-            LIFUConnector.loadSolutionFromFile(filePath)
-            LIFUConnector.generate_plot(
-                    xInput.text, yInput.text, zInput.text,
-                    frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                    triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                    durationInput.text, "buffer"
-            );
+            loadSolutionAndRefreshPlot(filePath)
+            loadPresetDialog.close()
+        }
+    }
+
+    Dialog {
+        id: loadPresetDialog
+        title: "Load Preset"
+        modal: true
+        focus: true
+        width: 420
+        height: 230
+        x: (demoPage.width - width) / 2
+        y: (demoPage.height - height) / 2
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#3E4E6F"
+            border.width: 2
+            radius: 8
+        }
+
+        onOpened: {
+            refreshPresetSolutions()
+            presetDropdown.currentIndex = presetSolutions.length > 0 ? 0 : -1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            Text {
+                text: "Select preset solution:"
+                color: "white"
+                font.pixelSize: 14
+            }
+
+            ComboBox {
+                id: presetDropdown
+                Layout.fillWidth: true
+                Layout.preferredHeight: 38
+                model: presetSolutions
+                textRole: "name"
+                enabled: presetSolutions.length > 0
+                font.pixelSize: 14
+
+                background: Rectangle {
+                    color: "#222"
+                    border.color: "#999"
+                    radius: 4
+                }
+            }
+
+            Text {
+                text: presetSolutions.length > 0 ? "" : "No preset solutions found in preset_solutions/*.json"
+                color: "#D58A8A"
+                font.pixelSize: 12
+                visible: presetSolutions.length === 0
+            }
+
+            Text {
+                text: (presetDropdown.currentIndex >= 0 && presetSolutions.length > 0)
+                      ? ("File: " + presetSolutions[presetDropdown.currentIndex].path)
+                      : ""
+                color: "#9FB3C8"
+                font.pixelSize: 11
+                visible: presetSolutions.length > 0
+                Layout.fillWidth: true
+                wrapMode: Text.WrapAnywhere
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+
+            Item { Layout.preferredWidth: 6 }
+
+            Button {
+                text: "Load from File..."
+                onClicked: solutionFileDialog.open()
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Button {
+                text: "Cancel"
+                onClicked: loadPresetDialog.close()
+            }
+
+            Button {
+                text: "Load"
+                enabled: presetDropdown.currentIndex >= 0 && presetSolutions.length > 0
+                onClicked: {
+                    var selectedPreset = presetSolutions[presetDropdown.currentIndex]
+                    if (selectedPreset && selectedPreset.path) {
+                        loadSolutionAndRefreshPlot(selectedPreset.path)
+                        loadPresetDialog.close()
+                    }
+                }
+            }
+
+            Item { Layout.preferredWidth: 6 }
+        }
+    }
+
+    FileDialog {
+        id: saveSolutionFileDialog
+        title: "Save Solution As"
+        fileMode: FileDialog.SaveFile
+        currentFolder: localPathToFileUrl(LIFUConnector.getPresetSolutionsPath())
+        nameFilters: ["JSON files (*.json)", "All files (*)"]
+        onAccepted: {
+            var filePath = selectedFile.toString()
+            if (filePath.startsWith("file:///")) {
+                filePath = filePath.substring(8)
+            } else if (filePath.startsWith("file://")) {
+                filePath = filePath.substring(7)
+            }
+            if (Qt.platform.os === "windows") {
+                filePath = filePath.replace(/\//g, "\\")
+            }
+            saveSolutionPath = filePath
+            savePathAuto = false
+        }
+    }
+
+    Dialog {
+        id: saveSolutionDialog
+        title: "Save Solution"
+        modal: true
+        focus: true
+        width: 520
+        height: 380
+        x: (demoPage.width - width) / 2
+        y: (demoPage.height - height) / 2
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#3E4E6F"
+            border.width: 2
+            radius: 8
+        }
+
+        onOpened: {
+            savePathAuto = true
+            if (saveSolutionIdField.text === "") {
+                saveSolutionIdField.text = "solution"
+            }
+            if (saveSolutionNameField.text === "") {
+                saveSolutionNameField.text = "Solution"
+            }
+            saveSolutionPath = getDefaultSavePath(saveSolutionIdField.text)
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            TextField {
+                id: saveSolutionIdField
+                Layout.fillWidth: true
+                placeholderText: "solution_id"
+                topPadding: 0
+                bottomPadding: 0
+                onTextChanged: {
+                    if (savePathAuto) {
+                        saveSolutionPath = getDefaultSavePath(saveSolutionIdField.text)
+                    }
+                }
+            }
+
+            TextField {
+                id: saveSolutionNameField
+                Layout.fillWidth: true
+                placeholderText: "Solution Name"
+                topPadding: 0
+                bottomPadding: 0
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                TextField {
+                    id: saveSolutionPathField
+                    placeholderText: "File Location"
+                    Layout.fillWidth: true
+                    text: saveSolutionPath
+                    onTextEdited: {
+                        savePathAuto = false
+                        saveSolutionPath = text
+                    }
+                }
+
+                Button {
+                    text: "Browse"
+                    onClicked: {
+                        saveSolutionFileDialog.currentFolder = localPathToFileUrl(LIFUConnector.getPresetSolutionsPath())
+                        saveSolutionFileDialog.selectedFile = localPathToFileUrl(getDefaultSavePath(saveSolutionIdField.text))
+                        saveSolutionFileDialog.open()
+                    }
+                }
+            }
+
+
+        }
+
+        footer: Item {
+            implicitHeight: footerLayout.implicitHeight + 14
+
+            RowLayout {
+                id: footerLayout
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 6
+                spacing: 10
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: "Save as Default"
+                    enabled: numModulesComboBox.currentValue > 0
+                    onClicked: {
+                        var saveDefaultOk = LIFUConnector.saveSolutionToFile(
+                            "default_solution",
+                            saveSolutionNameField.text.trim().length > 0 ? saveSolutionNameField.text : "Default Solution",
+                            LIFUConnector.getDefaultSolutionFilePath(),
+                            numModulesComboBox.currentValue.toString(),
+                            xInput.text, yInput.text, zInput.text,
+                            frequencyInput.text, voltage.text,
+                            triggerPulseInterval.text, triggerPulseCount.text,
+                            triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                            durationInput.text
+                        )
+                        if (saveDefaultOk) {
+                            saveSolutionDialog.close()
+                        }
+                    }
+                }
+
+                Button {
+                    text: "Cancel"
+                    onClicked: saveSolutionDialog.close()
+                }
+
+                Button {
+                    text: "Save"
+                    enabled: saveSolutionIdField.text.trim().length > 0 && saveSolutionPath.trim().length > 0 && numModulesComboBox.currentValue > 0
+                    onClicked: {
+                        var saveOk = LIFUConnector.saveSolutionToFile(
+                            saveSolutionIdField.text,
+                            saveSolutionNameField.text,
+                            saveSolutionPath,
+                            numModulesComboBox.currentValue.toString(),
+                            xInput.text, yInput.text, zInput.text,
+                            frequencyInput.text, voltage.text,
+                            triggerPulseInterval.text, triggerPulseCount.text,
+                            triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                            durationInput.text
+                        )
+                        if (saveOk) {
+                            saveSolutionDialog.close()
+                        }
+                    }
+                }
+            }
         }
     }
 
     // Function to apply loaded solution settings to UI controls
     function applySolutionSettings() {
         if (LIFUConnector.solutionLoaded) {
-            var settings = LIFUConnector.getLoadedSolutionSettings()
-            
-            // Apply focus settings
-            xInput.text = settings.xInput.toString()
-            yInput.text = settings.yInput.toString()
-            zInput.text = settings.zInput.toString()
-            
-            // Apply pulse settings
-            frequencyInput.text = settings.frequency.toString()
-            durationInput.text = settings.duration.toString()
-            voltage.text = settings.voltage.toString()
-            
-            // Apply trigger settings
-            triggerPulseInterval.text = settings.pulseInterval.toString()
-            triggerPulseCount.text = settings.pulseCount.toString()
-            triggerPulseTrainInterval.text = settings.trainInterval.toString()
-            triggerPulseTrainCount.text = settings.trainCount.toString()
+            applySettingsToUi(LIFUConnector.getLoadedSolutionSettings())
         }
     }
 
@@ -219,6 +550,7 @@ Rectangle {
 
     // Initialize validation after all components are created
     Component.onCompleted: {
+        applySettingsToUi(LIFUConnector.getDefaultSolutionSettings())
         updateTrainIntervalValidation()
     }
     
@@ -649,19 +981,37 @@ Rectangle {
                     spacing: 10
 
                     Button {
-                        id: loadSolutionButton
+                        id: loadPresetButton
                         property bool visualPressed: false
-                        text: "Load Solution"
+                        text: "Load"
                         Layout.fillWidth: true
                         enabled: (!solutionLoaded) && (LIFUConnector.state <2) && !visualPressed
                         background: Rectangle {
-                            color: (loadSolutionButton.down || loadSolutionButton.visualPressed) ? "#2F333D" : "#3A3F4B"
+                            color: (loadPresetButton.down || loadPresetButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                             radius: 4
                             border.color: "#BDC3C7"
                         }
                         onClicked: {
-                            runWithButtonFeedback(loadSolutionButton, function() {
-                                solutionFileDialog.open()
+                            runWithButtonFeedback(loadPresetButton, function() {
+                                loadPresetDialog.open()
+                            })
+                        }
+                    }
+
+                    Button {
+                        id: saveSolutionButton
+                        property bool visualPressed: false
+                        text: "Save"
+                        Layout.fillWidth: true
+                        enabled: !visualPressed
+                        background: Rectangle {
+                            color: (saveSolutionButton.down || saveSolutionButton.visualPressed) ? "#2F333D" : "#3A3F4B"
+                            radius: 4
+                            border.color: "#BDC3C7"
+                        }
+                        onClicked: {
+                            runWithButtonFeedback(saveSolutionButton, function() {
+                                saveSolutionDialog.open()
                             })
                         }
                     }
@@ -714,13 +1064,37 @@ Rectangle {
                     fillMode: Image.PreserveAspectFit
                     source: "../assets/images/empty_graph.png"
 
-
                     function updateImage(base64data) {
                         if (base64data.startsWith("data:image/png;base64,")) {
                             source = base64data;
                         } else {
                             source = base64data;
                         }
+                    }
+                }
+
+                Button {
+                    id: refreshPlotButton
+                    text: "\u21bb Refresh"
+                    font.pixelSize: 13
+                    width: 110
+                    height: 44
+                    anchors.bottom: parent.bottom
+                    anchors.right: parent.right
+                    anchors.margins: 6
+                    background: Rectangle {
+                        color: refreshPlotButton.down ? "#2F333D" : "#3A3F4B"
+                        radius: 4
+                        border.color: "#BDC3C7"
+                        opacity: 0.85
+                    }
+                    onClicked: {
+                        LIFUConnector.generate_plot(
+                            xInput.text, yInput.text, zInput.text,
+                            frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                            triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                            durationInput.text, "buffer"
+                        )
                     }
                 }
             }
@@ -740,19 +1114,47 @@ Rectangle {
                     anchors.margins: 12
                     spacing: 10
 
-                    // Connection status text
-                    Text {
-                        id: statusText
-                        text: statusOverrideText !== "" ? statusOverrideText : getSystemStateText()
-                        font.pixelSize: 16
-                        color: getIndicatorColor(LIFUConnector.txConnected && LIFUConnector.hvConnected)
-                        horizontalAlignment: Text.AlignHCenter
-                        Layout.alignment: Qt.AlignHCenter
-                        SequentialAnimation on opacity {
-                            running: LIFUConnector.state === 4
-                            loops: Animation.Infinite
-                            NumberAnimation { from: 1.0; to: 0.35; duration: 500 }
-                            NumberAnimation { from: 0.35; to: 1.0; duration: 500 }
+                    // Status text + module count row
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Text {
+                            id: statusText
+                            text: statusOverrideText !== "" ? statusOverrideText : getSystemStateText()
+                            font.pixelSize: 14
+                            color: getIndicatorColor(LIFUConnector.txConnected && LIFUConnector.hvConnected)
+                            horizontalAlignment: Text.AlignHCenter
+                            Layout.fillWidth: true
+                            SequentialAnimation on opacity {
+                                running: LIFUConnector.state === 4
+                                loops: Animation.Infinite
+                                NumberAnimation { from: 1.0; to: 0.35; duration: 500 }
+                                NumberAnimation { from: 0.35; to: 1.0; duration: 500 }
+                            }
+                        }
+
+                        Text {
+                            text: "Modules:"
+                            font.pixelSize: 12
+                            color: "#BDC3C7"
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        ComboBox {
+                            id: numModulesComboBox
+                            model: [1, 2]
+                            currentIndex: 0
+                            enabled: !LIFUConnector.txConnected && !solutionLoaded
+                            implicitWidth: 68
+                            implicitHeight: 26
+                            font.pixelSize: 12
+                            background: Rectangle {
+                                color: "#222"
+                                border.color: numModulesComboBox.enabled ? "#999" : "#555"
+                                radius: 4
+                            }
+                            onCurrentValueChanged: LIFUConnector.setManualNumModules(currentValue)
                         }
                     }
 
@@ -994,6 +1396,14 @@ Rectangle {
             }
         }
 
+        function onSolutionSaveStatus(success, message) {
+            if (success) {
+                statusOverrideText = message;
+            } else {
+                statusOverrideText = "Error: " + message;
+            }
+        }
+
         function onTemperatureTxUpdated(module, tx_temp, amb_temp) {
             let updated = txTemperatures.slice()
             while (updated.length <= module) {
@@ -1005,6 +1415,9 @@ Rectangle {
 
         function onNumModulesUpdated() {
             configuredModuleCount = LIFUConnector.queryNumModulesConnected
+            var hwModules = LIFUConnector.queryNumModulesConnected
+            numModulesComboBox.currentIndex = numModulesComboBox.model.indexOf(hwModules) >= 0
+                ? numModulesComboBox.model.indexOf(hwModules) : 0
         }
 
         function onMonVoltagesReceived(voltages) {
