@@ -83,4 +83,8 @@ junit/
 # macOS specific
 *.DS_Store
 
+# Runtime/user preset files
+preset_solutions/*.json
+!preset_solutions/.gitkeep
+
 local_notes.md
