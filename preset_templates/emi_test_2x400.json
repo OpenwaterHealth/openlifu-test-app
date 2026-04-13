@@ -1,6 +1,6 @@
 {
     "id": "emi_test_2x400",
-    "name": "2x400 EMI Test",
+    "name": "2x400 EMI Test (65V/5%)",
     "protocol_id": "",
     "transducer": {
         "id": "openlifu_2x_emi",
@@ -3135,12 +3135,12 @@
         "amplitude": 1.0,
         "duration": 0.010
     },
-    "voltage": 45.0,
+    "voltage": 65.0,
     "sequence": {
         "pulse_interval": 0.200,
         "pulse_count": 5,
         "pulse_train_interval": 0,
-        "pulse_train_count": 600
+        "pulse_train_count": 1200
     },
     "foci": [
         {
