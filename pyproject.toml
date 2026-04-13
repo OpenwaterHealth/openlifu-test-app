@@ -29,7 +29,7 @@ dependencies = [
     "pyserial>=3.5",
     "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
-    "openlifu-sdk>=1.0.4",
+    "openlifu-sdk>=1.0.5",
     "openpyxl"
 ]
 

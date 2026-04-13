@@ -615,7 +615,7 @@ class LIFUConnector(QObject):
                 1,
                 "0", "0", "50",
                 "400", "12.0",
-                "100", "1", "1", "1", "200"
+                "100", "1", "0", "1", "200"
             )
             self._write_solution_json(default_path, default_solution)
             logger.info(f"Created default solution: {default_path}")
@@ -709,7 +709,7 @@ class LIFUConnector(QObject):
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
         if self._state == READY:
-            if self.interface.start_sonication():
+            if self.interface.start_sonication(async_mode=False):
                 self._state = RUNNING
             else:
                 raise RuntimeError("Failed to start sonication")
