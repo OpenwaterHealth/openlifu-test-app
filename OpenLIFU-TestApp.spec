@@ -11,7 +11,7 @@ hidden = []
 binaries = []
 
 # --- your existing resource folders (keep what you already had) ---
-for item in ("main.qml",):
+for item in ("main.qml", "pinmap_1x.json", "pinmap_2x.json"):
     if os.path.exists(item):
         datas.append((item, "."))
 for folder in ("pages", "components", "assets", "models"):
@@ -31,6 +31,12 @@ om_datas, om_bins, om_hidden = collect_all("olifu")
 datas   += om_datas
 binaries += om_bins
 hidden  += om_hidden
+
+# --- openlifu_sdk (ships libusb-1.0.dll for win32/win64) ---
+sdk_datas, sdk_bins, sdk_hidden = collect_all("openlifu_sdk")
+datas    += sdk_datas
+binaries += sdk_bins
+hidden   += sdk_hidden
 
 # --- force include pyserial dependency ---
 hidden += [

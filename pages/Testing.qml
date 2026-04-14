@@ -452,38 +452,6 @@ Rectangle {
                 }
 
                 Text {
-                    id: totalProgressLabel
-                    text: "Overall: waiting..."
-                    color: "#BDC3C7"
-                    font.pixelSize: 12
-                    Layout.fillWidth: true
-                }
-
-                ProgressBar {
-                    id: totalProgressBar
-                    Layout.fillWidth: true
-                    from: 0.0
-                    to: 1.0
-                    value: 0.0
-
-                    background: Rectangle {
-                        implicitHeight: 14
-                        color: "#2A2F3B"
-                        radius: 7
-                        border.color: "#3E4E6F"
-                    }
-                    contentItem: Item {
-                        implicitHeight: 14
-                        Rectangle {
-                            width: totalProgressBar.visualPosition * parent.width
-                            height: parent.height
-                            radius: 7
-                            color: totalProgressBar.value >= 1.0 ? "#2ECC71" : "#4A90E2"
-                        }
-                    }
-                }
-
-                Text {
                     id: caseProgressLabel
                     text: "Test case: waiting..."
                     color: "#BDC3C7"
@@ -511,6 +479,38 @@ Rectangle {
                             height: parent.height
                             radius: 7
                             color: testProgressSection.caseStatusColor
+                        }
+                    }
+                }
+
+                Text {
+                    id: totalProgressLabel
+                    text: "Overall: waiting..."
+                    color: "#BDC3C7"
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                }
+
+                ProgressBar {
+                    id: totalProgressBar
+                    Layout.fillWidth: true
+                    from: 0.0
+                    to: 1.0
+                    value: 0.0
+
+                    background: Rectangle {
+                        implicitHeight: 14
+                        color: "#2A2F3B"
+                        radius: 7
+                        border.color: "#3E4E6F"
+                    }
+                    contentItem: Item {
+                        implicitHeight: 14
+                        Rectangle {
+                            width: totalProgressBar.visualPosition * parent.width
+                            height: parent.height
+                            radius: 7
+                            color: totalProgressBar.value >= 1.0 ? "#2ECC71" : "#4A90E2"
                         }
                     }
                 }

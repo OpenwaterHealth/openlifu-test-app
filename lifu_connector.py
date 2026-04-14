@@ -1,40 +1,36 @@
+from turtle import mode
+
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import logging
-import numpy as np
-import base58
-import re
-import json
+import os
 import sys
 import argparse
 from pathlib import Path
 
-from scripts.generate_ultrasound_plot import generate_ultrasound_plot  # Import the function directly
-from openlifu_sdk import LIFUInterface
-from openlifu.bf.pulse import Pulse
-from openlifu.bf.sequence import Sequence
-from openlifu.geo import Point
-from openlifu.plan.solution import Solution
-from openlifu.xdc import Transducer
-from openlifu.xdc.util import load_transducer_from_file
+def _base_path():
+    """Return the directory containing bundled data files.
+    Works in both frozen (PyInstaller) and normal Python execution."""
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+import threading
+import numpy as np
+import base58
+import re
+import json
+from scripts.generate_ultrasound_plot import generate_ultrasound_plot_from_solution  # Import the function directly
+from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
+from openlifu_sdk.io import LIFUInterface
 
 # import verification-tests
 from verification.prodreqs_base_class import *
 from verification.prodreqs_transmitter_heating_placeholder import TransmitterHeatingPlaceholder, parse_arguments
 from verification.prodreqs_voltage_accuracy_placeholder import VoltageAccuracyTest
 
-current_folder = Path(__file__).resolve().parent
-target_folder = current_folder.parent / "openLIFU-test-scripts" / "verification"
-print(f"Current folder: {current_folder}")
-print(f"Target folder: {target_folder}")
-sys.path.insert(0, str(target_folder))
-print((target_folder / "prodreqs_transmitter_heating_placeholder.py").exists())
-# from prodreqs_transmitter_heating_placeholder import TransmitterHeatingPlaceholder
-
-
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
 logger.setLevel(logging.INFO)
-logger.propagate = False
+logger.propagate = True
 
 # Create console handler and set level to debug
 ch = logging.StreamHandler()
@@ -45,6 +41,23 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 ch.setFormatter(formatter)
 # Add ch to logger
 logger.addHandler(ch)
+logger.setLevel(logging.INFO)
+logger.propagate = True
+
+sdklogger = logging.getLogger('openlifu_sdk.io')
+sdklogger.setLevel(logging.INFO)
+#print(sdklogger)
+
+
+def _parse_tx_module(target: str):
+    """Parse a target string like 'tx 0', 'tx_0', 'tx0' into an integer module index.
+    Returns None if the target is not a TX target (e.g. 'console').
+    """
+    import re as _re
+    m = _re.match(r'^tx[\s_]?(\d+)$', target.strip().lower())
+    if m:
+        return int(m.group(1))
+    return None
 
 
 # Define system states
@@ -54,6 +67,10 @@ CONFIGURED = 2
 READY = 3
 RUNNING = 4
 TEST_SCRIPT_READY = 5
+
+#
+SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
+NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
 
 class LIFUConnector(QObject):
     # Ensure signals are correctly defined
@@ -79,6 +96,21 @@ class LIFUConnector(QObject):
     triggerStateChanged = pyqtSignal(bool)  # 🔹 New signal for trigger state change
     txConfigStateChanged = pyqtSignal(bool)  # 🔹 New signal for tx configured state change
 
+    # Firmware update signals
+    fwUpdateProgress = pyqtSignal(str, int, int)  # (label, written, total)
+    fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
+    fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
+
+    # User config signals
+    userConfigRead = pyqtSignal(str, str)   # (target, json_str)  target: "console" | "tx_N"
+    userConfigStatus = pyqtSignal(str, bool, str)  # (target, success, message)
+    
+    # Solution loading signals
+    solutionFileLoaded = pyqtSignal(str, str)  # (solution_name, message)
+    solutionLoadError = pyqtSignal(str)  # (error_message)
+    solutionStateChanged = pyqtSignal()  # Notifies when solution is loaded/unloaded
+    testReportLoaded = pyqtSignal(bool, str)  # (success, message)
+
     def __init__(self, hv_test_mode=False):
         super().__init__()
         self.interface = LIFUInterface(HV_test_mode=hv_test_mode, 
@@ -93,6 +125,11 @@ class LIFUConnector(QObject):
         self._trigger_state = False  # Internal state to track trigger status
         self._txconfigured_state = False  # Internal state to track trigger status
         self._num_modules_connected = 0
+        
+        # Solution loading state
+        self._solution_loaded = False
+        self._loaded_solution_data = None
+        self._solution_name = ""
 
         self.connect_signals()
 
@@ -122,7 +159,7 @@ class LIFUConnector(QObject):
         # elif self._txConnected and not self._running:
         #     self._state = TEST_SCRIPT_READY
         self.stateChanged.emit(self._state)  # Notify QML of state update
-        logger.info(f"Updated state: {self._state}")
+        logger.debug(f"Updated state: {self._state}")
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
@@ -304,13 +341,14 @@ class LIFUConnector(QObject):
             logger.error("Error configuring solution: %s", e)
             self.solutionConfigured.emit("Configuration error.")
 
-    @pyqtSlot(str, str, str, str, str, str, str)
-    def generate_plot(self, x, y, z, freq, cycles, trigger, mode):
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
+    def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer"):
         """Generates an ultrasound plot and emits data to QML."""
         try:
-            logger.info(f"Generating plot: X={x}, Y={y}, Z={z}, Frequency={freq}, Cycles={cycles}, Trigger={trigger}, Mode={mode}")
-            image_data = generate_ultrasound_plot(x, y, z, freq, cycles, trigger, mode)
-
+            #logger.info(f"Generating plot: X={x}, Y={y}, Z={z}, Frequency={freq}, Cycles={cycles}, Trigger={trigger}, Mode={mode}")
+            solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=self._txConnected)
+            image_data = generate_ultrasound_plot_from_solution(solution, mode)
+            #image_data = generate_ultrasound_plot(x, y, z, freq, cycles, trigger, mode)
             if image_data == "ERROR":
                 logger.error("Plot generation failed")
             else:
@@ -320,89 +358,94 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error generating plot: {e}")
 
-    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
-    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, triggerHZ, pulseCount, trainInterval, trainCount, durationS, mode):
+    def get_solution(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=False):
         """Simulate configuring the transmitter."""
-        if self._txConnected:
-            pulse = Pulse(frequency=float(freq), duration=float(durationS))
-            pt = Point(position=(float(xInput),float(yInput),float(zInput)), units="mm")
-            
-            self.queryNumModules()
+        num_modules = self._num_modules_connected
+        if self._solution_loaded:
+            logger.info("Using loaded solution for configuration")
+            solution = self._loaded_solution_data
+            #check if delays and apodizations match the number of elements in the loaded solution
+            delays_arr = np.array(solution["delays"]).reshape(-1)  # Ensure it's a 1D array
+            apodizations_arr = np.array(solution["apodizations"]).reshape(-1)  # Ensure it's a 1D array
+            if validate:
+                if delays_arr.ndim == 1:
+                    n_delays = delays_arr.shape[0]
+                else:
+                    n_delays = delays_arr.shape[1]
+                if n_delays != num_modules * NUM_ELEMENTS_PER_MODULE:
+                    logger.error(f"Loaded solution has {len(delays_arr)} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    self.solutionLoadError.emit(f"Loaded solution has {len(delays_arr)} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    return
+                if apodizations_arr.ndim == 1:
+                    n_apodizations = apodizations_arr.shape[0]
+                else:
+                    n_apodizations = apodizations_arr.shape[1]
+                if n_apodizations != num_modules * NUM_ELEMENTS_PER_MODULE:
+                    logger.error(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    self.solutionLoadError.emit(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    return
+        else:
+            # Demo UI displays frequency in kHz, duration in microseconds, and pulse interval in ms.
+            frequency_hz = float(freq) * 1e3
+            duration_seconds = float(durationS) * 1e-6
+            pulse_interval_seconds = float(pulseInterval) * 1e-3
 
-            arr = load_transducer_from_file(fR".\pinmap_{self._num_modules_connected}x.json")
-            logger.info(f"{self._num_modules_connected}x config file loaded")
-            
-            focus = pt.get_position(units="mm")
+            def load_element_positions_from_file(filepath):
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                if "type"  in data and data["type"] == "TransducerArray":
+                    modules = []
+                    for module in data['modules']:
+                        module_transform = np.array(module['transform'])
+                        element_positions = np.array([elem['position'] for elem in module['elements']])
+                        element_positions = np.hstack((element_positions, np.ones((element_positions.shape[0], 1))))
+                        world_positions = (np.linalg.inv(module_transform) @ element_positions.T).T[:, :3]  # drop the homogeneous coordinate
+                        modules.append(world_positions)
+                    element_positions = np.vstack(modules)
+                else:
+                    element_positions = np.array([elem['position'] for elem in data['elements']])
+                return element_positions
 
-            distances = np.sqrt(np.sum((focus - arr.get_positions(units="mm"))**2, 1))
-            tof = distances*1e-3 / 1500
+            pulse = {"frequency": frequency_hz,
+                    "duration": duration_seconds,
+                    "amplitude": 1.0
+                    }
+            focus = np.array([float(xInput), float(yInput), float(zInput)])
+            element_positions = load_element_positions_from_file(os.path.join(_base_path(), f"pinmap_{num_modules}x.json"))
+            numelements = element_positions.shape[0]
+            print(f"{num_modules}x config file loaded")
+            distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
+            tof = distances*1e-3 / SPEED_OF_SOUND
             delays = tof.max() - tof
-            apodizations = np.ones(arr.numelements())
-            sequence = Sequence(
-                pulse_interval=1.0/float(triggerHZ),
-                pulse_count=int(pulseCount),
-                pulse_train_interval=float(trainInterval),
-                pulse_train_count=int(trainCount)
-            )
+            apodizations = np.ones(numelements)
+            sequence = {"pulse_interval": pulse_interval_seconds,
+                        "pulse_count": int(pulseCount),
+                        "pulse_train_interval": float(trainInterval),
+                        "pulse_train_count": int(trainCount)}
+            transducer_dummy = {"elements": [{"position": pos.tolist()} for pos in element_positions]}
+            solution = {
+                "id": "solution",
+                "name": "Solution",
+                "delays": delays,
+                "apodizations": apodizations,
+                "pulse": pulse,
+                "sequence": sequence,
+                "voltage": float(voltage),
+                "transducer": transducer_dummy}
+        return solution
 
-            solution = Solution(
-                id="solution",
-                name="Solution",
-                protocol_id="example_protocol",
-                transducer="example_transducer",
-                delays = delays,
-                apodizations = apodizations,
-                pulse = pulse,
-                sequence = sequence,
-                voltage=float(voltage),
-                target=pt,
-                foci=[pt],
-                approved=True
-            )
-            
-            self.interface.set_solution(solution, trigger_mode=mode)
-
-            self._configured = True
-            self.update_state()
-            logger.info("Transmitter configured")
-
-        
-    @pyqtSlot(int, int, result=bool)
-    def setSimpleTxConfig(self, freq: float, pulses: int):
-        print(freq, pulses)
-        # pulse = Pulse(frequency=freq, duration=float(1e-5), amplitude=1.0)
-        # pt = Point(position=(0, 0, 25), units="mm")
-# 
-        # sequence = Sequence(
-        #     pulse_interval=1.0/freq,
-        #     pulse_count=int(1),
-        #     pulse_train_interval=float(0),
-        #     pulse_train_count=int(1)
-        # )
-# 
-        # solution = Solution(
-        #     id="solution",
-        #     name="Solution",
-        #     protocol_id="example_protocol",
-        #     transducer_id="example_transducer",
-        #     delays = np.zeros((1,64)),
-        #     apodizations = np.ones((1,64)),
-        #     pulse = pulse,
-        #     sequence = sequence,
-        #     target=pt,
-        #     foci=[pt],
-        #     approved=True
-        # )
-# 
-        # sol_dict = solution.to_dict()
-        # profile_index = 1
-        # profile_increment = True
-        # logger.error(f">>>>>>>>>>>>>>>>>>> Set Solution {solution}")
-        # ret_status = self.interface.set_solution(solution = solution)
-
-        self._txconfigured_state = True
-        self.txConfigStateChanged.emit(self._txconfigured_state)
-        return True
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
+    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
+        """Simulate configuring the transmitter."""
+        if not self._txConnected:
+            logger.error("Cannot configure transmitter: No TX device connected")
+            return
+        self.queryNumModules()
+        solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS)        
+        self.interface.set_solution(solution, trigger_mode=mode)
+        self._configured = True
+        self.update_state()
+        logger.info("Transmitter configured")
 
     @pyqtSlot()
     def reset_configuration(self):
@@ -415,11 +458,10 @@ class LIFUConnector(QObject):
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
         if self._state == READY:
-            self.interface.hvcontroller.turn_hv_on()
-            if self.interface.txdevice.start_trigger():
+            if self.interface.start_sonication():
                 self._state = RUNNING
             else:
-                logger.info("Failed to start trigger")
+                raise RuntimeError("Failed to start sonication")
             self.stateChanged.emit(self._state)
             logger.info("Sonication started")
 
@@ -430,7 +472,7 @@ class LIFUConnector(QObject):
             if self.interface.stop_sonication():
                 self._state = READY
             else:
-                logger.info("Failed to stop trigger")
+                raise RuntimeError("Failed to stop sonication")
             self.stateChanged.emit(self._state)
             logger.info("Sonication stopped")
 
@@ -449,10 +491,10 @@ class LIFUConnector(QObject):
         """Expose state as a QML property."""
         return self._state
     
-    # @pyqtProperty(bool, notify=connectionStatusChanged)
-    # def txConnected(self):
-    #     """Expose TX connection status to QML."""
-    #     return self._txConnected
+    @pyqtProperty(bool, notify=connectionStatusChanged)
+    def txConnected(self):
+        """Expose TX connection status to QML."""
+        return self._txConnected
 
     @pyqtProperty(bool, notify=connectionStatusChanged)
     def hvConnected(self):
@@ -464,6 +506,16 @@ class LIFUConnector(QObject):
         """Expose trigger enabled status to QML."""
         return self._trigger_state
     
+    @pyqtProperty(bool, notify=solutionStateChanged)
+    def solutionLoaded(self):
+        """Expose solution loaded status to QML."""
+        return self._solution_loaded
+    
+    @pyqtProperty(str, notify=solutionStateChanged)
+    def solutionName(self):
+        """Expose loaded solution name to QML."""
+        return self._solution_name
+    
     @pyqtSlot()
     def queryHvInfo(self):
         """Fetch and emit device information."""
@@ -471,7 +523,12 @@ class LIFUConnector(QObject):
             fw_version = self.interface.hvcontroller.get_version()
             logger.info(f"Version: {fw_version}")
             hw_id = self.interface.hvcontroller.get_hardware_id()
-            device_id = base58.b58encode(bytes.fromhex(hw_id)).decode()
+            if hw_id:
+                if len(hw_id) > 20:
+                    hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                device_id = hw_id 
+            else:
+                device_id = 'N/A'
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
             logger.info(f"Device Info - Firmware: {fw_version}, Device ID: {device_id}")
         except Exception as e:
@@ -488,7 +545,9 @@ class LIFUConnector(QObject):
                 logger.info(f"Version: {fw_version}")
                 hw_id = self.interface.txdevice.get_hardware_id(module=module_idx)
                 if hw_id:
-                    device_id = base58.b58encode(bytes.fromhex(hw_id)).decode()
+                    if len(hw_id) > 20:
+                        hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                    device_id = hw_id 
                 else:
                     device_id = 'N/A'
                 logger.info(f"Module {module_idx} - Firmware: {fw_version}, Device ID: {device_id}")
@@ -587,7 +646,7 @@ class LIFUConnector(QObject):
         """Set the async mode for the interface."""
         try:
             ret = self.interface.txdevice.async_mode(enable)
-            logger.info(f"Async mode set to: {ret}")
+            logger.debug(f"Async mode set to: {ret}")
         except Exception as e:
             logger.error(f"Error setting async mode: {e}")
 
@@ -843,7 +902,7 @@ class LIFUConnector(QObject):
 
             hv_state = self.interface.hvcontroller.get_hv_status()            
             v12_state = self.interface.hvcontroller.get_12v_status()
-            logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
+            logger.debug(f"HV State: {hv_state} - 12V State: {v12_state}")
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
             logger.error(f"Error toggling HV: {e}")
@@ -915,7 +974,465 @@ class LIFUConnector(QObject):
         except Exception:
             # Fallback to default version if the function doesn't exist or package metadata is missing
             return "0.3.2"
+
+    # ------------------------------------------------------------------
+    # Firmware update
+    # ------------------------------------------------------------------
+
+    @pyqtSlot(str, result=str)
+    def getDefaultFirmwarePath(self, device_type: str) -> str:
+        """Return the bundled firmware file path for the given device type (console or transmitter)."""
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec("openlifu_sdk")
+            if spec is None or spec.origin is None:
+                return ""
+            fw_dir = os.path.join(os.path.dirname(spec.origin), "firmware")
+            names = {
+                "console": "openlifu-console-fw.signed.bin",
+                "transmitter": "openlifu-transmitter-fw.signed.bin",
+            }
+            name = names.get(device_type, "")
+            return os.path.join(fw_dir, name) if name else ""
+        except Exception as e:
+            logger.error(f"Error locating default firmware for {device_type}: {e}")
+            return ""
+
+    @pyqtSlot(result=str)
+    def readHvFirmwareVersion(self) -> str:
+        """Read and return the current console (HV) firmware version."""
+        try:
+            version = self.interface.hvcontroller.get_version()
+            self.fwVersionRead.emit("console", version)
+            logger.info(f"Console firmware version: {version}")
+            return version
+        except Exception as e:
+            logger.error(f"Error reading console firmware version: {e}")
+            self.fwVersionRead.emit("console", "Error")
+            return "Error"
+
+    @pyqtSlot(int, result=str)
+    def readTxFirmwareVersion(self, module: int) -> str:
+        """Read and return the current transmitter firmware version for a given module."""
+        try:
+            version = self.interface.txdevice.get_version(module=module)
+            self.fwVersionRead.emit(f"transmitter_{module}", version)
+            logger.info(f"Transmitter module {module} firmware version: {version}")
+            return version
+        except Exception as e:
+            logger.error(f"Error reading transmitter module {module} firmware version: {e}")
+            self.fwVersionRead.emit(f"transmitter_{module}", "Error")
+            return "Error"
+
+    @pyqtSlot(str)
+    def updateConsoleFirmware(self, firmware_path: str) -> None:
+        """Update the console (HV) firmware using DFU.  Runs in a background thread."""
+        def _run():
+            try:
+                from openlifu_sdk.io.LIFUDFU import LIFUDFUManager
+
+                def _progress(written: int, total: int, label: str) -> None:
+                    self.fwUpdateProgress.emit(label, written, total)
+
+                self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
+                logger.info(f"Console firmware update: {firmware_path}")
+                mgr = LIFUDFUManager(uart=self.interface.hvcontroller.uart)
+                mgr.update_module(
+                    module=0,
+                    package_file=firmware_path,
+                    enter_dfu_fn=self.interface.hvcontroller.enter_dfu,
+                    vid=0x0483,
+                    pid=0xDF11,
+                    libusb_dll=None,
+                    dfu_wait_s=5.0,
+                    device_type="console",
+                    progress_callback=_progress,
+                )
+                self.fwUpdateStatus.emit("console", True, "Console firmware update complete.")
+                logger.info("Console firmware update complete.")
+            except Exception as e:
+                msg = f"Console update failed: {e}"
+                logger.error(msg)
+                self.fwUpdateStatus.emit("console", False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, int)
+    def updateTransmitterFirmware(self, firmware_path: str, module: int) -> None:
+        """Update the transmitter firmware for a specific module. Runs in a background thread."""
+        def _run():
+            try:
+                def _progress(written: int, total: int, label: str) -> None:
+                    self.fwUpdateProgress.emit(label, written, total)
+
+                self.fwUpdateStatus.emit("transmitter", False, f"Starting transmitter firmware update for module {module}…")
+                logger.info(f"Transmitter module {module} firmware update: {firmware_path}")
+                self.interface.txdevice.update_firmware(
+                    module=module,
+                    package_file=firmware_path,
+                    vid=0x0483,
+                    pid=0xDF11,
+                    libusb_dll=None,
+                    dfu_wait_s=5.0,
+                    device_type="transmitter",
+                    progress_callback=_progress,
+                )
+                self.fwUpdateStatus.emit("transmitter", True, f"Transmitter module {module} firmware update complete.")
+                logger.info(f"Transmitter module {module} firmware update complete.")
+            except Exception as e:
+                msg = f"Transmitter module {module} update failed: {e}"
+                logger.error(msg)
+                self.fwUpdateStatus.emit("transmitter", False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str)
+    def readUserConfig(self, target: str) -> None:
+        """Read user configuration from the target device. Emits userConfigRead on success.
+
+        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        """
+        def _run():
+            try:
+                module = _parse_tx_module(target)
+                if module is None:
+                    # Console not yet supported
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
+                config = self.interface.txdevice.read_config(module=module)
+                if config is None:
+                    self.userConfigStatus.emit(target, False, "Failed to read config – no response from device.")
+                    return
+
+                json_str = config.get_json_str()
+                logger.info(f"User config read from {target}: {json_str}")
+                self.userConfigRead.emit(target, json_str)
+            except Exception as e:
+                msg = f"Error reading config from {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, str)
+    def writeUserConfig(self, target: str, json_str: str) -> None:
+        """Write user configuration JSON to the target device.
+
+        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        """
+        def _run():
+            try:
+                module = _parse_tx_module(target)
+                if module is None:
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
+                updated = self.interface.txdevice.write_config_json(json_str, module=module)
+                if updated is None:
+                    self.userConfigStatus.emit(target, False, "Write failed – no response from device.")
+                    return
+
+                msg = f"Config written to {target}. Seq: {updated.header.seq}, CRC: 0x{updated.header.crc:04X}"
+                logger.info(msg)
+                self.userConfigStatus.emit(target, True, msg)
+            except json.JSONDecodeError as e:
+                msg = f"Invalid JSON: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+            except Exception as e:
+                msg = f"Error writing config to {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Solution loading functionality
+    # ------------------------------------------------------------------
+    
+    @pyqtSlot(str, result=bool)
+    def loadSolutionFromFile(self, file_path):
+        """Load a solution from a JSON file and apply it to the UI controls.
         
+        Args:
+            file_path: The path to the solution JSON file
+            
+        Returns:
+            bool: True if loading was successful, False otherwise
+        """
+        try:
+            logger.info(f"Attempting to load solution from: {file_path}")
+            
+            # Normalize the path for the current OS
+            normalized_path = os.path.normpath(file_path)
+            logger.info(f"Normalized path: {normalized_path}")
+            
+            # Validate file exists and is readable
+            if not os.path.exists(normalized_path):
+                error_msg = f"File not found: {normalized_path}"
+                logger.error(error_msg)
+                self.solutionLoadError.emit(error_msg)
+                return False
+                
+            if not os.path.isfile(normalized_path):
+                error_msg = f"Path is not a file: {normalized_path}"
+                logger.error(error_msg)
+                self.solutionLoadError.emit(error_msg)
+                return False
+                
+            with open(normalized_path, 'r', encoding='utf-8') as f:
+                solution_data = json.load(f)
+                
+            logger.info(f"Successfully parsed JSON from {normalized_path}")
+            logger.info(f"JSON data type: {type(solution_data)}")
+            if isinstance(solution_data, dict):
+                logger.info(f"JSON keys: {list(solution_data.keys())}")
+            else:
+                logger.warning(f"Unexpected JSON data type: {type(solution_data)}, value: {str(solution_data)[:100]}")
+            
+            # Validate solution structure
+            if not self._validate_solution_format(solution_data):
+                return False
+                
+            # If transducer is connected, verify element count matches modules
+            if self._txConnected:
+                self.queryNumModules()  # Update module count
+                expected_elements = self._num_modules_connected * NUM_ELEMENTS_PER_MODULE
+                actual_elements = len(solution_data.get('transducer', {}).get('elements', []))
+                
+                if expected_elements != actual_elements:
+                    error_message = f"Element count mismatch!\nExpected: {expected_elements} elements ({self._num_modules_connected} modules × {NUM_ELEMENTS_PER_MODULE})\nFound in solution: {actual_elements} elements"
+                    self.solutionLoadError.emit(error_message)
+                    return False
+            
+            # Store loaded solution data
+            self._loaded_solution_data = solution_data
+            self._solution_loaded = True
+            self._solution_name = solution_data.get('name', 'Unnamed Solution')
+            
+            # Emit success signal with solution details
+            if "name" in solution_data:
+                message = f"Loaded solution '{solution_data['name']}' from file"
+            else:
+                message = f"Loaded solution with {len(solution_data.get('transducer', {}).get('elements', []))} elements"
+            logger.info(message)
+            self.solutionFileLoaded.emit(self._solution_name, message)
+            self.solutionStateChanged.emit()
+            
+            logger.info(f"Successfully loaded solution: {self._solution_name}")
+            return True
+            
+        except json.JSONDecodeError as e:
+            error_msg = f"Invalid JSON format: {str(e)}"
+            logger.error(error_msg)
+            self.solutionLoadError.emit(error_msg)
+            return False
+        except PermissionError as e:
+            error_msg = f"Permission denied accessing file: {str(e)}"
+            logger.error(error_msg)
+            self.solutionLoadError.emit(error_msg)
+            return False
+        except Exception as e:
+            error_msg = f"Error loading solution: {str(e)}"
+            logger.error(f"Error loading solution from {file_path}: {e}")
+            self.solutionLoadError.emit(error_msg)
+            return False
+    
+    def _validate_solution_format(self, solution_data):
+        """Validate that the solution file has the required structure.
+        
+        Args:
+            solution_data: The parsed JSON solution data
+            
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        try:
+            # First check if solution_data is actually a dict
+            if not isinstance(solution_data, dict):
+                self.solutionLoadError.emit(f"Invalid solution format: expected JSON object, got {type(solution_data).__name__}")
+                return False
+            
+            logger.info(f"Validating solution with keys: {list(solution_data.keys())}")
+            
+            # Check for required top-level fields
+            required_fields = ['transducer', 'pulse', 'sequence']
+            for field in required_fields:
+                if field not in solution_data:
+                    self.solutionLoadError.emit(f"Missing required field: {field}")
+                    return False
+            
+            # Validate transducer structure
+            transducer = solution_data['transducer']
+            if not isinstance(transducer, dict):
+                self.solutionLoadError.emit("Transducer field must be an object")
+                return False
+                
+            if 'elements' not in transducer:
+                self.solutionLoadError.emit("Missing 'elements' in transducer data")
+                return False
+                
+            if not isinstance(transducer['elements'], list):
+                self.solutionLoadError.emit("Transducer elements must be a list")
+                return False
+                
+            # Validate pulse structure
+            pulse = solution_data['pulse']
+            if not isinstance(pulse, dict):
+                self.solutionLoadError.emit("Pulse field must be an object")
+                return False
+                
+            pulse_fields = ['frequency', 'duration']
+            for field in pulse_fields:
+                if field not in pulse:
+                    self.solutionLoadError.emit(f"Missing pulse field: {field}")
+                    return False
+            
+            # Validate sequence structure
+            sequence = solution_data['sequence']
+            if not isinstance(sequence, dict):
+                self.solutionLoadError.emit("Sequence field must be an object")
+                return False
+                
+            sequence_fields = ['pulse_interval', 'pulse_count']
+            for field in sequence_fields:
+                if field not in sequence:
+                    self.solutionLoadError.emit(f"Missing sequence field: {field}")
+                    return False
+                    
+            logger.info("Solution validation passed")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Error validating solution format: {str(e)}"
+            logger.error(error_msg)
+            self.solutionLoadError.emit(error_msg)
+            return False
+    
+    @pyqtSlot(result='QVariantMap')
+    def getLoadedSolutionSettings(self):
+        """Get the loaded solution settings to populate UI controls.
+        
+        Returns:
+            QVariantMap: Dictionary containing solution settings
+        """
+        if not self._solution_loaded or not self._loaded_solution_data:
+            return {}
+        
+        try:
+            data = self._loaded_solution_data
+            
+            # Extract focus point (target)
+            target = data.get('target', {})
+            focus_position = target.get('position', [0, 0, 25])
+            
+            # Extract pulse settings
+            pulse = data.get('pulse', {})
+            frequency = pulse.get('frequency', 400000)
+            duration = pulse.get('duration', 2e-5)
+            
+            # Extract sequence settings
+            sequence = data.get('sequence', {})
+            pulse_interval = sequence.get('pulse_interval', 0.1)
+            pulse_count = sequence.get('pulse_count', 1)
+            pulse_train_interval = sequence.get('pulse_train_interval', 1)
+            pulse_train_count = sequence.get('pulse_train_count', 1)
+            
+            # Extract voltage
+            voltage = data.get('voltage', 12.0)
+            
+            return {
+                'xInput': float(focus_position[0]),
+                'yInput': float(focus_position[1]),
+                'zInput': float(focus_position[2]),
+                'frequency': float(frequency) / 1e3,
+                'duration': float(duration) * 1e6,
+                'voltage': float(voltage),
+                'pulseInterval': float(pulse_interval) * 1e3,
+                'pulseCount': int(pulse_count),
+                'trainInterval': float(pulse_train_interval),
+                'trainCount': int(pulse_train_count)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error extracting solution settings: {e}")
+            return {}
+    
+    @pyqtSlot()
+    def makeLoadedSolutionEditable(self):
+        """Release the loaded solution data while preserving UI field values."""
+        if self._solution_loaded:
+            solution_name = self._solution_name
+            self._solution_loaded = False
+            self._loaded_solution_data = None
+            self._solution_name = ""
+            self.solutionStateChanged.emit()
+            logger.info(f"Released solution '{solution_name}' - UI fields preserved, controls are now editable")
+    
+    @pyqtSlot(str, str)
+    def loadTestReport(self, file_path, target):
+        """Load and validate test report against specified TXM module"""
+        def _run():
+            try:
+                # Parse the target to get module number
+                module = _parse_tx_module(target)
+                if module is None:
+                    self.testReportLoaded.emit(False, f"Unsupported target: {target}")
+                    return
+                
+                # Convert file URL to local path
+                if file_path.startswith("file:///"):
+                    file_path_clean = file_path[8:]  # Remove file:/// prefix
+                elif file_path.startswith("file://"):
+                    file_path_clean = file_path[7:]  # Remove file:// prefix
+                else:
+                    file_path_clean = file_path
+                    
+                logger.info(f"Loading test report from: {file_path_clean} for {target}")
+                
+                # Read the test report
+                report_df = read_test_report(file_path_clean)
+                config = test_report_to_config(report_df)
+                
+                # Extract report information
+                report_sn = config.get('sn', 'Unknown')
+                report_hwid = config.get('hwid', 'Unknown')
+                report_freq = config.get('freq', 'Unknown')
+                
+                report_info = f"SN: {report_sn}, HWID: {report_hwid}, Freq: {report_freq} kHz"
+                
+                # Check if we have a connected TXM to compare against
+                if self._txConnected:
+                    try:
+                        # Check against specified module
+                        check_result = check_config_against_device(self.interface, config, module=module)
+                        if check_result is not False:  # None means warnings but valid, False means mismatch
+                            # Convert config to JSON string and populate User Config editor
+                            import json
+                            json_str = json.dumps(config, indent=2)
+                            self.userConfigRead.emit(target, json_str)
+                            
+                            message = f"Test report matches {target}! {report_info} - Config loaded into editor."
+                            self.testReportLoaded.emit(True, message)
+                        else:
+                            message = f"Test report does NOT match {target}. Report: {report_info}"
+                            self.testReportLoaded.emit(False, message)
+                    except Exception as e:
+                        logger.warning(f"Could not verify report against device: {e}")
+                        message = f"Test report loaded but could not verify against {target}: {e}"
+                        self.testReportLoaded.emit(False, message)
+                else:
+                    message = f"Test report loaded. No TXM connected for verification. {report_info}"
+                    self.testReportLoaded.emit(False, message)
+                    
+            except Exception as e:
+                error_msg = f"Failed to load test report: {str(e)}"
+                logger.error(error_msg)
+                self.testReportLoaded.emit(False, error_msg)
+                
+        threading.Thread(target=_run, daemon=True).start()
+
     @pyqtSlot(int, int, int)
     def runThermalTest(self, frequency, num_modules, test_case):
         """Run the transmitter heating test."""
@@ -989,11 +1506,7 @@ class LIFUConnector(QObject):
         # self._state = TX_CONNECTED
         # self.stateChanged.emit(self._state)  # Notify QML of state update
 
-    # In your LIFUConnector QObject class
-
     testProgressUpdated = pyqtSignal(float, float, str, str, str)
-    # args: total_frac, case_frac, total_label, case_label, status_color
-    # status_color: "#2ECC71" pass, "#E74C3C" fail, "#E2A84A" running, "#BDC3C7" idle
 
     def _start_progress_timer(self):
         self._progress_timer = QTimer(self)
@@ -1006,9 +1519,7 @@ class LIFUConnector(QObject):
             self._progress_timer.stop()
 
     def _emit_test_progress(self):
-        runner = self.thermal_test_instance  # however you reference ThermalStressTest
-
-        # print("_emit_test_progress called")  # add this as first line
+        runner = self.thermal_test_instance
 
         total_cases = len(TEST_CASES)
         starting_case = getattr(runner, "starting_test_case", 1)
@@ -1017,8 +1528,13 @@ class LIFUConnector(QObject):
         sequence_duration = getattr(runner, "sequence_duration", 0)
         test_case_start_time = getattr(runner, "test_case_start_time", 0.0)
         start_time = getattr(runner, "start_time", 0.0)
+        is_in_cooldown = getattr(runner, "is_in_cooldown", False)
 
-        # Per-case fraction
+        # Calculate the actual number of cases that will be run
+        actual_total_cases = total_cases - starting_case + 1
+        total_runtime = actual_total_cases * sequence_duration
+
+        # Per-case fraction: based on this specific test case's sequence_duration
         if status == "running" and sequence_duration > 0 and test_case_start_time > 0:
             elapsed_case = time.time() - test_case_start_time
             case_frac = min(elapsed_case / sequence_duration, 1.0)
@@ -1027,17 +1543,30 @@ class LIFUConnector(QObject):
         else:
             case_frac = 0.0
 
-        # Total fraction
-        cases_done = current_case - starting_case
-        total_frac = min((cases_done + case_frac) / total_cases, 1.0)
+        # Total fraction: sum of completed cases + current case progress
+        # During cooldown, the overall progress should not advance beyond completed cases
+        cases_completed = current_case - starting_case  # 0-based count of fully completed cases
+        
+        if is_in_cooldown:
+            # Cooldown: overall progress is only completed cases, no current case progress
+            total_frac = min(cases_completed / actual_total_cases, 1.0)
+        else:
+            # Running or other status: include current case progress
+            total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
 
         # Labels
         elapsed_total = time.time() - start_time if start_time else 0.0
         total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
-        case_label = f"Test case {current_case} of {total_cases}  —  {status}"
+        
+        if is_in_cooldown:
+            case_label = f"Test case {current_case} of {total_cases}  —  waiting for temperature cooldown"
+        else:
+            case_label = f"Test case {current_case} of {total_cases}  —  {status}"
 
         # Case bar color
-        if status == "running":
+        if is_in_cooldown:
+            status_color = "#3498DB"       # blue for cooldown
+        elif status == "running":
             status_color = "#E2A84A"       # yellow
         elif status == "passed":
             status_color = "#2ECC71"       # green
@@ -1049,10 +1578,10 @@ class LIFUConnector(QObject):
             status_color = "#BDC3C7"       # grey/idle
 
         self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color)
-        # print(f"Signal emitted: {total_frac:.2f}, {case_frac:.2f}")
 
-        # Stop when terminal
-        if status in ("aborted by user", "error") or (
-            current_case >= (starting_case + total_cases - 1) and case_frac >= 1.0
-        ):
+        # Stop when terminal - check if we've completed all cases or hit an error
+        if status in ("aborted by user", "error"):
+            self._stop_progress_timer()
+        elif current_case >= total_cases and case_frac >= 1.0 and not is_in_cooldown:
+            # All cases completed and not in cooldown
             self._stop_progress_timer()
