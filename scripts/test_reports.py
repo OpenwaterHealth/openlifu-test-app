@@ -267,13 +267,15 @@ def read_test_report(filename: str) -> pd.DataFrame:
         all_data.append(report_df)
 
     report_df = pd.concat(all_data)
+    print("Report DataFrame:")
+    print(report_df)
     return report_df
 
 def report_to_matrix_dict(report_df: pd.DataFrame, focal_gain_lut=FOCAL_GAIN_LUT) -> dict:
     LIFU_400 = {'id': r'txm_400_{sn}', 'name': r'TXM 400kHz (S/N {sn})', 'nx': 8, 'ny': 8, 'pitch': 5, 'frequency': 400e3, 'kerf': 0.3, 'crosstalk_frac': 0.12, 'crosstalk_dist': 5.05e-3}
     LIFU_155 = {'id': r'txm_155_{sn}', 'name': r'TXM 155kHz (S/N {sn})', 'nx': 8, 'ny': 8, 'pitch': 5, 'frequency': 155e3, 'kerf': 0.3, 'crosstalk_frac': 0.12, 'crosstalk_dist': 5.05e-3}
     LIFU_MODULES = {400: LIFU_400, 155: LIFU_155}
-    freq_kHz = report_df.loc[ROW_FREQ]["Value"]
+    freq_kHz = int(report_df.loc[ROW_FREQ]["Value"])
     voltage = report_df.loc[ROW_VOLTAGE]["Value"]
     sn = report_df.loc[ROW_SN]["Value"]
     pattern = r'[^a-zA-Z0-9\-\_]'
