@@ -1519,7 +1519,13 @@ class LIFUConnector(QObject):
             self._progress_timer.stop()
 
     def _emit_test_progress(self):
+<<<<<<< Updated upstream
         runner = self.thermal_test_instance
+=======
+        runner = self.thermal_test_instance  # however you reference ThermalStressTest
+
+        # print("_emit_test_progress called")  # add this as first line
+>>>>>>> Stashed changes
 
         total_cases = len(TEST_CASES)
         starting_case = getattr(runner, "starting_test_case", 1)
@@ -1528,6 +1534,7 @@ class LIFUConnector(QObject):
         sequence_duration = getattr(runner, "sequence_duration", 0)
         test_case_start_time = getattr(runner, "test_case_start_time", 0.0)
         start_time = getattr(runner, "start_time", 0.0)
+<<<<<<< Updated upstream
         is_in_cooldown = getattr(runner, "is_in_cooldown", False)
 
         # Calculate the actual number of cases that will be run
@@ -1535,6 +1542,10 @@ class LIFUConnector(QObject):
         total_runtime = actual_total_cases * sequence_duration
 
         # Per-case fraction: based on this specific test case's sequence_duration
+=======
+
+        # Per-case fraction
+>>>>>>> Stashed changes
         if status == "running" and sequence_duration > 0 and test_case_start_time > 0:
             elapsed_case = time.time() - test_case_start_time
             case_frac = min(elapsed_case / sequence_duration, 1.0)
@@ -1543,6 +1554,7 @@ class LIFUConnector(QObject):
         else:
             case_frac = 0.0
 
+<<<<<<< Updated upstream
         # Total fraction: sum of completed cases + current case progress
         # During cooldown, the overall progress should not advance beyond completed cases
         cases_completed = current_case - starting_case  # 0-based count of fully completed cases
@@ -1553,10 +1565,16 @@ class LIFUConnector(QObject):
         else:
             # Running or other status: include current case progress
             total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
+=======
+        # Total fraction
+        cases_done = current_case - starting_case
+        total_frac = min((cases_done + case_frac) / total_cases, 1.0)
+>>>>>>> Stashed changes
 
         # Labels
         elapsed_total = time.time() - start_time if start_time else 0.0
         total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
+<<<<<<< Updated upstream
         
         if is_in_cooldown:
             case_label = f"Test case {current_case} of {total_cases}  —  waiting for temperature cooldown"
@@ -1567,6 +1585,12 @@ class LIFUConnector(QObject):
         if is_in_cooldown:
             status_color = "#3498DB"       # blue for cooldown
         elif status == "running":
+=======
+        case_label = f"Test case {current_case} of {total_cases}  —  {status}"
+
+        # Case bar color
+        if status == "running":
+>>>>>>> Stashed changes
             status_color = "#E2A84A"       # yellow
         elif status == "passed":
             status_color = "#2ECC71"       # green
@@ -1578,10 +1602,19 @@ class LIFUConnector(QObject):
             status_color = "#BDC3C7"       # grey/idle
 
         self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color)
+<<<<<<< Updated upstream
 
         # Stop when terminal - check if we've completed all cases or hit an error
         if status in ("aborted by user", "error"):
             self._stop_progress_timer()
         elif current_case >= total_cases and case_frac >= 1.0 and not is_in_cooldown:
             # All cases completed and not in cooldown
+=======
+        # print(f"Signal emitted: {total_frac:.2f}, {case_frac:.2f}")
+
+        # Stop when terminal
+        if status in ("aborted by user", "error") or (
+            current_case >= (starting_case + total_cases - 1) and case_frac >= 1.0
+        ):
+>>>>>>> Stashed changes
             self._stop_progress_timer()
