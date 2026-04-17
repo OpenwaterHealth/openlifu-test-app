@@ -93,9 +93,6 @@ Rectangle {
                 v12State = "On"
             else
                 v12State = "Off"
-
-            hvStatus.text = hvState // Update the UI with the new voltage state
-            v12Status.text = v12State
         }
 
         // Handle voltage readings updates
@@ -464,7 +461,7 @@ Rectangle {
                                         }
                                     }
                                     else {
-                                        if(LIFUConnector.hvState == "On")
+                                        if(LIFUConnector.hvState)
                                         {
                                             LIFUConnector.toggleHV()
                                         }
@@ -592,7 +589,7 @@ Rectangle {
                                 Layout.preferredWidth: 120
                                 color: "#4A90E2"
                                 font.pixelSize: 16
-                                text: "Off"
+                                text: LIFUConnector.v12State ? "On" : "Off"
                             }
 
                             Item {
@@ -838,14 +835,22 @@ Rectangle {
                     radius: 10
                     border.color: "#3E4E6F"
                     border.width: 2
+                    clip: true
 
                     ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 20
-                        spacing: 10
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.right: parent.right
+                        anchors.rightMargin: 8
+                        anchors.top: parent.top
+                        anchors.topMargin: 5
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 5
+                        spacing: 5
 
                         // HV Status Indicator
                         RowLayout {
+                            Layout.fillWidth: true
                             spacing: 8
 
                             Text { text: "HV"; font.pixelSize: 16; color: "#BDC3C7" }
@@ -946,8 +951,13 @@ Rectangle {
 
 
                         ColumnLayout {
-                            Layout.alignment: Qt.AlignHCenter 
-                            spacing: 25  
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.fillHeight: true
+                            Layout.fillWidth: true
+                            Layout.topMargin: -5
+                            spacing: 25
+
+                            Item { Layout.fillHeight: true }
 
                             // TEMP #1 Widget
                             TemperatureWidget {
@@ -964,6 +974,8 @@ Rectangle {
                                 tempName: "Temperature #2"
                                 Layout.alignment: Qt.AlignHCenter
                             }
+
+                            Item { Layout.fillHeight: true }
                         }
 
                         // Soft Reset Button
@@ -971,34 +983,29 @@ Rectangle {
                             Layout.fillWidth: true
                             height: 40
                             radius: 10
-                            color: enabled ? "#E74C3C" : "#7F8C8D"  // Red when enabled, gray when disabled
-                            enabled: LIFUConnector.hvConnected  // Enable/disable based on HV connection
+                            color: enabled ? "#E74C3C" : "#7F8C8D"
+                            enabled: LIFUConnector.hvConnected
 
                             Text {
                                 text: "Soft Reset"
                                 anchors.centerIn: parent
-                                color: parent.enabled ? "white" : "#BDC3C7"  // White when enabled, light gray when disabled
+                                color: parent.enabled ? "white" : "#BDC3C7"
                                 font.pixelSize: 18
                                 font.weight: Font.Bold
                             }
 
                             MouseArea {
                                 anchors.fill: parent
-                                enabled: parent.enabled  // Disable MouseArea when the button is disabled
+                                enabled: parent.enabled
                                 onClicked: {
                                     console.log("Soft Reset Triggered")
                                     LIFUConnector.softResetHV()
                                 }
-
                                 onEntered: {
-                                    if (parent.enabled) {
-                                        parent.color = "#C0392B"  // Darker red on hover (only when enabled)
-                                    }
+                                    if (parent.enabled) parent.color = "#C0392B"
                                 }
                                 onExited: {
-                                    if (parent.enabled) {
-                                        parent.color = "#E74C3C"  // Restore original color (only when enabled)
-                                    }
+                                    if (parent.enabled) parent.color = "#E74C3C"
                                 }
                             }
 

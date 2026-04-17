@@ -7,21 +7,39 @@ import argparse
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
-from lifu_connector import LIFUConnector
 from pathlib import Path
 
 from version import get_version
 
 APP_VERSION = get_version()
 
-# run with lab supply
-# set PYTHONPATH=%cd%\src;%PYTHONPATH%
-# python main.py --hv-test-mode 
-
+# ---------------------------------------------------------------------------
+# Logging – configure before any other imports that use the logging framework
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
+
+# run with lab supply:
+#   set PYTHONPATH=%cd%\src;%PYTHONPATH%
+#   python main.py --hv-test-mode
 
 # Suppress PyQt6 DeprecationWarnings related to SIP
 warnings.simplefilter("ignore", DeprecationWarning)
+
+# ---------------------------------------------------------------------------
+# Make openlifu_sdk importable when running directly from source
+# (no-op when the package is installed in the active venv)
+# ---------------------------------------------------------------------------
+_SDK_SRC = Path(__file__).parent.parent / "lifu" / "openlifu-sdk" / "src"
+if _SDK_SRC.is_dir() and str(_SDK_SRC) not in sys.path:
+    sys.path.insert(0, str(_SDK_SRC))
+    logger.debug("Added SDK source path: %s", _SDK_SRC)
+
+from lifu_connector import LIFUConnector  # noqa: E402 – must come after path setup
 
 def resource_path(rel: str) -> str:
     import sys, os
