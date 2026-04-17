@@ -107,7 +107,7 @@ Rectangle {
         function onTestProgressUpdated(total_frac, case_frac, total_label, case_label, status_color) {
             testProgressSection.visible = true
             testProgressSection.totalProgressValue = total_frac
-            testProgressSection.totalProgressLabelText = total_label
+            // testProgressSection.totalProgressLabelText = total_label
             testProgressSection.caseProgressValue = case_frac
             testProgressSection.caseProgressLabelText = case_label
             testProgressSection.progressColor = status_color
@@ -361,45 +361,45 @@ Rectangle {
                         }
 
                         // Soft Reset Button
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: 40
-                            radius: 10
-                            color: enabled ? "#E74C3C" : "#7F8C8D"  // Red when enabled, gray when disabled
-                            enabled: LIFUConnector.hvConnected  // Enable/disable based on HV connection
+                        // Rectangle {
+                        //     Layout.fillWidth: true
+                        //     height: 40
+                        //     radius: 10
+                        //     color: enabled ? "#E74C3C" : "#7F8C8D"  // Red when enabled, gray when disabled
+                        //     enabled: LIFUConnector.hvConnected  // Enable/disable based on HV connection
 
-                            Text {
-                                text: "Soft Reset"
-                                anchors.centerIn: parent
-                                color: parent.enabled ? "white" : "#BDC3C7"  // White when enabled, light gray when disabled
-                                font.pixelSize: 18
-                                font.weight: Font.Bold
-                            }
+                        //     Text {
+                        //         text: "Soft Reset"
+                        //         anchors.centerIn: parent
+                        //         color: parent.enabled ? "white" : "#BDC3C7"  // White when enabled, light gray when disabled
+                        //         font.pixelSize: 18
+                        //         font.weight: Font.Bold
+                        //     }
 
-                            MouseArea {
-                                anchors.fill: parent
-                                enabled: parent.enabled  // Disable MouseArea when the button is disabled
-                                onClicked: {
-                                    console.log("Soft Reset Triggered")
-                                    LIFUConnector.softResetHV()
-                                }
+                        //     MouseArea {
+                        //         anchors.fill: parent
+                        //         enabled: parent.enabled  // Disable MouseArea when the button is disabled
+                        //         onClicked: {
+                        //             console.log("Soft Reset Triggered")
+                        //             LIFUConnector.softResetHV()
+                        //         }
 
-                                onEntered: {
-                                    if (parent.enabled) {
-                                        parent.color = "#C0392B"  // Darker red on hover (only when enabled)
-                                    }
-                                }
-                                onExited: {
-                                    if (parent.enabled) {
-                                        parent.color = "#E74C3C"  // Restore original color (only when enabled)
-                                    }
-                                }
-                            }
+                        //         onEntered: {
+                        //             if (parent.enabled) {
+                        //                 parent.color = "#C0392B"  // Darker red on hover (only when enabled)
+                        //             }
+                        //         }
+                        //         onExited: {
+                        //             if (parent.enabled) {
+                        //                 parent.color = "#E74C3C"  // Restore original color (only when enabled)
+                        //             }
+                        //         }
+                        //     }
 
-                            Behavior on color {
-                                ColorAnimation { duration: 200 }
-                            }
-                        }
+                        //     Behavior on color {
+                        //         ColorAnimation { duration: 200 }
+                        //     }
+                        // }
                     }
                 }
             }
@@ -419,7 +419,7 @@ Rectangle {
             property string caseStatusColor: "#BDC3C7"
             property real totalProgressValue: 0.0
             property real caseProgressValue: 0.0
-            property string totalProgressLabelText: "Overall: waiting..."
+            // property string totalProgressLabelText: "Overall: waiting..."
             property string caseProgressLabelText: "Test case: waiting..."
             property string progressColor: "#BDC3C7"
 
@@ -475,37 +475,37 @@ Rectangle {
                     }
                 }
 
-                Text {
-                    id: totalProgressLabelItem
-                    text: testProgressSection.totalProgressLabelText
-                    color: "#BDC3C7"
-                    font.pixelSize: 12
-                    Layout.fillWidth: true
-                }
+                // Text {
+                //     id: totalProgressLabelItem
+                //     text: testProgressSection.totalProgressLabelText
+                //     color: "#BDC3C7"
+                //     font.pixelSize: 12
+                //     Layout.fillWidth: true
+                // }
 
-                ProgressBar {
-                    id: totalProgressBar
-                    Layout.fillWidth: true
-                    from: 0.0
-                    to: 1.0
-                    value: testProgressSection.totalProgressValue
+                // ProgressBar {
+                //     id: totalProgressBar
+                //     Layout.fillWidth: true
+                //     from: 0.0
+                //     to: 1.0
+                //     value: testProgressSection.totalProgressValue
 
-                    background: Rectangle {
-                        implicitHeight: 14
-                        color: "#2A2F3B"
-                        radius: 7
-                        border.color: "#3E4E6F"
-                    }
-                    contentItem: Item {
-                        implicitHeight: 14
-                        Rectangle {
-                            width: totalProgressBar.visualPosition * parent.width
-                            height: parent.height
-                            radius: 7
-                            color: totalProgressBar.value >= 1.0 ? "#2ECC71" : "#4A90E2"
-                        }
-                    }
-                }
+                //     background: Rectangle {
+                //         implicitHeight: 14
+                //         color: "#2A2F3B"
+                //         radius: 7
+                //         border.color: "#3E4E6F"
+                //     }
+                //     contentItem: Item {
+                //         implicitHeight: 14
+                //         Rectangle {
+                //             width: totalProgressBar.visualPosition * parent.width
+                //             height: parent.height
+                //             radius: 7
+                //             color: totalProgressBar.value >= 1.0 ? "#2ECC71" : "#4A90E2"
+                //         }
+                //     }
+                // }
             }
         }
 

@@ -66,11 +66,11 @@ Rectangle {
 
         
         IconButton {
-            buttonIcon: "\ueb34"
-            buttonText: "Testing"
+            buttonIcon: "\ueb2f"
+            buttonText: "Verification"
             Layout.alignment: Qt.AlignHCenter
             backgroundColor: sidebarMenu.activeButtonIndex === 3 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 0 ? "#2C3E50" : "#BDC3C7"
+            iconColor: sidebarMenu.activeButtonIndex === 3 ? "#2C3E50" : "#BDC3C7"
             onClicked: {
                 sidebarMenu.handleButtonClick(3); // Call the global function
             }
@@ -83,7 +83,7 @@ Rectangle {
             enabled: true
             Layout.alignment: Qt.AlignHCenter
             backgroundColor: sidebarMenu.activeButtonIndex === 4 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 3 ? "#2C3E50" : "#BDC3C7"
+            iconColor: sidebarMenu.activeButtonIndex === 4 ? "#2C3E50" : "#BDC3C7"
             onClicked: {
                 sidebarMenu.handleButtonClick(4); // Call the global function
             }
