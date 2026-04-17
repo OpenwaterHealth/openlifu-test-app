@@ -141,22 +141,19 @@ Rectangle {
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 20
-                spacing: 10
+                spacing: 14
 
                 // Vertical Stack Section
                 ColumnLayout {
                     Layout.fillHeight: true
-                    Layout.preferredWidth: parent.width * 0.65
+                    Layout.preferredWidth: parent.width * 0.60
                     spacing: 10
                     
                     // Communication Tests Box
                     Rectangle {
-                        // Layout.fillWidth: true
+                        Layout.fillWidth: true
                         Layout.fillHeight: true
-                        width: parent.width
-                        height: parent.height
-                        // height: 195
-                        radius: 6
+                        radius: 10
                         color: "#1E1E20"
                         border.color: "#3E4E6F"
                         border.width: 2
@@ -174,6 +171,8 @@ Rectangle {
                         GroupBox {
                             title: "Short Duration Hardware/Software Test"
                             Layout.fillWidth: true
+                            anchors.fill: parent
+                            anchors.margins: 12
 
                             GridLayout {
                                 columns: 2
@@ -249,6 +248,7 @@ Rectangle {
                 Rectangle {
                     Layout.fillHeight: true
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 420
                     color: "#1E1E20"
                     radius: 10
                     border.color: "#3E4E6F"
@@ -261,6 +261,7 @@ Rectangle {
 
                         // HV Status Indicator
                         RowLayout {
+                            Layout.fillWidth: true
                             spacing: 8
 
                             Text { text: "HV"; font.pixelSize: 16; color: "#BDC3C7" }
@@ -327,6 +328,7 @@ Rectangle {
 
                         // Display Device ID (Smaller Text)
                         RowLayout {
+                            Layout.fillWidth: true
                             spacing: 8
                             Text { text: "Device ID:"; color: "#BDC3C7"; font.pixelSize: 14 }
                             Text { text: deviceId; color: "#3498DB"; font.pixelSize: 14 }
@@ -334,16 +336,25 @@ Rectangle {
 
                         // Display Firmware Version (Smaller Text)
                         RowLayout {
+                            Layout.fillWidth: true
                             spacing: 8
                             Text { text: "Firmware Version:"; color: "#BDC3C7"; font.pixelSize: 14 }
                             Text { text: firmwareVersion; color: "#2ECC71"; font.pixelSize: 14 }
                         }
 
+                        Item {
+                            Layout.fillHeight: true
+                        }
+
 
                         RowLayout {
-                            Layout.alignment: Qt.AlignHCenter
                             Layout.fillWidth: true
-                            spacing: 12
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 16
+
+                            Item {
+                                Layout.fillWidth: true
+                            }
 
                             // TEMP #1 Widget
                             TemperatureWidget {
@@ -360,6 +371,14 @@ Rectangle {
                                 tempName: "Temperature #2"
                                 Layout.alignment: Qt.AlignHCenter
                             }
+
+                            Item {
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        Item {
+                            Layout.fillHeight: true
                         }
 
                         // Soft Reset Button
