@@ -1471,7 +1471,6 @@ class LIFUConnector(QObject):
             finally:
                 self._running = False
                 self.update_state()
-                self._stop_progress_timer()
                 loop.close()
                 logger.info(f"Updated state: {self._state}")
 
@@ -1577,9 +1576,9 @@ class LIFUConnector(QObject):
         total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
         
         if is_in_cooldown:
-            case_label = f"Test case {current_case} of {total_cases}  —  waiting for temperature cooldown"
+            case_label = f"waiting for temperature cooldown"
         else:
-            case_label = f"Test case {current_case} of {total_cases}  —  {status}"
+            case_label = f"{status}"
 
         logger.info(f"%%%%%%%%progress: status={status}, seq_dur={sequence_duration}, start={test_case_start_time}, case_frac={case_frac}")
 
@@ -1600,9 +1599,7 @@ class LIFUConnector(QObject):
 
         self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color)
 
-        # Stop when terminal - check if we've completed all cases or hit an error
-        if status in ("aborted by user", "error"):
-            self._stop_progress_timer()
-        elif current_case >= total_cases and case_frac >= 1.0 and not is_in_cooldown:
-            # All cases completed and not in cooldown
+        # Keep polling until the worker thread has fully exited run(), including its finally block.
+        worker_alive = hasattr(self, "running_thread") and self.running_thread.is_alive()
+        if not worker_alive:
             self._stop_progress_timer()

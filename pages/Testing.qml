@@ -132,6 +132,7 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            Layout.maximumHeight: 500  // Prevent main box from taking all space
             color: "#1E1E20"
             radius: 10
             border.color: "#3E4E6F"
@@ -339,9 +340,10 @@ Rectangle {
                         }
 
 
-                        ColumnLayout {
-                            Layout.alignment: Qt.AlignHCenter 
-                            spacing: 25  
+                        RowLayout {
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.fillWidth: true
+                            spacing: 12
 
                             // TEMP #1 Widget
                             TemperatureWidget {
@@ -409,18 +411,18 @@ Rectangle {
         Rectangle {
             id: testProgressSection
             Layout.fillWidth: true
-            height: progressColumn.implicitHeight + 32
+            Layout.preferredHeight: 120
             color: "#1E1E20"
             radius: 10
             border.color: "#3E4E6F"
             border.width: 2
-            visible: false
+            visible: true
 
             property string caseStatusColor: "#BDC3C7"
             property real totalProgressValue: 0.0
             property real caseProgressValue: 0.0
             // property string totalProgressLabelText: "Overall: waiting..."
-            property string caseProgressLabelText: "Test case: waiting..."
+            property string caseProgressLabelText: ""
             property string progressColor: "#BDC3C7"
 
             onProgressColorChanged: caseStatusColor = progressColor
