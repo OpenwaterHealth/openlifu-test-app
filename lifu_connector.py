@@ -289,7 +289,7 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
             if device.upper() == "TX":
                 if not self._tx_connected:
                     return False
-                return self._interface.transmitter.ping()
+                return self._interface.transmitter.ping(module=module)
             else:  # HV / CONSOLE
                 if not self._hv_connected:
                     return False
@@ -305,7 +305,7 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
             if device.upper() == "TX":
                 if not self._tx_connected:
                     return False
-                return self._interface.transmitter.toggle_led()
+                return self._interface.transmitter.toggle_led(module=module)
             else:
                 if not self._hv_connected:
                     return False
@@ -321,7 +321,7 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
             if device.upper() == "TX":
                 if not self._tx_connected:
                     return False
-                _, length = self._interface.transmitter.echo()
+                _, length = self._interface.transmitter.echo(module=module)
                 return length > 0
             else:
                 if not self._hv_connected:

@@ -41,8 +41,8 @@ class TxSlotsMixin:
         try:
             modules = []
             for i in range(self._num_modules):
-                fw    = self._interface.transmitter.get_version()
-                hw_id = self._interface.transmitter.get_hardware_id() or "N/A"
+                fw    = self._interface.transmitter.get_version(module=i)
+                hw_id = self._interface.transmitter.get_hardware_id(module=i) or "N/A"
                 modules.append({"firmwareVersion": fw, "deviceId": hw_id})
             self.txDeviceInfoReceived.emit(modules)
         except Exception as exc:
