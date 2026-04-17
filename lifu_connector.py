@@ -75,6 +75,9 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
     hvStateChanged          = pyqtSignal()
     v12StateChanged         = pyqtSignal()
 
+    # Version info
+    sdkVersionChanged       = pyqtSignal()
+
     # Generic hardware events (consumed by Demo.qml)
     signalConnected         = pyqtSignal(str, str)       # descriptor, port
     signalDisconnected      = pyqtSignal(str, str)       # descriptor, port
@@ -158,7 +161,7 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
     def state(self) -> int:
         return self._state
 
-    @pyqtProperty(str)
+    @pyqtProperty(str, notify=sdkVersionChanged)
     def sdkVersion(self) -> str:
         return self._sdk_version
 

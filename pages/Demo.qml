@@ -1464,7 +1464,8 @@ Rectangle {
             }
         }
 
-        function onStateChanged(state) {
+        function onStateChanged() {
+            var state = LIFUConnector.state
             statusOverrideText = "";
 
             if (previousConnectorState === 4 && state !== 4) {

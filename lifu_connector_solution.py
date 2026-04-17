@@ -45,7 +45,7 @@ class SolutionSlotsMixin:
             solution   = self._build_solution_dict(x, y, z, frequency, voltage,
                                                    pulse_interval, pulse_count,
                                                    train_interval, train_count, duration)
-            image_data = _gen_plot(solution, mode="buffer")
+            image_data = _gen_plot(solution, mode=mode)
             if image_data:
                 # Strip data-URI prefix if present (QML handler prepends it)
                 if image_data.startswith("data:image/png;base64,"):
