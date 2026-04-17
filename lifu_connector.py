@@ -1545,6 +1545,7 @@ class LIFUConnector(QObject):
         test_case_start_time = getattr(runner, "test_case_start_time", 0.0)
         start_time = getattr(runner, "start_time", 0.0) or 0.0
         is_in_cooldown = getattr(runner, "is_in_cooldown", False)
+        log_file_path = getattr(runner, "log_file_path", "")
 
 
         # Calculate the actual number of cases that will be run
