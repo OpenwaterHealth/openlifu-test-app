@@ -104,14 +104,13 @@ Rectangle {
             rgbLedDropdown.currentIndex = stateValue  // Sync ComboBox to received state
         }
 
-        function onTestProgressUpdated(totalFrac, caseFrac, totalLabel, caseLabel, statusColor) {
-            // console.log(`Progress Update - Total: ${totalFrac.toFixed(2)}, Case: ${caseFrac.toFixed(2)}`)
+        function onTestProgressUpdated(total_frac, case_frac, total_label, case_label, status_color) {
             testProgressSection.visible = true
-            totalProgressBar.value  = totalFrac
-            caseProgressBar.value   = caseFrac
-            totalProgressLabel.text = totalLabel
-            caseProgressLabel.text  = caseLabel
-            testProgressSection.caseStatusColor = statusColor
+            testProgressSection.totalProgressValue = total_frac
+            testProgressSection.totalProgressLabelText = total_label
+            testProgressSection.caseProgressValue = case_frac
+            testProgressSection.caseProgressLabelText = case_label
+            testProgressSection.progressColor = status_color
         }
     }
 
@@ -172,7 +171,7 @@ Rectangle {
                         // }
 
                         GroupBox {
-                            title: "Test case settings"
+                            title: "Short Duration Hardware/Software Test"
                             Layout.fillWidth: true
 
                             GridLayout {
@@ -210,20 +209,6 @@ Rectangle {
                                     }
                                 }
 
-                                Text { text: "Starting Test Case:"; color: "white" }
-                                ComboBox {
-                                    id: testCaseDropdown
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 32
-                                    model: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-                                    
-                                    onActivated: {
-                                        var selectedIndex = testCaseDropdown.currentText;
-                                        console.log("Selected " + selectedIndex);
-                                        
-                                    }
-                                }
-
                                 Button {
                                     text: "Start"
                                     Layout.fillWidth: true
@@ -235,7 +220,7 @@ Rectangle {
                                     }
                                     onClicked: {
                                         console.log("Running thermal test...");
-                                        LIFUConnector.runThermalTest(frequencyInput.text, numModulesDropdown.currentText, testCaseDropdown.currentText);
+                                        LIFUConnector.runThermalTest(frequencyInput.text, numModulesDropdown.currentText);
                                     }
                                 }
 
@@ -432,6 +417,13 @@ Rectangle {
             visible: false
 
             property string caseStatusColor: "#BDC3C7"
+            property real totalProgressValue: 0.0
+            property real caseProgressValue: 0.0
+            property string totalProgressLabelText: "Overall: waiting..."
+            property string caseProgressLabelText: "Test case: waiting..."
+            property string progressColor: "#BDC3C7"
+
+            onProgressColorChanged: caseStatusColor = progressColor
 
             ColumnLayout {
                 id: progressColumn
@@ -452,8 +444,8 @@ Rectangle {
                 }
 
                 Text {
-                    id: caseProgressLabel
-                    text: "Test case: waiting..."
+                    id: caseProgressLabelItem
+                    text: testProgressSection.caseProgressLabelText
                     color: "#BDC3C7"
                     font.pixelSize: 12
                     Layout.fillWidth: true
@@ -464,7 +456,7 @@ Rectangle {
                     Layout.fillWidth: true
                     from: 0.0
                     to: 1.0
-                    value: 0.0
+                    value: testProgressSection.caseProgressValue
 
                     background: Rectangle {
                         implicitHeight: 14
@@ -484,8 +476,8 @@ Rectangle {
                 }
 
                 Text {
-                    id: totalProgressLabel
-                    text: "Overall: waiting..."
+                    id: totalProgressLabelItem
+                    text: testProgressSection.totalProgressLabelText
                     color: "#BDC3C7"
                     font.pixelSize: 12
                     Layout.fillWidth: true
@@ -496,7 +488,7 @@ Rectangle {
                     Layout.fillWidth: true
                     from: 0.0
                     to: 1.0
-                    value: 0.0
+                    value: testProgressSection.totalProgressValue
 
                     background: Rectangle {
                         implicitHeight: 14
@@ -516,10 +508,10 @@ Rectangle {
                 }
             }
         }
-    }
 
-    FontLoader {
-        id: iconFont
-        source: "../assets/fonts/keenicons-outline.ttf"
+        FontLoader {
+            id: iconFont
+            source: "../assets/fonts/keenicons-outline.ttf"
+        }
     }
 }
