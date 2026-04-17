@@ -839,13 +839,13 @@ Rectangle {
 
                     ColumnLayout {
                         anchors.left: parent.left
-                        anchors.leftMargin: 8
+                        anchors.leftMargin: 10
                         anchors.right: parent.right
-                        anchors.rightMargin: 8
+                        anchors.rightMargin: 10
                         anchors.top: parent.top
-                        anchors.topMargin: 5
+                        anchors.topMargin: 10
                         anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 5
+                        anchors.bottomMargin: 10
                         spacing: 5
 
                         // HV Status Indicator
