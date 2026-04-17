@@ -92,9 +92,17 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
     # Firmware
     fwVersionRead           = pyqtSignal(str, str)       # device_type, version
     fwUpdateProgress        = pyqtSignal(str, int)       # message, percent (-1 = error)
+    fwUpdateStatus          = pyqtSignal(str, bool, str) # device_type, success, message
 
     # User config
     userConfigRead          = pyqtSignal(str, str)       # target, json_str
+    userConfigStatus        = pyqtSignal(str, bool, str) # target, success, message
+
+    # TX module count updated
+    numModulesUpdated       = pyqtSignal()
+
+    # Test report
+    testReportLoaded        = pyqtSignal(bool, str)      # success, message
 
     # -----------------------------------------------------------------------
     # Initialisation
@@ -339,7 +347,7 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
     @pyqtSlot(str)
     def readUserConfig(self, target: str):
         try:
-            if target.startswith("TX"):
+            if target.upper().startswith("TX"):
                 if not self._tx_connected:
                     return
                 module = int(target.split()[-1]) if " " in target else 0
@@ -350,12 +358,7 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
                 cfg = self._interface.console.read_config()
 
             if cfg is not None:
-                json_str = (
-                    cfg.json_data
-                    if isinstance(cfg.json_data, str)
-                    else json.dumps(cfg.json_data, indent=2)
-                )
-                self.userConfigRead.emit(target, json_str)
+                self.userConfigRead.emit(target, cfg.get_json_str())
             else:
                 self.userConfigRead.emit(target, "{}")
         except Exception as exc:
@@ -364,7 +367,7 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
     @pyqtSlot(str, str)
     def writeUserConfig(self, target: str, json_str: str):
         try:
-            if target.startswith("TX"):
+            if target.upper().startswith("TX"):
                 if not self._tx_connected:
                     return
                 module = int(target.split()[-1]) if " " in target else 0
@@ -373,8 +376,10 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
                 if not self._hv_connected:
                     return
                 self._interface.console.write_config_json(json_str)
+            self.userConfigStatus.emit(target, True, "Config written successfully")
         except Exception as exc:
             logger.error("writeUserConfig: %s", exc)
+            self.userConfigStatus.emit(target, False, str(exc))
 
     @pyqtSlot(str, result=str)
     def getDefaultFirmwarePath(self, device_type: str) -> str:
@@ -397,6 +402,8 @@ class LIFUConnector(QObject, TxSlotsMixin, HvSlotsMixin, SolutionSlotsMixin):
             payload  = data.get("config", data)
             json_str = json.dumps(payload, indent=2)
             self.userConfigRead.emit(target, json_str)
+            self.testReportLoaded.emit(True, "Test report loaded successfully")
         except Exception as exc:
             logger.error("loadTestReport: %s", exc)
+            self.testReportLoaded.emit(False, str(exc))
 

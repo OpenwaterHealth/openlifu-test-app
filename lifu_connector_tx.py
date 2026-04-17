@@ -31,6 +31,7 @@ class TxSlotsMixin:
             count = self._interface.transmitter.get_module_count()
             if count > 0:
                 self._num_modules = count
+            self.numModulesUpdated.emit()
         except Exception as exc:
             logger.error("queryNumModules: %s", exc)
 
@@ -228,6 +229,8 @@ class TxSlotsMixin:
             self.fwUpdateProgress.emit("Entering DFU mode on transmitter…", 10)
             self._interface.transmitter.enter_dfu()
             self.fwUpdateProgress.emit("DFU mode entered. Flash firmware with DFU tool.", 100)
+            self.fwUpdateStatus.emit("transmitter", True, "DFU mode entered. Flash firmware with DFU tool.")
         except Exception as exc:
             logger.error("updateTransmitterFirmware: %s", exc)
             self.fwUpdateProgress.emit(f"Error: {exc}", -1)
+            self.fwUpdateStatus.emit("transmitter", False, str(exc))

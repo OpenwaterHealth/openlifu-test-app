@@ -206,6 +206,8 @@ class HvSlotsMixin:
             self.fwUpdateProgress.emit("Entering DFU mode on console…", 10)
             self._interface.console.enter_dfu()
             self.fwUpdateProgress.emit("DFU mode entered. Flash firmware with DFU tool.", 100)
+            self.fwUpdateStatus.emit("console", True, "DFU mode entered. Flash firmware with DFU tool.")
         except Exception as exc:
             logger.error("updateConsoleFirmware: %s", exc)
             self.fwUpdateProgress.emit(f"Error: {exc}", -1)
+            self.fwUpdateStatus.emit("console", False, str(exc))
