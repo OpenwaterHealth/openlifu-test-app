@@ -1402,7 +1402,7 @@ Rectangle {
         }
 
         function onSignalDataReceived(descriptor, message) {
-            console.log("Data from " + descriptor + ": " + message);
+            // console.log("Data from " + descriptor + ": " + message);
         }
 
         function onPlotGenerated(imageData) {

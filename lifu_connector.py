@@ -1,6 +1,7 @@
 from turtle import mode
 
-from PyQt6.QtCore import QObject, QRecursiveMutex, pyqtSignal, pyqtProperty, pyqtSlot
+from PyQt6.QtCore import QObject, QRecursiveMutex, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
+import asyncio
 import logging
 import os
 import shutil
@@ -62,11 +63,16 @@ RUNNING = 4
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
 
+
+class _Bridge(QObject):
+    """Thread-safe bridge from OWSignal to pyqtSignal."""
+    sig_connected = pyqtSignal(str, str) # (descriptor, port)
+    sig_disconnected = pyqtSignal(str, str) # (descriptor, port)
+    sig_data = pyqtSignal(str, str) # (descriptor, data)
+    sig_error = pyqtSignal(str, int, str)
+    
 class LIFUConnector(QObject):
     # Ensure signals are correctly defined
-    signalConnected = pyqtSignal(str, str)  # (descriptor, port)
-    signalDisconnected = pyqtSignal(str, str)  # (descriptor, port)
-    signalDataReceived = pyqtSignal(str, str)  # (descriptor, data)
     plotGenerated = pyqtSignal(str)  # Signal to notify QML when a new plot is ready
     solutionConfigured = pyqtSignal(str)  # Signal for solution configuration feedback
 
@@ -80,6 +86,11 @@ class LIFUConnector(QObject):
     temperatureHvUpdated = pyqtSignal(float, float)  # (temp1, temp2)
     temperatureTxUpdated = pyqtSignal(int, float, float)  # (tx_temp, amb_temp)
     numModulesUpdated    = pyqtSignal()  # (num_modules)
+
+    # Signals exposed to QML for connection/data events
+    signalConnected = pyqtSignal(str, str)     # (descriptor, port)
+    signalDisconnected = pyqtSignal(str, str)  # (descriptor, port)
+    signalDataReceived = pyqtSignal(str, str)  # (descriptor, data)
 
     stateChanged = pyqtSignal(int)  # Notifies QML when state changes
     connectionStatusChanged = pyqtSignal()  # 🔹 New signal for connection updates
@@ -127,13 +138,33 @@ class LIFUConnector(QObject):
 
         self._ensure_preset_solutions_seeded()
 
-        self.connect_signals()
+        self._bridge = _Bridge()
 
-    def connect_signals(self):
-        """Connect LIFUInterface signals to QML."""
-        self.interface.signal_connect.connect(self.on_connected)
-        self.interface.signal_disconnect.connect(self.on_disconnected)
-        self.interface.signal_data_received.connect(self.on_data_received)
+        # Wire OWSignals -> bridge
+        self.interface.hvcontroller.signal_connected.connect(self._bridge.sig_connected.emit)
+        self.interface.hvcontroller.signal_disconnected.connect(self._bridge.sig_disconnected.emit)
+        self.interface.hvcontroller.signal_data_received.connect(self._bridge.sig_data.emit)
+        self.interface.hvcontroller.signal_error.connect(self._bridge.sig_error.emit)
+
+        self.interface.txdevice.signal_connected.connect(self._bridge.sig_connected.emit)
+        self.interface.txdevice.signal_disconnected.connect(self._bridge.sig_disconnected.emit)
+        self.interface.txdevice.signal_data_received.connect(self._bridge.sig_data.emit)
+        self.interface.txdevice.signal_error.connect(self._bridge.sig_error.emit)
+
+        # Wire bridge -> UI
+        self._bridge.sig_connected.connect(self.on_connected)
+        self._bridge.sig_disconnected.connect(self.on_disconnected)
+        self._bridge.sig_data.connect(self.on_data_received)
+        self._bridge.sig_error.connect(self.on_error)
+
+        QTimer.singleShot(0, lambda: asyncio.ensure_future(self.interface.start_monitoring()))
+
+    def close(self):
+        """Shut down the underlying LIFU interface cleanly."""
+        try:
+            self.interface.close()
+        except Exception as e:
+            logger.error(f"Error closing LIFU interface: {e}")
 
     def update_state(self):
         """Update system state based on connection and configuration."""
@@ -246,29 +277,10 @@ class LIFUConnector(QObject):
             logger.error(f"Failed to parse status string: {e}")
             return result
 
-    @pyqtSlot()
-    async def start_monitoring(self):
-        """Start monitoring for device connection asynchronously."""
-        self._interface_mutex.lock()
-        try:
-            logger.info("Starting device monitoring...")
-            await self.interface.start_monitoring()
-        except Exception as e:
-            logger.error(f"Error in start_monitoring: {e}", exc_info=True)
-        finally:
-            self._interface_mutex.unlock()
-
-    @pyqtSlot()
-    def stop_monitoring(self):
-        """Stop monitoring device connection."""
-        self._interface_mutex.lock()
-        try:
-            logger.info("Stopping device monitoring...")
-            self.interface.stop_monitoring()
-        except Exception as e:
-            logger.error(f"Error while stopping monitoring: {e}", exc_info=True)
-        finally:
-            self._interface_mutex.unlock()
+    def on_error(self, desc: str, pkt_id: int, msg: str):
+        if desc != "Console":
+            return
+        logger.error(f"ERROR id={pkt_id} {msg}")
 
     @pyqtSlot(str, str)
     def on_connected(self, descriptor, port):
@@ -736,7 +748,7 @@ class LIFUConnector(QObject):
         if self._state == READY:
             self._interface_mutex.lock()
             try:
-                if self.interface.start_sonication(async_mode=True):
+                if self.interface.start_sonication(async_mode=False):
                     self._state = RUNNING
                 else:
                     raise RuntimeError("Failed to start sonication")
@@ -812,7 +824,7 @@ class LIFUConnector(QObject):
         try:
             fw_version = self.interface.hvcontroller.get_version()
             logger.info(f"Version: {fw_version}")
-            hw_id = self.interface.hvcontroller.get_hardware_id()
+            hw_id = self.interface.hvcontroller.get_hardware_id(raw_hex=True)
             if hw_id:
                 if len(hw_id) > 20:
                     hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
@@ -837,7 +849,7 @@ class LIFUConnector(QObject):
             for module_idx in range(module_count):
                 fw_version = self.interface.txdevice.get_version(module=module_idx)
                 logger.info(f"Version: {fw_version}")
-                hw_id = self.interface.txdevice.get_hardware_id(module=module_idx)
+                hw_id = self.interface.txdevice.get_hardware_id(module=module_idx, raw_hex=True)
                 if hw_id:
                     if len(hw_id) > 20:
                         hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
@@ -878,24 +890,18 @@ class LIFUConnector(QObject):
 
     @pyqtSlot()
     def queryTxTemperature(self):
-        """Fetch and emit temperature data."""
-        if self._state == RUNNING:
-            # During active sonication the SDK monitoring thread owns the serial
-            # port.  Sending a synchronous query races against that thread and
-            # causes packet-ID timeouts.  Temperature is already forwarded via
-            # on_data_received() from the STATUS stream, so skip the query.
-            logger.debug("Skipping TX temperature query: sonication in progress")
+        """Fetch and emit temperature data for all connected modules."""
+        if self._num_modules_connected <= 0:
             return
         self._interface_mutex.lock()
         try:
             for module in range(0, self._num_modules_connected):
-                tx_temp = self.interface.txdevice.get_temperature(module=module)  
-                amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)  
-
+                tx_temp = self.interface.txdevice.get_temperature(module=module)
+                amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
                 self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
                 logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
         except Exception as e:
-            logger.error(f"Error querying Module: {module} temperature data: {e}")
+            logger.error(f"Error querying Module temperature data: {e}")
         finally:
             self._interface_mutex.unlock()
 
