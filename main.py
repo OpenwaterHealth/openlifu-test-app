@@ -41,12 +41,23 @@ def parse_arguments():
 def main():
     args = parse_arguments()
 
+    # Tell Windows to treat this as its own app (not python.exe) so the
+    # taskbar shows our icon instead of the Python icon.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "openwater.openlifu.testapp"
+            )
+        except Exception:
+            pass
+
     os.environ["QT_QUICK_CONTROLS_STYLE"] = "Material"
     os.environ["QT_QUICK_CONTROLS_MATERIAL_THEME"] = "Dark"
     os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
     app = QGuiApplication(sys.argv)
-    app.setWindowIcon(QIcon("assets/images/favicon.png"))
+    app.setWindowIcon(QIcon(resource_path("assets/images/favicon.png")))
 
     engine = QQmlApplicationEngine()
 
@@ -67,16 +78,10 @@ def main():
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
-    async def main_async():
-        """Start LIFU monitoring before event loop runs."""
-        logger.info("Starting LIFU monitoring...")
-        await lifu_connector.start_monitoring()
-
     def handle_exit():
         """Stop monitoring and cancel pending tasks synchronously on app quit."""
         logger.info("Application closing...")
-        lifu_connector.stop_monitoring()
-
+        lifu_connector.close()
         pending_tasks = [t for t in asyncio.all_tasks() if not t.done()]
         if pending_tasks:
             logger.info(f"Cancelling {len(pending_tasks)} pending tasks...")
@@ -90,7 +95,6 @@ def main():
 
     try:
         with loop:
-            loop.create_task(main_async())  # Schedule monitoring as a background task
             loop.run_forever()
     except KeyboardInterrupt:
         logger.info("Application interrupted.")
