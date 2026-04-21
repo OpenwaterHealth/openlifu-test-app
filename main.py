@@ -57,7 +57,7 @@ def main():
     os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
     app = QGuiApplication(sys.argv)
-    app.setWindowIcon(QIcon("assets/images/favicon.png"))
+    app.setWindowIcon(QIcon(resource_path("assets/images/favicon.png")))
 
     engine = QQmlApplicationEngine()
 
