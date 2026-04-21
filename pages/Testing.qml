@@ -104,13 +104,14 @@ Rectangle {
             rgbLedDropdown.currentIndex = stateValue  // Sync ComboBox to received state
         }
 
-        function onTestProgressUpdated(total_frac, case_frac, total_label, case_label, status_color) {
+        function onTestProgressUpdated(total_frac, case_frac, total_label, case_label, status_color, log_file_path) {
             testProgressSection.visible = true
             testProgressSection.totalProgressValue = total_frac
             // testProgressSection.totalProgressLabelText = total_label
             testProgressSection.caseProgressValue = case_frac
             testProgressSection.caseProgressLabelText = case_label
             testProgressSection.progressColor = status_color
+            testProgressSection.logFilePath = log_file_path
         }
     }
 
@@ -443,6 +444,7 @@ Rectangle {
             // property string totalProgressLabelText: "Overall: waiting..."
             property string caseProgressLabelText: ""
             property string progressColor: "#BDC3C7"
+            property string logFilePath: ""
 
             onProgressColorChanged: caseStatusColor = progressColor
 
@@ -470,6 +472,16 @@ Rectangle {
                     color: "#BDC3C7"
                     font.pixelSize: 12
                     Layout.fillWidth: true
+                }
+
+                Text {
+                    id: logFilePathItem
+                    text: testProgressSection.logFilePath ? "Log: " + testProgressSection.logFilePath : ""
+                    color: "#999999"
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                    elide: Text.ElideLeft
+                    // selectByMouse: true
                 }
 
                 ProgressBar {

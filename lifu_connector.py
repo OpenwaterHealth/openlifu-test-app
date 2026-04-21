@@ -1949,7 +1949,7 @@ class LIFUConnector(QObject):
         # self._state = TX_CONNECTED
         # self.stateChanged.emit(self._state)  # Notify QML of state update
 
-    testProgressUpdated = pyqtSignal(float, float, str, str, str)
+    testProgressUpdated = pyqtSignal(float, float, str, str, str, str)  # (total_frac, case_frac, total_label, case_label, status_color, log_file_path)
 
     def _start_progress_timer(self):
         logger.info("_____Starting progress timer for thermal test")
@@ -2009,10 +2009,7 @@ class LIFUConnector(QObject):
         if is_in_cooldown:
             case_label = f"waiting for temperature cooldown"
         else:
-            case_label = f"{status}"
-
-        logger.info(f"%%%%%%%%progress: status={status}, seq_dur={sequence_duration}, start={test_case_start_time}, case_frac={case_frac}")
-
+            case_label = f"Test Status: {status}"
 
         # Case bar color
         if is_in_cooldown:
@@ -2028,7 +2025,7 @@ class LIFUConnector(QObject):
         else:
             status_color = "#BDC3C7"       # grey/idle
 
-        self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color)
+        self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color, log_file_path)
 
         # Keep polling until the worker thread has fully exited run(), including its finally block.
         worker_alive = hasattr(self, "running_thread") and self.running_thread.is_alive()
