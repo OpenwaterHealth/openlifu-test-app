@@ -6,6 +6,8 @@ import pandas as pd
 import xarray as xa
 import datetime
 import logging
+import base58
+from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 FOCAL_GAIN_LUT = xa.DataArray.from_dict(
     {'dims': ('f0', 'crosstalk'),
@@ -319,7 +321,8 @@ def check_config_against_device(ifx, config, module=0):
     if fw_version != config['fw_ver']:
         logger.warning(f"Firmware version of the config ({config['fw_ver']}) does not match the version of the device ({fw_version})")
         return False
-    hwid = ifx.txdevice.get_hardware_id(module)
+    hwid_hex = ifx.txdevice.get_hardware_id(module, raw_hex=True)
+    hwid =  base58.b58encode(bytes.fromhex(hwid_hex[:HW_ID_DATA_LENGTH])).decode('utf-8')
     if hwid != config['hwid']:
         logger.warning(f"Hardware ID of the config ({config['hwid']}) does not match the ID of the device ({hwid})")
         return False

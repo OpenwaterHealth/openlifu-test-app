@@ -23,6 +23,7 @@ import copy
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot_from_solution  # Import the function directly
 from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface
+from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
@@ -826,8 +827,8 @@ class LIFUConnector(QObject):
             logger.info(f"Version: {fw_version}")
             hw_id = self.interface.hvcontroller.get_hardware_id(raw_hex=True)
             if hw_id:
-                if len(hw_id) > 20:
-                    hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                if len(hw_id) > HW_ID_DATA_LENGTH:
+                    hw_id =  base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
                 device_id = hw_id 
             else:
                 device_id = 'N/A'
@@ -851,8 +852,8 @@ class LIFUConnector(QObject):
                 logger.info(f"Version: {fw_version}")
                 hw_id = self.interface.txdevice.get_hardware_id(module=module_idx, raw_hex=True)
                 if hw_id:
-                    if len(hw_id) > 20:
-                        hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                    if len(hw_id) > HW_ID_DATA_LENGTH:
+                        hw_id =  base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
                     device_id = hw_id 
                 else:
                     device_id = 'N/A'
