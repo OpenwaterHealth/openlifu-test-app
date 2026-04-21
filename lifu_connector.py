@@ -29,9 +29,9 @@ from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 # import verification-tests
 from verification.prodreqs_base_class import *
-from verification.prodreqs_transmitter_heating_placeholder import TransmitterHeatingPlaceholder, parse_arguments
+from verification.prodreqs_tx_long_verification_test import TransmitterHeatingPlaceholder, parse_arguments
 from verification.prodreqs_voltage_accuracy_placeholder import VoltageAccuracyTest
-from verification.prodreqs_transmitter_sanity_check import TransmitterSanityCheck
+from verification.prodreqs_tx_short_verification_test import TransmitterShortVerificationTest
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
@@ -199,6 +199,8 @@ class LIFUConnector(QObject):
             self._state = TX_CONNECTED
         elif self._hvConnected and not self._txConnected:
             self._state = TEST_SCRIPT_READY
+        # Notify QML of state change
+        self.stateChanged.emit(self._state)
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
@@ -1878,9 +1880,9 @@ class LIFUConnector(QObject):
         args.frequency = frequency
         args.num_modules = num_modules
         args.interface = self.interface
-        args.test_runthrough = True
+        # args.test_runthrough = True
 
-        self.thermal_test_instance = TransmitterSanityCheck(args=args)
+        self.thermal_test_instance = TransmitterShortVerificationTest(args=args)
         self._start_progress_timer()
 
         def _run():
