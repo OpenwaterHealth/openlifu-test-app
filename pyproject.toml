@@ -15,6 +15,8 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Healthcare Industry",
     "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
@@ -29,7 +31,7 @@ dependencies = [
     "pyserial>=3.5",
     "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
-    "openlifu-sdk>=1.0.3",
+    "openlifu-sdk>=1.0.6",
     "openpyxl"
 ]
 

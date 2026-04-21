@@ -1,11 +1,14 @@
 from turtle import mode
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
+from PyQt6.QtCore import QObject, QRecursiveMutex, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
+import asyncio
 import logging
 import os
+import shutil
 import sys
 import argparse
 from pathlib import Path
+import glob
 
 def _base_path():
     """Return the directory containing bundled data files.
@@ -15,12 +18,14 @@ def _base_path():
     return os.path.dirname(os.path.abspath(__file__))
 import threading
 import numpy as np
-import base58
 import re
+import base58
 import json
+import copy
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot_from_solution  # Import the function directly
 from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface
+from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 # import verification-tests
 from verification.prodreqs_base_class import *
@@ -36,11 +41,8 @@ logger.propagate = True
 # Create console handler and set level to debug
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
-# Create formatter
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-# Add formatter to ch
 ch.setFormatter(formatter)
-# Add ch to logger
 logger.addHandler(ch)
 logger.setLevel(logging.INFO)
 logger.propagate = True
@@ -73,6 +75,14 @@ TEST_SCRIPT_READY = 5
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
 
+
+class _Bridge(QObject):
+    """Thread-safe bridge from OWSignal to pyqtSignal."""
+    sig_connected = pyqtSignal(str, str) # (descriptor, port)
+    sig_disconnected = pyqtSignal(str, str) # (descriptor, port)
+    sig_data = pyqtSignal(str, str) # (descriptor, data)
+    sig_error = pyqtSignal(str, int, str)
+    
 class LIFUConnector(QObject):
     # Ensure signals are correctly defined
     signalConnected = pyqtSignal(str, str)  # (descriptor, port)
@@ -91,6 +101,11 @@ class LIFUConnector(QObject):
     temperatureHvUpdated = pyqtSignal(float, float)  # (temp1, temp2)
     temperatureTxUpdated = pyqtSignal(int, float, float)  # (tx_temp, amb_temp)
     numModulesUpdated    = pyqtSignal()  # (num_modules)
+
+    # Signals exposed to QML for connection/data events
+    signalConnected = pyqtSignal(str, str)     # (descriptor, port)
+    signalDisconnected = pyqtSignal(str, str)  # (descriptor, port)
+    signalDataReceived = pyqtSignal(str, str)  # (descriptor, data)
 
     stateChanged = pyqtSignal(int)  # Notifies QML when state changes
     connectionStatusChanged = pyqtSignal()  # 🔹 New signal for connection updates
@@ -113,14 +128,16 @@ class LIFUConnector(QObject):
     solutionFileLoaded = pyqtSignal(str, str)  # (solution_name, message)
     solutionLoadError = pyqtSignal(str)  # (error_message)
     solutionStateChanged = pyqtSignal()  # Notifies when solution is loaded/unloaded
+    solutionSaveStatus = pyqtSignal(bool, str)  # (success, message)
     testReportLoaded = pyqtSignal(bool, str)  # (success, message)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
         self.interface = LIFUInterface(HV_test_mode=hv_test_mode, 
-                                        run_async=True,
-                                        voltage_table_selection="evt0",
-                                        sequence_time_selection="stress_test")
+                                       run_async=True, 
+                                       voltage_table_selection="evt0",
+                                       sequence_time_selection="stress_test",
+                                       duty_cycle_selection="stress_test")
         self._txConnected = False
         self._hvConnected = False
         self._configured = False
@@ -129,39 +146,55 @@ class LIFUConnector(QObject):
         self._trigger_state = False  # Internal state to track trigger status
         self._txconfigured_state = False  # Internal state to track trigger status
         self._num_modules_connected = 0
+        self._manual_num_modules = 1  # fallback when TX not connected
         
         # Solution loading state
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
 
-        self.connect_signals()
+        self._interface_mutex = QRecursiveMutex()
 
-    def connect_signals(self):
-        """Connect LIFUInterface signals to QML."""
-        self.interface.signal_connect.connect(self.on_connected)
-        self.interface.signal_disconnect.connect(self.on_disconnected)
-        self.interface.signal_data_received.connect(self.on_data_received)
+        self._ensure_preset_solutions_seeded()
+
+        self._bridge = _Bridge()
+
+        # Wire OWSignals -> bridge
+        self.interface.hvcontroller.signal_connected.connect(self._bridge.sig_connected.emit)
+        self.interface.hvcontroller.signal_disconnected.connect(self._bridge.sig_disconnected.emit)
+        self.interface.hvcontroller.signal_data_received.connect(self._bridge.sig_data.emit)
+        self.interface.hvcontroller.signal_error.connect(self._bridge.sig_error.emit)
+
+        self.interface.txdevice.signal_connected.connect(self._bridge.sig_connected.emit)
+        self.interface.txdevice.signal_disconnected.connect(self._bridge.sig_disconnected.emit)
+        self.interface.txdevice.signal_data_received.connect(self._bridge.sig_data.emit)
+        self.interface.txdevice.signal_error.connect(self._bridge.sig_error.emit)
+
+        # Wire bridge -> UI
+        self._bridge.sig_connected.connect(self.on_connected)
+        self._bridge.sig_disconnected.connect(self.on_disconnected)
+        self._bridge.sig_data.connect(self.on_data_received)
+        self._bridge.sig_error.connect(self.on_error)
+
+        QTimer.singleShot(0, lambda: asyncio.ensure_future(self.interface.start_monitoring()))
+
+    def close(self):
+        """Shut down the underlying LIFU interface cleanly."""
+        try:
+            self.interface.close()
+        except Exception as e:
+            logger.error(f"Error closing LIFU interface: {e}")
 
     def update_state(self):
         """Update system state based on connection and configuration."""
-        if self._running:
-            self._state = RUNNING
-        elif not self._txConnected and not self._hvConnected:
+        if not self._txConnected and not self._hvConnected:
             self._state = DISCONNECTED
-        elif self._hvConnected and not self._running: # script will auto turn on 12v
-            self._state = TEST_SCRIPT_READY
         elif self._txConnected and not self._configured:
             self._state = TX_CONNECTED
         elif self._txConnected and self._hvConnected and self._configured:
             self._state = READY
         elif self._txConnected and self._configured:
             self._state = CONFIGURED
-        # elif self._running:
-        #     self._state = RUNNING
-
-        # elif self._txConnected and not self._running:
-        #     self._state = TEST_SCRIPT_READY
         self.stateChanged.emit(self._state)  # Notify QML of state update
         logger.debug(f"Updated state: {self._state}")
 
@@ -263,23 +296,10 @@ class LIFUConnector(QObject):
             logger.error(f"Failed to parse status string: {e}")
             return result
 
-    @pyqtSlot()
-    async def start_monitoring(self):
-        """Start monitoring for device connection asynchronously."""
-        try:
-            logger.info("Starting device monitoring...")
-            await self.interface.start_monitoring()
-        except Exception as e:
-            logger.error(f"Error in start_monitoring: {e}", exc_info=True)
-
-    @pyqtSlot()
-    def stop_monitoring(self):
-        """Stop monitoring device connection."""
-        try:
-            logger.info("Stopping device monitoring...")
-            self.interface.stop_monitoring()
-        except Exception as e:
-            logger.error(f"Error while stopping monitoring: {e}", exc_info=True)
+    def on_error(self, desc: str, pkt_id: int, msg: str):
+        if desc != "Console":
+            return
+        logger.error(f"ERROR id={pkt_id} {msg}")
 
     @pyqtSlot(str, str)
     def on_connected(self, descriptor, port):
@@ -326,12 +346,19 @@ class LIFUConnector(QObject):
                         self._state = READY
                         self.stateChanged.emit(self._state)
 
+                    # Forward temperature data embedded in STATUS messages so that
+                    # separate queryTxTemperature() calls are not needed while the
+                    # SDK monitoring thread owns the serial port.
+                    if parsed["temp_tx"] is not None and parsed["temp_ambient"] is not None:
+                        self.temperatureTxUpdated.emit(0, float(parsed["temp_tx"]), float(parsed["temp_ambient"]))
+
             except Exception as e:
                 logger.error(f"Failed to parse and update trigger state: {e}")
 
     @pyqtSlot(str, float)
     def configureSolution(self, solutionName, amplitude):
         """Configures the solution and emits status to QML."""
+        self._interface_mutex.lock()
         try:
             logger.debug("Configuring solution: %s with amplitude: %s", solutionName, amplitude)
             solution = None  # Replace with actual configuration logic
@@ -344,6 +371,9 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error("Error configuring solution: %s", e)
             self.solutionConfigured.emit("Configuration error.")
+        finally:
+            self._interface_mutex.unlock()
+
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer"):
@@ -364,7 +394,7 @@ class LIFUConnector(QObject):
 
     def get_solution(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=False):
         """Simulate configuring the transmitter."""
-        num_modules = self._num_modules_connected
+        num_modules = self._num_modules_connected if self._num_modules_connected > 0 else self._manual_num_modules
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
             solution = self._loaded_solution_data
@@ -394,28 +424,13 @@ class LIFUConnector(QObject):
             duration_seconds = float(durationS) * 1e-6
             pulse_interval_seconds = float(pulseInterval) * 1e-3
 
-            def load_element_positions_from_file(filepath):
-                with open(filepath, 'r') as f:
-                    data = json.load(f)
-                if "type"  in data and data["type"] == "TransducerArray":
-                    modules = []
-                    for module in data['modules']:
-                        module_transform = np.array(module['transform'])
-                        element_positions = np.array([elem['position'] for elem in module['elements']])
-                        element_positions = np.hstack((element_positions, np.ones((element_positions.shape[0], 1))))
-                        world_positions = (np.linalg.inv(module_transform) @ element_positions.T).T[:, :3]  # drop the homogeneous coordinate
-                        modules.append(world_positions)
-                    element_positions = np.vstack(modules)
-                else:
-                    element_positions = np.array([elem['position'] for elem in data['elements']])
-                return element_positions
-
             pulse = {"frequency": frequency_hz,
                     "duration": duration_seconds,
                     "amplitude": 1.0
                     }
             focus = np.array([float(xInput), float(yInput), float(zInput)])
-            element_positions = load_element_positions_from_file(os.path.join(_base_path(), f"pinmap_{num_modules}x.json"))
+            pinmap_data = self._load_pinmap_data(num_modules)
+            element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
             numelements = element_positions.shape[0]
             print(f"{num_modules}x config file loaded")
             distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
@@ -426,7 +441,7 @@ class LIFUConnector(QObject):
                         "pulse_count": int(pulseCount),
                         "pulse_train_interval": float(trainInterval),
                         "pulse_train_count": int(trainCount)}
-            transducer_dummy = {"elements": [{"position": pos.tolist()} for pos in element_positions]}
+            transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
             solution = {
                 "id": "solution",
                 "name": "Solution",
@@ -438,6 +453,287 @@ class LIFUConnector(QObject):
                 "transducer": transducer_dummy}
         return solution
 
+    def _load_pinmap_data(self, num_modules: int):
+        """Load pinmap data for a given module count."""
+        pinmap_path = os.path.join(_base_path(), f"pinmap_{num_modules}x.json")
+        with open(pinmap_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _extract_element_positions_from_pinmap(self, pinmap_data):
+        """Extract element positions (Nx3) in array/world coordinates from pinmap JSON."""
+        if "type" in pinmap_data and pinmap_data["type"] == "TransducerArray":
+            modules = []
+            for module in pinmap_data.get('modules', []):
+                module_transform = np.array(module['transform'])
+                element_positions = np.array([elem['position'] for elem in module['elements']])
+                element_positions = np.hstack((element_positions, np.ones((element_positions.shape[0], 1))))
+                world_positions = (np.linalg.inv(module_transform) @ element_positions.T).T[:, :3]
+                modules.append(world_positions)
+            return np.vstack(modules)
+
+        return np.array([elem['position'] for elem in pinmap_data.get('elements', [])])
+
+    def _build_transducer_from_pinmap(self, pinmap_data):
+        """Build a solution-compatible transducer object from pinmap JSON."""
+        transducer = {
+            "id": pinmap_data.get("id", ""),
+            "name": pinmap_data.get("name", ""),
+            "elements": []
+        }
+
+        if "type" in pinmap_data and pinmap_data["type"] == "TransducerArray":
+            flattened_elements = []
+            global_index = 1
+            for module in pinmap_data.get("modules", []):
+                module_transform = np.array(module["transform"])
+                inv_transform = np.linalg.inv(module_transform)
+                for element in module.get("elements", []):
+                    element_copy = copy.deepcopy(element)
+                    local_position = np.array(list(element_copy.get("position", [0.0, 0.0, 0.0])) + [1.0])
+                    world_position = (inv_transform @ local_position)[:3]
+                    element_copy["position"] = [float(world_position[0]), float(world_position[1]), float(world_position[2])]
+                    element_copy["index"] = global_index
+                    flattened_elements.append(element_copy)
+                    global_index += 1
+            transducer["elements"] = flattened_elements
+            return transducer
+
+        transducer["elements"] = copy.deepcopy(pinmap_data.get("elements", []))
+        return transducer
+
+    def _to_json_compatible(self, value):
+        """Convert numpy and nested structures into JSON-serializable Python values."""
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, dict):
+            return {k: self._to_json_compatible(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._to_json_compatible(v) for v in value]
+        if isinstance(value, tuple):
+            return [self._to_json_compatible(v) for v in value]
+        return value
+
+    def _infer_num_modules_from_solution(self, data: dict) -> int:
+        """Infer the number of TX modules from a solution's transducer element count."""
+        try:
+            elements = data.get('transducer', {}).get('elements', [])
+            n = len(elements)
+            if n > 0 and NUM_ELEMENTS_PER_MODULE > 0:
+                return max(1, n // NUM_ELEMENTS_PER_MODULE)
+        except Exception:
+            pass
+        return 0
+
+    @pyqtSlot(int)
+    def setManualNumModules(self, n: int):
+        """Set the manual module count used when TX hardware is not connected."""
+        self._manual_num_modules = max(1, int(n))
+
+    def _get_preset_templates_path(self) -> str:
+        return os.path.join(_base_path(), "preset_templates")
+
+    def _get_user_data_root(self) -> str:
+        """Return the writable per-user application data directory."""
+        root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(root, "OpenLIFU-TestApp")
+
+    def _get_legacy_preset_solutions_path(self) -> str:
+        """Return the legacy preset directory next to the executable, if applicable."""
+        if getattr(sys, 'frozen', False):
+            return os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "preset_solutions")
+        return os.path.join(_base_path(), "preset_solutions")
+
+    def _get_runtime_preset_solutions_path(self) -> str:
+        if getattr(sys, 'frozen', False):
+            return os.path.join(self._get_user_data_root(), "preset_solutions")
+        return os.path.join(_base_path(), "preset_solutions")
+
+    def _get_default_solution_path(self) -> str:
+        return os.path.join(self._get_runtime_preset_solutions_path(), "default_solution.json")
+
+    def _extract_solution_settings(self, data):
+        """Extract UI-editable settings from a solution-like dict."""
+        target = data.get('target', {})
+        focus_position = target.get('position', [0, 0, 50])
+
+        pulse = data.get('pulse', {})
+        frequency = pulse.get('frequency', 400000)
+        duration = pulse.get('duration', 2e-4)
+
+        sequence = data.get('sequence', {})
+        pulse_interval = sequence.get('pulse_interval', 0.1)
+        pulse_count = sequence.get('pulse_count', 1)
+        pulse_train_interval = sequence.get('pulse_train_interval', 1)
+        pulse_train_count = sequence.get('pulse_train_count', 1)
+
+        voltage = data.get('voltage', 12.0)
+
+        def _r(value, digits):
+            return round(float(value), digits)
+
+        return {
+            'xInput': _r(focus_position[0], 3),
+            'yInput': _r(focus_position[1], 3),
+            'zInput': _r(focus_position[2], 3),
+            'frequency': _r(float(frequency) / 1e3, 3),
+            'duration': _r(float(duration) * 1e6, 3),
+            'voltage': _r(voltage, 3),
+            'pulseInterval': _r(float(pulse_interval) * 1e3, 3),
+            'pulseCount': int(pulse_count),
+            'trainInterval': _r(pulse_train_interval, 6),
+            'trainCount': int(pulse_train_count),
+            'numModules': self._infer_num_modules_from_solution(data),
+        }
+
+    def _build_solution_export_data(self, solution_id, solution_name, num_modules,
+                                    xInput, yInput, zInput, freq, voltage,
+                                    pulseInterval, pulseCount, trainInterval, trainCount, durationS):
+        solution = self.get_solution(
+            xInput, yInput, zInput,
+            freq, voltage, pulseInterval, pulseCount,
+            trainInterval, trainCount, durationS,
+            validate=True
+        )
+        if solution is None:
+            raise ValueError("failed to build a valid solution")
+
+        solution_data = self._to_json_compatible(solution)
+        cleaned_id = (solution_id or "").strip() or "solution"
+        cleaned_name = (solution_name or "").strip() or cleaned_id
+        target_position = [float(xInput), float(yInput), float(zInput)]
+
+        pinmap_data = self._load_pinmap_data(num_modules)
+        solution_data["id"] = cleaned_id
+        solution_data["name"] = cleaned_name
+        solution_data["target"] = {
+            "position": target_position,
+            "units": "mm"
+        }
+        solution_data["foci"] = [{
+            "position": target_position,
+            "units": "mm"
+        }]
+        solution_data["transducer"] = self._build_transducer_from_pinmap(pinmap_data)
+        return solution_data
+
+    def _write_solution_json(self, file_path, solution_data):
+        normalized_path = os.path.normpath(file_path)
+        if not normalized_path.lower().endswith(".json"):
+            normalized_path += ".json"
+
+        parent_dir = os.path.dirname(normalized_path)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+
+        with open(normalized_path, 'w', encoding='utf-8') as f:
+            json.dump(solution_data, f, indent=4)
+
+        return normalized_path
+
+    def _ensure_preset_solutions_seeded(self):
+        """Seed the runtime preset directory from tracked templates if needed."""
+        preset_dir = self._get_runtime_preset_solutions_path()
+        os.makedirs(preset_dir, exist_ok=True)
+
+        existing_json = glob.glob(os.path.join(preset_dir, "*.json"))
+        if not existing_json:
+            legacy_dir = self._get_legacy_preset_solutions_path()
+            legacy_json = []
+            if os.path.normcase(os.path.abspath(legacy_dir)) != os.path.normcase(os.path.abspath(preset_dir)):
+                legacy_json = glob.glob(os.path.join(legacy_dir, "*.json"))
+
+            if legacy_json:
+                for legacy_path in legacy_json:
+                    destination = os.path.join(preset_dir, os.path.basename(legacy_path))
+                    shutil.copy2(legacy_path, destination)
+                    logger.info(f"Migrated legacy preset file to user data: {destination}")
+            else:
+                template_dir = self._get_preset_templates_path()
+                for template_path in glob.glob(os.path.join(template_dir, "*.json")):
+                    destination = os.path.join(preset_dir, os.path.basename(template_path))
+                    shutil.copy2(template_path, destination)
+                    logger.info(f"Seeded preset file: {destination}")
+
+        default_path = self._get_default_solution_path()
+        if not os.path.exists(default_path):
+            default_solution = self._build_solution_export_data(
+                "default_solution",
+                "Default Solution",
+                1,
+                "0", "0", "50",
+                "400", "12.0",
+                "100", "1", "0", "1", "200"
+            )
+            self._write_solution_json(default_path, default_solution)
+            logger.info(f"Created default solution: {default_path}")
+
+    @pyqtSlot(result=str)
+    def getPresetSolutionsPath(self) -> str:
+        """Return the absolute path to the preset_solutions folder for QML use."""
+        self._ensure_preset_solutions_seeded()
+        return self._get_runtime_preset_solutions_path()
+
+    @pyqtSlot(result=str)
+    def getDefaultSolutionFilePath(self) -> str:
+        self._ensure_preset_solutions_seeded()
+        return self._get_default_solution_path()
+
+    @pyqtSlot(result='QVariantMap')
+    def getDefaultSolutionSettings(self):
+        """Return the boot-time default UI settings from default_solution.json."""
+        try:
+            self._ensure_preset_solutions_seeded()
+            with open(self._get_default_solution_path(), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return self._extract_solution_settings(data)
+        except Exception as e:
+            logger.error(f"Error loading default solution settings: {e}")
+            return {}
+
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, str, str, str, result=bool)
+    def saveSolutionToFile(self, solution_id, solution_name, file_path, num_modules_str,
+                           xInput, yInput, zInput, freq, voltage,
+                           pulseInterval, pulseCount, trainInterval, trainCount, durationS):
+        """Save the current solution to a JSON file.
+
+        num_modules_str: number of TX modules to use for the transducer field.
+        When TX is connected, this is read from hardware; when offline it comes from the UI spinbox.
+        """
+        try:
+            try:
+                num_modules = int(num_modules_str)
+            except (ValueError, TypeError):
+                num_modules = 0
+
+            if num_modules <= 0:
+                if self._txConnected:
+                    self.queryNumModules()
+                    num_modules = self._num_modules_connected
+                if num_modules <= 0:
+                    message = "Cannot save solution: number of TX modules must be > 0."
+                    self.solutionSaveStatus.emit(False, message)
+                    return False
+
+            solution_data = self._build_solution_export_data(
+                solution_id, solution_name, num_modules,
+                xInput, yInput, zInput,
+                freq, voltage, pulseInterval, pulseCount,
+                trainInterval, trainCount, durationS
+            )
+            normalized_path = self._write_solution_json(file_path, solution_data)
+
+            message = f"Saved solution '{solution_data['name']}' to {normalized_path}"
+            logger.info(message)
+            self.solutionSaveStatus.emit(True, message)
+            return True
+        except Exception as e:
+            message = f"Error saving solution: {e}"
+            logger.error(message)
+            self.solutionSaveStatus.emit(False, message)
+            return False
+
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
@@ -446,10 +742,17 @@ class LIFUConnector(QObject):
             return
         self.queryNumModules()
         solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS)        
-        self.interface.set_solution(solution, trigger_mode=mode)
-        self._configured = True
-        self.update_state()
-        logger.info("Transmitter configured")
+        
+        self._interface_mutex.lock()
+        try:
+            self.interface.set_solution(solution, trigger_mode=mode)
+            self._configured = True
+            self.update_state()
+            logger.info("Transmitter configured")
+        except Exception as e:
+            logger.error(f"Error configuring transmitter: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def reset_configuration(self):
@@ -462,22 +765,35 @@ class LIFUConnector(QObject):
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
         if self._state == READY:
-            if self.interface.start_sonication():
-                self._state = RUNNING
-            else:
-                raise RuntimeError("Failed to start sonication")
-            self.stateChanged.emit(self._state)
-            logger.info("Sonication started")
+            self._interface_mutex.lock()
+            try:
+                if self.interface.start_sonication(async_mode=False):
+                    self._state = RUNNING
+                else:
+                    raise RuntimeError("Failed to start sonication")
+                self.stateChanged.emit(self._state)
+                logger.info("Sonication started")
+            except Exception as e:
+                logger.error(f"Error starting sonication: {e}")
+            finally:
+                self._interface_mutex.unlock()
 
     @pyqtSlot()
     def stop_sonication(self):
         """Stop the beam and return to READY state."""
         if self._state == RUNNING:
-            if self.interface.stop_sonication():
-                self._state = READY
-            else:
-                raise RuntimeError("Failed to stop sonication")
-            self.stateChanged.emit(self._state)
+            self._interface_mutex.lock()
+            try:
+                if self.interface.stop_sonication():
+                    self._state = READY
+                else:
+                    raise RuntimeError("Failed to stop sonication")
+                self.stateChanged.emit(self._state)
+                logger.info("Sonication stopped")
+            except Exception as e:
+                logger.error(f"Error stopping sonication: {e}")
+            finally:
+                self._interface_mutex.unlock()
             logger.info("Sonication stopped")
 
     @pyqtProperty(bool, notify=connectionStatusChanged)
@@ -523,13 +839,14 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def queryHvInfo(self):
         """Fetch and emit device information."""
+        self._interface_mutex.lock()
         try:
             fw_version = self.interface.hvcontroller.get_version()
             logger.info(f"Version: {fw_version}")
-            hw_id = self.interface.hvcontroller.get_hardware_id()
+            hw_id = self.interface.hvcontroller.get_hardware_id(raw_hex=True)
             if hw_id:
-                if len(hw_id) > 20:
-                    hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                if len(hw_id) > HW_ID_DATA_LENGTH:
+                    hw_id =  base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
                 device_id = hw_id 
             else:
                 device_id = 'N/A'
@@ -537,20 +854,24 @@ class LIFUConnector(QObject):
             logger.info(f"Device Info - Firmware: {fw_version}, Device ID: {device_id}")
         except Exception as e:
             logger.error(f"Error querying device info: {e}")
+        finally:
+            self._interface_mutex.unlock()
+
 
     @pyqtSlot()
     def queryTxInfo(self):
         """Fetch and emit device information for all TX modules as a list."""
+        self._interface_mutex.lock()
         try:
             module_count = self.interface.txdevice.get_module_count()
             modules_info = []
             for module_idx in range(module_count):
                 fw_version = self.interface.txdevice.get_version(module=module_idx)
                 logger.info(f"Version: {fw_version}")
-                hw_id = self.interface.txdevice.get_hardware_id(module=module_idx)
+                hw_id = self.interface.txdevice.get_hardware_id(module=module_idx, raw_hex=True)
                 if hw_id:
-                    if len(hw_id) > 20:
-                        hw_id =  base58.b58encode(bytes.fromhex(hw_id)).decode('utf-8')
+                    if len(hw_id) > HW_ID_DATA_LENGTH:
+                        hw_id =  base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
                     device_id = hw_id 
                 else:
                     device_id = 'N/A'
@@ -563,6 +884,8 @@ class LIFUConnector(QObject):
             self.txDeviceInfoReceived.emit(modules_info)
         except Exception as e:
             logger.error(f"Error querying device info: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtProperty(int, notify=numModulesUpdated)
     def queryNumModulesConnected(self):
@@ -572,6 +895,7 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def queryHvTemperature(self):
         """Fetch and emit temperature data."""
+        self._interface_mutex.lock()
         try:
             temp1 = self.interface.hvcontroller.get_temperature1()  
             temp2 = self.interface.hvcontroller.get_temperature2()  
@@ -580,24 +904,31 @@ class LIFUConnector(QObject):
             logger.info(f"Temperature Data - Temp1: {temp1}, Temp2: {temp2}")
         except Exception as e:
             logger.error(f"Error querying temperature data: {e}")
-
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def queryTxTemperature(self):
-        """Fetch and emit temperature data."""
+        """Fetch and emit temperature data for all connected modules."""
+        if self._num_modules_connected <= 0:
+            return
+        self._interface_mutex.lock()
         try:
             for module in range(0, self._num_modules_connected):
-                tx_temp = self.interface.txdevice.get_temperature(module=module)  
-                amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)  
-
+                tx_temp = self.interface.txdevice.get_temperature(module=module)
+                amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
                 self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
                 logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
         except Exception as e:
-            logger.error(f"Error querying Module: {module} temperature data: {e}")
+            logger.error(f"Error querying Module temperature data: {e}")
+        finally:
+            self._interface_mutex.unlock()
+
 
     @pyqtSlot()
     def queryNumModules(self):
         """Fetch and emit number of connected TX modules."""
+        self._interface_mutex.lock()
         try:
             self._num_modules_connected = self.interface.txdevice.get_tx_module_count()
             self.numModulesUpdated.emit()
@@ -605,10 +936,14 @@ class LIFUConnector(QObject):
 
         except Exception as e:
             logger.error(f"Error querying number of TX modules: {e}")
+        finally:
+            self._interface_mutex.unlock()
+
 
     @pyqtSlot(int)
     def setRGBState(self, state):
         """Set the RGB state using integer values."""
+        self._interface_mutex.lock()
         try:
             valid_states = [0, 1, 2, 3]
             if state not in valid_states:
@@ -621,10 +956,13 @@ class LIFUConnector(QObject):
                 logger.error(f"Failed to set RGB state to: {state}")
         except Exception as e:
             logger.error(f"Error setting RGB state: {e}")
+        finally:
+            self._interface_mutex.unlock()
             
     @pyqtSlot()
     def queryRGBState(self):
         """Fetch and emit RGB state."""
+        self._interface_mutex.lock()
         try:
             state = self.interface.hvcontroller.get_rgb_led()
             state_text = {0: "Off", 1: "Red", 2: "Green", 3: "Blue"}.get(state, "Unknown")
@@ -633,10 +971,13 @@ class LIFUConnector(QObject):
             self.rgbStateReceived.emit(state, state_text)  # Emit both values
         except Exception as e:
             logger.error(f"Error querying RGB state: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def queryPowerStatus(self):
         """Fetch and emit HV state."""
+        self._interface_mutex.lock()
         try:
             hv_state = self.interface.hvcontroller.get_hv_status()            
             v12_state = self.interface.hvcontroller.get_12v_status()
@@ -644,20 +985,26 @@ class LIFUConnector(QObject):
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
             logger.error(f"Error querying Power status: {e}")
+        finally:
+            self._interface_mutex.unlock()
     
     @pyqtSlot(bool)
     def setAsyncMode(self, enable: bool):
         """Set the async mode for the interface."""
+        self._interface_mutex.lock()
         try:
             ret = self.interface.txdevice.async_mode(enable)
             logger.debug(f"Async mode set to: {ret}")
         except Exception as e:
             logger.error(f"Error setting async mode: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot(str, result=bool)
     @pyqtSlot(str, int, result=bool)
     def sendPingCommand(self, target: str, index: int = 0):
         """Send a ping command to HV device."""
+        self._interface_mutex.lock()
         try:
             if target == "HV":
                 if self.interface.hvcontroller.ping():
@@ -680,11 +1027,14 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error sending ping command: {e}")
             return False
+        finally:
+            self._interface_mutex.unlock()
         
     @pyqtSlot(str, result=bool)
     @pyqtSlot(str, int, result=bool)
     def sendLedToggleCommand(self, target: str, index: int = 0):
         """Send a LED Toggle command to device."""
+        self._interface_mutex.lock()
         try:
             if target == "HV":
                 if self.interface.hvcontroller.toggle_led():
@@ -707,11 +1057,14 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error sending Toggle command: {e}")
             return False
-        
+        finally:
+            self._interface_mutex.unlock()
+    
     @pyqtSlot(str, result=bool)
     @pyqtSlot(str, int, result=bool)
     def sendEchoCommand(self, target: str, index: int = 0):
         """Send Echo command to device."""
+        self._interface_mutex.lock()
         try:
             expected_data = b"Hello FROM Test Application!"
             if target == "HV":
@@ -733,10 +1086,13 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error sending Echo command: {e}")
             return False
-    
+        finally:
+            self._interface_mutex.unlock()
+
     @pyqtSlot(str, result=bool)
     def setHVCommand(self, strval: str):
         """Set High voltage command to device."""
+        self._interface_mutex.lock()
         try:
             voltage = float(strval)
             if self.interface.hvcontroller.set_voltage(voltage=voltage):
@@ -749,10 +1105,13 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error setting High Voltage: {e}")
             return False
+        finally:
+            self._interface_mutex.unlock()
     
     @pyqtSlot(int, int, result=bool)
     def setFanLevel(self, fid: int, speed: int):
         """Set Fan Level to device."""
+        self._interface_mutex.lock()
         try:
             
             if self.interface.hvcontroller.set_fan_speed(fan_id=fid, fan_speed=speed) == speed:
@@ -765,10 +1124,13 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error setting Fan Speed: {e}")
             return False
+        finally:
+            self._interface_mutex.unlock()
     
     @pyqtSlot(str, result=bool)
     def setTrigger(self, triggerjson: str):
         """Set trigger settings on the device using JSON data."""
+        self._interface_mutex.lock()
         try:
             json_trigger_data = json.loads(triggerjson)
             
@@ -793,10 +1155,13 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Unexpected error while setting trigger: {e}")
             return False
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot(result=bool)
     def toggleTrigger(self):
         """Toggle the trigger state (start or stop)."""
+        self._interface_mutex.lock()
         try:
             if self._trigger_state:
                 # Stop the trigger
@@ -828,6 +1193,8 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Unexpected error while toggling trigger: {e}")
             return False
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot(result=bool)
     def queryTriggerInfo(self):
@@ -836,6 +1203,7 @@ class LIFUConnector(QObject):
         Returns:
             bool: True if the query was successful, False otherwise.
         """
+        self._interface_mutex.lock()
         try:
             trigger_data = self.interface.txdevice.get_trigger_json()
 
@@ -856,10 +1224,13 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Unexpected error while querying trigger info: {e}")
             return False
+        finally:
+            self._interface_mutex.unlock()
         
     @pyqtSlot()
     def softResetHV(self):
         """reset hardware HV device."""
+        self._interface_mutex.lock()
         try:
             if self.interface.hvcontroller.soft_reset():
                 logger.info(f"Software Reset Sent")
@@ -867,10 +1238,13 @@ class LIFUConnector(QObject):
                 logger.error(f"Failed to send Software Reset")
         except Exception as e:
             logger.error(f"Error Sending Software Reset: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def toggleHV(self):
         """Toggle HV on console."""
+        self._interface_mutex.lock()
         try:
             # Check the current state of HV
             if self.interface.hvcontroller.get_hv_status():
@@ -891,10 +1265,13 @@ class LIFUConnector(QObject):
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
             logger.error(f"Error toggling HV: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def turnOffHV(self):
         """Toggle HV on console."""
+        self._interface_mutex.lock()
         try:
             # Check the current state of HV
             if self.interface.hvcontroller.get_hv_status():
@@ -910,10 +1287,13 @@ class LIFUConnector(QObject):
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
             logger.error(f"Error toggling HV: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def toggleV12(self):
         """Toggle V12 on console."""
+        self._interface_mutex.lock()
         try:
             # Check the current state of HV
             if self.interface.hvcontroller.get_12v_status():
@@ -934,10 +1314,13 @@ class LIFUConnector(QObject):
             self.powerStatusReceived.emit(v12_state, hv_state)
         except Exception as e:
             logger.error(f"Error toggling HV: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def getMonitorVoltages(self):
         """Get voltage monitor readings from console."""
+        self._interface_mutex.lock()
         try:
             voltages = self.interface.hvcontroller.get_vmon_values()
             logger.debug(f"Voltage readings: {voltages}")
@@ -945,10 +1328,13 @@ class LIFUConnector(QObject):
             self.monVoltagesReceived.emit(voltages)
         except Exception as e:
             logger.error(f"Error getting voltages: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def softResetTX(self):
         """reset hardware TX device."""
+        self._interface_mutex.lock()
         try:
             if self.interface.txdevice.soft_reset():
                 logger.info(f"Software Reset Sent")
@@ -956,10 +1342,13 @@ class LIFUConnector(QObject):
                 logger.error(f"Failed to send Software Reset")
         except Exception as e:
             logger.error(f"Error Sending Software Reset: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot(int)
     def softResetTXModule(self, module: int):
         """Soft reset a specific TX module by index."""
+        self._interface_mutex.lock()
         try:
             if self.interface.txdevice.soft_reset(module=module):
                 logger.info(f"Software Reset Sent to module {module}")
@@ -967,6 +1356,8 @@ class LIFUConnector(QObject):
                 logger.error(f"Failed to send Software Reset to module {module}")
         except Exception as e:
             logger.error(f"Error Sending Software Reset to module {module}: {e}")
+        finally:
+            self._interface_mutex.unlock()
 
         
     @pyqtProperty(str, constant=True)
@@ -1005,6 +1396,7 @@ class LIFUConnector(QObject):
     @pyqtSlot(result=str)
     def readHvFirmwareVersion(self) -> str:
         """Read and return the current console (HV) firmware version."""
+        self._interface_mutex.lock()
         try:
             version = self.interface.hvcontroller.get_version()
             self.fwVersionRead.emit("console", version)
@@ -1014,10 +1406,13 @@ class LIFUConnector(QObject):
             logger.error(f"Error reading console firmware version: {e}")
             self.fwVersionRead.emit("console", "Error")
             return "Error"
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot(int, result=str)
     def readTxFirmwareVersion(self, module: int) -> str:
         """Read and return the current transmitter firmware version for a given module."""
+        self._interface_mutex.lock()
         try:
             version = self.interface.txdevice.get_version(module=module)
             self.fwVersionRead.emit(f"transmitter_{module}", version)
@@ -1027,6 +1422,8 @@ class LIFUConnector(QObject):
             logger.error(f"Error reading transmitter module {module} firmware version: {e}")
             self.fwVersionRead.emit(f"transmitter_{module}", "Error")
             return "Error"
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot(str)
     def updateConsoleFirmware(self, firmware_path: str) -> None:
@@ -1065,6 +1462,7 @@ class LIFUConnector(QObject):
     def updateTransmitterFirmware(self, firmware_path: str, module: int) -> None:
         """Update the transmitter firmware for a specific module. Runs in a background thread."""
         def _run():
+            self._interface_mutex.lock()
             try:
                 def _progress(written: int, total: int, label: str) -> None:
                     self.fwUpdateProgress.emit(label, written, total)
@@ -1087,6 +1485,8 @@ class LIFUConnector(QObject):
                 msg = f"Transmitter module {module} update failed: {e}"
                 logger.error(msg)
                 self.fwUpdateStatus.emit("transmitter", False, msg)
+            finally:
+                self._interface_mutex.unlock()
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1097,6 +1497,7 @@ class LIFUConnector(QObject):
         target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
         """
         def _run():
+            self._interface_mutex.lock()
             try:
                 module = _parse_tx_module(target)
                 if module is None:
@@ -1116,6 +1517,8 @@ class LIFUConnector(QObject):
                 msg = f"Error reading config from {target}: {e}"
                 logger.error(msg)
                 self.userConfigStatus.emit(target, False, msg)
+            finally:
+                self._interface_mutex.unlock()
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1126,6 +1529,7 @@ class LIFUConnector(QObject):
         target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
         """
         def _run():
+            self._interface_mutex.lock()
             try:
                 module = _parse_tx_module(target)
                 if module is None:
@@ -1148,12 +1552,62 @@ class LIFUConnector(QObject):
                 msg = f"Error writing config to {target}: {e}"
                 logger.error(msg)
                 self.userConfigStatus.emit(target, False, msg)
+            finally:
+                self._interface_mutex.unlock()
 
         threading.Thread(target=_run, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Solution loading functionality
     # ------------------------------------------------------------------
+
+    @pyqtSlot(result='QVariantList')
+    def getPresetSolutions(self):
+        """Return preset solutions found in preset_solutions/*.json.
+
+        Each item contains {"name": <solution name>, "path": <absolute file path>}.
+        Invalid JSON files are skipped.
+        """
+        try:
+            self._ensure_preset_solutions_seeded()
+            preset_dir = self._get_runtime_preset_solutions_path()
+            pattern = os.path.join(preset_dir, "*.json")
+            preset_files = sorted(glob.glob(pattern))
+
+            presets = []
+            for file_path in preset_files:
+                if os.path.basename(file_path).lower() == "default_solution.json":
+                    continue
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        solution_data = json.load(f)
+
+                    if not isinstance(solution_data, dict):
+                        logger.warning(f"Skipping preset with invalid JSON root type: {file_path}")
+                        continue
+
+                    display_name = solution_data.get('name') or os.path.splitext(os.path.basename(file_path))[0]
+                    presets.append({
+                        "name": str(display_name),
+                        "path": os.path.normpath(file_path)
+                    })
+                except Exception as e:
+                    logger.warning(f"Skipping unreadable preset file {file_path}: {e}")
+
+            presets.sort(key=lambda item: item.get("name", "").lower())
+            logger.info(f"Discovered {len(presets)} preset solution(s)")
+            return presets
+        except Exception as e:
+            logger.error(f"Error indexing preset solutions: {e}")
+            return []
+
+    @pyqtSlot(str, result=bool)
+    def loadPresetSolution(self, file_path):
+        """Load a preset solution by file path.
+
+        This is a convenience wrapper that uses the same logic as loading any solution file.
+        """
+        return self.loadSolutionFromFile(file_path)
     
     @pyqtSlot(str, result=bool)
     def loadSolutionFromFile(self, file_path):
@@ -1325,39 +1779,7 @@ class LIFUConnector(QObject):
             return {}
         
         try:
-            data = self._loaded_solution_data
-            
-            # Extract focus point (target)
-            target = data.get('target', {})
-            focus_position = target.get('position', [0, 0, 25])
-            
-            # Extract pulse settings
-            pulse = data.get('pulse', {})
-            frequency = pulse.get('frequency', 400000)
-            duration = pulse.get('duration', 2e-5)
-            
-            # Extract sequence settings
-            sequence = data.get('sequence', {})
-            pulse_interval = sequence.get('pulse_interval', 0.1)
-            pulse_count = sequence.get('pulse_count', 1)
-            pulse_train_interval = sequence.get('pulse_train_interval', 1)
-            pulse_train_count = sequence.get('pulse_train_count', 1)
-            
-            # Extract voltage
-            voltage = data.get('voltage', 12.0)
-            
-            return {
-                'xInput': float(focus_position[0]),
-                'yInput': float(focus_position[1]),
-                'zInput': float(focus_position[2]),
-                'frequency': float(frequency) / 1e3,
-                'duration': float(duration) * 1e6,
-                'voltage': float(voltage),
-                'pulseInterval': float(pulse_interval) * 1e3,
-                'pulseCount': int(pulse_count),
-                'trainInterval': float(pulse_train_interval),
-                'trainCount': int(pulse_train_count)
-            }
+            return self._extract_solution_settings(self._loaded_solution_data)
             
         except Exception as e:
             logger.error(f"Error extracting solution settings: {e}")
@@ -1407,7 +1829,9 @@ class LIFUConnector(QObject):
                 report_info = f"SN: {report_sn}, HWID: {report_hwid}, Freq: {report_freq} kHz"
                 
                 # Check if we have a connected TXM to compare against
+                
                 if self._txConnected:
+                    self._interface_mutex.lock()
                     try:
                         # Check against specified module
                         check_result = check_config_against_device(self.interface, config, module=module)
@@ -1426,6 +1850,8 @@ class LIFUConnector(QObject):
                         logger.warning(f"Could not verify report against device: {e}")
                         message = f"Test report loaded but could not verify against {target}: {e}"
                         self.testReportLoaded.emit(False, message)
+                    finally:
+                        self._interface_mutex.unlock()
                 else:
                     message = f"Test report loaded. No TXM connected for verification. {report_info}"
                     self.testReportLoaded.emit(False, message)
@@ -1436,171 +1862,3 @@ class LIFUConnector(QObject):
                 self.testReportLoaded.emit(False, error_msg)
                 
         threading.Thread(target=_run, daemon=True).start()
-
-    @pyqtSlot(int, int)
-    def runThermalTest(self, frequency, num_modules):
-        """Run the transmitter heating test."""
-        logger.info(f"runThermalTest called: frequency={frequency}, num_modules={num_modules}")
-
-        if hasattr(self, 'running_thread') and self.running_thread.is_alive():
-            logger.warning("Previous test still shutting down, ignoring start request")
-            return
-
-        args = parse_arguments()
-        args.frequency = frequency
-        args.num_modules = num_modules
-        args.interface = self.interface
-        args.test_runthrough = True
-
-        self.thermal_test_instance = TransmitterSanityCheck(args=args)
-        self._start_progress_timer()
-
-        def _run():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                logger.info("Running thermal test...")
-                self._running = True
-                self.update_state()
-                self.thermal_test_instance.run()
-                
-            except Exception as e:
-                logger.error(f"\n !! Fatal error in thermal test worker: {e}")
-                with contextlib.suppress(Exception):
-                    self.thermal_test_instance.shutdown_event.set()
-            finally:
-                self._running = False
-                self.update_state()
-                loop.close()
-                logger.info(f"Updated state: {self._state}")
-
-        self.running_thread = threading.Thread(target=_run, daemon=True)
-        self.running_thread.start()
-        logger.info("Thread started, returning to event loop")
-
-
-    # def _run_thermal_test_worker(self):
-    #     try:
-    #         # self._state = RUNNING
-    #         # self.stateChanged.emit(self._state)
-
-    #         self._running = True
-    #         self.update_state()  # Notify QML of state update
-
-    #         self.thermal_test_instance.run()
-    #         # Notify QML of state update
-
-    #     except Exception as e:
-    #         logger.error(f"\n !! Fatal error in thermal test worker: {e}")
-    #         logger.info("Attempting to clean up after thermal test error...")
-    #         self.thermal_test_instance.shutdown_event.set()
-    #         # self._running = True
-    #         # self.update_state()  # Notify QML of state update
-    #         # logger.info(f"Updated state: {self._state}")
-    #     finally:
-    #         self._running = False
-    #         # self.stateChanged.emit(self._state) # Notify QML of state update
-    #         self.update_state()  # Notify QML of state update
-    #         logger.info(f"Updated state: {self._state}")
-
-    @pyqtSlot()
-    def _stop_thermal_test(self):
-        if not self._running:
-            logger.warning("Stop called but no test is running, ignoring.")
-            return
-        if self.thermal_test_instance:
-            self.thermal_test_instance.shutdown_event.set()
-            self.thermal_test_instance.test_status = "aborted by user"
-        # if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
-        #     self._worker_thread.join(timeout=5)
-        #     if self._worker_thread.is_alive():
-        #         logger.warning("Thermal test thread did not exit within timeout")
-
-        # self._state = TX_CONNECTED
-        # self.stateChanged.emit(self._state)  # Notify QML of state update
-
-    testProgressUpdated = pyqtSignal(float, float, str, str, str)
-
-    def _start_progress_timer(self):
-        logger.info("_____Starting progress timer for thermal test")
-        self._progress_timer = QTimer(self)
-        self._progress_timer.setInterval(250)
-        self._progress_timer.timeout.connect(self._emit_test_progress)
-        self._progress_timer.start()
-        logger.info(f"Timer active: {self._progress_timer.isActive()}")
-
-    def _stop_progress_timer(self):
-        if hasattr(self, "_progress_timer"):
-            self._progress_timer.stop()
-
-    def _emit_test_progress(self):
-
-        runner = self.thermal_test_instance
-
-        total_cases = 1 
-        starting_case = 1
-        current_case = getattr(runner, "test_case_num", starting_case)
-        status = getattr(runner, "test_status", "not started")
-        sequence_duration = getattr(runner, "sequence_duration", 0)
-        test_case_start_time = getattr(runner, "test_case_start_time", 0.0)
-        start_time = getattr(runner, "start_time", 0.0) or 0.0
-        is_in_cooldown = getattr(runner, "is_in_cooldown", False)
-        log_file_path = getattr(runner, "log_file_path", "")
-
-
-        # Calculate the actual number of cases that will be run
-        actual_total_cases = total_cases - starting_case + 1
-        total_runtime = actual_total_cases * sequence_duration
-
-        # Per-case fraction: based on this specific test case's sequence_duration
-        if status == "running" and sequence_duration > 0 and test_case_start_time > 0:
-            elapsed_case = time.time() - test_case_start_time
-            case_frac = min(elapsed_case / sequence_duration, 1.0)
-        elif status in ("passed", "temperature shutdown", "voltage deviation"):
-            case_frac = 1.0
-        else:
-            case_frac = 0.0
-
-        # Total fraction: sum of completed cases + current case progress
-        # During cooldown, the overall progress should not advance beyond completed cases
-        cases_completed = current_case - starting_case  # 0-based count of fully completed cases
-        
-        if is_in_cooldown:
-            # Cooldown: overall progress is only completed cases, no current case progress
-            total_frac = min(cases_completed / actual_total_cases, 1.0)
-        else:
-            # Running or other status: include current case progress
-            total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
-
-        # Labels
-        elapsed_total = time.time() - start_time if start_time else 0.0
-        total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
-        
-        if is_in_cooldown:
-            case_label = f"waiting for temperature cooldown"
-        else:
-            case_label = f"{status}"
-
-        logger.info(f"%%%%%%%%progress: status={status}, seq_dur={sequence_duration}, start={test_case_start_time}, case_frac={case_frac}")
-
-
-        # Case bar color
-        if is_in_cooldown:
-            status_color = "#3498DB"       # blue for cooldown
-        elif status == "running":
-            status_color = "#E2A84A"       # yellow
-        elif status == "passed":
-            status_color = "#2ECC71"       # green
-        elif status in ("temperature shutdown", "voltage deviation", "error"):
-            status_color = "#E74C3C"       # red
-        elif status == "aborted by user":
-            status_color = "#F39C12"       # orange
-        else:
-            status_color = "#BDC3C7"       # grey/idle
-
-        self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color)
-
-        # Keep polling until the worker thread has fully exited run(), including its finally block.
-        worker_alive = hasattr(self, "running_thread") and self.running_thread.is_alive()
-        if not worker_alive:
-            self._stop_progress_timer()
