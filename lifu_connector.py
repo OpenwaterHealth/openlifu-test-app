@@ -187,8 +187,12 @@ class LIFUConnector(QObject):
 
     def update_state(self):
         """Update system state based on connection and configuration."""
-        if not self._txConnected and not self._hvConnected:
+        if self._running:
+            self._state = RUNNING
+        elif not self._txConnected and not self._hvConnected:
             self._state = DISCONNECTED
+        elif self._hvConnected and not self._running: # script will auto turn on 12v
+            self._state = TEST_SCRIPT_READY
         elif self._txConnected and not self._configured:
             self._state = TX_CONNECTED
         elif self._txConnected and self._hvConnected and self._configured:
@@ -1862,3 +1866,171 @@ class LIFUConnector(QObject):
                 self.testReportLoaded.emit(False, error_msg)
                 
         threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(int, int)
+    def runThermalTest(self, frequency, num_modules):
+        """Run the transmitter heating test."""
+        logger.info(f"runThermalTest called: frequency={frequency}, num_modules={num_modules}")
+
+        if hasattr(self, 'running_thread') and self.running_thread.is_alive():
+            logger.warning("Previous test still shutting down, ignoring start request")
+            return
+
+        args = parse_arguments()
+        args.frequency = frequency
+        args.num_modules = num_modules
+        args.interface = self.interface
+        args.test_runthrough = True
+
+        self.thermal_test_instance = TransmitterSanityCheck(args=args)
+        self._start_progress_timer()
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                logger.info("Running thermal test...")
+                self._running = True
+                self.update_state()
+                self.thermal_test_instance.run()
+                
+            except Exception as e:
+                logger.error(f"\n !! Fatal error in thermal test worker: {e}")
+                with contextlib.suppress(Exception):
+                    self.thermal_test_instance.shutdown_event.set()
+            finally:
+                self._running = False
+                self.update_state()
+                loop.close()
+                logger.info(f"Updated state: {self._state}")
+
+        self.running_thread = threading.Thread(target=_run, daemon=True)
+        self.running_thread.start()
+        logger.info("Thread started, returning to event loop")
+
+
+    # def _run_thermal_test_worker(self):
+    #     try:
+    #         # self._state = RUNNING
+    #         # self.stateChanged.emit(self._state)
+
+    #         self._running = True
+    #         self.update_state()  # Notify QML of state update
+
+    #         self.thermal_test_instance.run()
+    #         # Notify QML of state update
+
+    #     except Exception as e:
+    #         logger.error(f"\n !! Fatal error in thermal test worker: {e}")
+    #         logger.info("Attempting to clean up after thermal test error...")
+    #         self.thermal_test_instance.shutdown_event.set()
+    #         # self._running = True
+    #         # self.update_state()  # Notify QML of state update
+    #         # logger.info(f"Updated state: {self._state}")
+    #     finally:
+    #         self._running = False
+    #         # self.stateChanged.emit(self._state) # Notify QML of state update
+    #         self.update_state()  # Notify QML of state update
+    #         logger.info(f"Updated state: {self._state}")
+
+    @pyqtSlot()
+    def _stop_thermal_test(self):
+        if not self._running:
+            logger.warning("Stop called but no test is running, ignoring.")
+            return
+        if self.thermal_test_instance:
+            self.thermal_test_instance.shutdown_event.set()
+            self.thermal_test_instance.test_status = "aborted by user"
+        # if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
+        #     self._worker_thread.join(timeout=5)
+        #     if self._worker_thread.is_alive():
+        #         logger.warning("Thermal test thread did not exit within timeout")
+
+        # self._state = TX_CONNECTED
+        # self.stateChanged.emit(self._state)  # Notify QML of state update
+
+    testProgressUpdated = pyqtSignal(float, float, str, str, str)
+
+    def _start_progress_timer(self):
+        logger.info("_____Starting progress timer for thermal test")
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(250)
+        self._progress_timer.timeout.connect(self._emit_test_progress)
+        self._progress_timer.start()
+        logger.info(f"Timer active: {self._progress_timer.isActive()}")
+
+    def _stop_progress_timer(self):
+        if hasattr(self, "_progress_timer"):
+            self._progress_timer.stop()
+
+    def _emit_test_progress(self):
+
+        runner = self.thermal_test_instance
+
+        total_cases = 1 
+        starting_case = 1
+        current_case = getattr(runner, "test_case_num", starting_case)
+        status = getattr(runner, "test_status", "not started")
+        sequence_duration = getattr(runner, "sequence_duration", 0)
+        test_case_start_time = getattr(runner, "test_case_start_time", 0.0)
+        start_time = getattr(runner, "start_time", 0.0) or 0.0
+        is_in_cooldown = getattr(runner, "is_in_cooldown", False)
+        log_file_path = getattr(runner, "log_file_path", "")
+
+
+        # Calculate the actual number of cases that will be run
+        actual_total_cases = total_cases - starting_case + 1
+        total_runtime = actual_total_cases * sequence_duration
+
+        # Per-case fraction: based on this specific test case's sequence_duration
+        if status == "running" and sequence_duration > 0 and test_case_start_time > 0:
+            elapsed_case = time.time() - test_case_start_time
+            case_frac = min(elapsed_case / sequence_duration, 1.0)
+        elif status in ("passed", "temperature shutdown", "voltage deviation"):
+            case_frac = 1.0
+        else:
+            case_frac = 0.0
+
+        # Total fraction: sum of completed cases + current case progress
+        # During cooldown, the overall progress should not advance beyond completed cases
+        cases_completed = current_case - starting_case  # 0-based count of fully completed cases
+        
+        if is_in_cooldown:
+            # Cooldown: overall progress is only completed cases, no current case progress
+            total_frac = min(cases_completed / actual_total_cases, 1.0)
+        else:
+            # Running or other status: include current case progress
+            total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
+
+        # Labels
+        elapsed_total = time.time() - start_time if start_time else 0.0
+        total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
+        
+        if is_in_cooldown:
+            case_label = f"waiting for temperature cooldown"
+        else:
+            case_label = f"{status}"
+
+        logger.info(f"%%%%%%%%progress: status={status}, seq_dur={sequence_duration}, start={test_case_start_time}, case_frac={case_frac}")
+
+
+        # Case bar color
+        if is_in_cooldown:
+            status_color = "#3498DB"       # blue for cooldown
+        elif status == "running":
+            status_color = "#E2A84A"       # yellow
+        elif status == "passed":
+            status_color = "#2ECC71"       # green
+        elif status in ("temperature shutdown", "voltage deviation", "error"):
+            status_color = "#E74C3C"       # red
+        elif status == "aborted by user":
+            status_color = "#F39C12"       # orange
+        else:
+            status_color = "#BDC3C7"       # grey/idle
+
+        self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color)
+
+        # Keep polling until the worker thread has fully exited run(), including its finally block.
+        worker_alive = hasattr(self, "running_thread") and self.running_thread.is_alive()
+        if not worker_alive:
+            self._stop_progress_timer()
