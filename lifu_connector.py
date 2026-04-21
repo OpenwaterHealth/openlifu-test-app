@@ -191,16 +191,14 @@ class LIFUConnector(QObject):
             self._state = RUNNING
         elif not self._txConnected and not self._hvConnected:
             self._state = DISCONNECTED
-        elif self._hvConnected and not self._running: # script will auto turn on 12v
-            self._state = TEST_SCRIPT_READY
-        elif self._txConnected and not self._configured:
-            self._state = TX_CONNECTED
         elif self._txConnected and self._hvConnected and self._configured:
             self._state = READY
         elif self._txConnected and self._configured:
             self._state = CONFIGURED
-        self.stateChanged.emit(self._state)  # Notify QML of state update
-        logger.debug(f"Updated state: {self._state}")
+        elif self._txConnected and not self._configured:
+            self._state = TX_CONNECTED
+        elif self._hvConnected and not self._txConnected:
+            self._state = TEST_SCRIPT_READY
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
