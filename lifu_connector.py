@@ -113,6 +113,9 @@ class LIFUConnector(QObject):
     solutionStateChanged = pyqtSignal()  # Notifies when solution is loaded/unloaded
     solutionSaveStatus = pyqtSignal(bool, str)  # (success, message)
     testReportLoaded = pyqtSignal(bool, str)  # (success, message)
+    
+    # HV enable mode signals
+    hvEnableModeChanged = pyqtSignal(int)  # Notifies when HV enable mode changes
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -134,6 +137,9 @@ class LIFUConnector(QObject):
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
+        
+        # HV enable mode: 0=While Running, 1=While Configured, 2=ON, 3=OFF
+        self._hv_enable_mode = 0
 
         self._interface_mutex = QRecursiveMutex()
 
@@ -173,10 +179,13 @@ class LIFUConnector(QObject):
             self._state = DISCONNECTED
         elif self._txConnected and not self._configured:
             self._state = TX_CONNECTED
-        elif self._txConnected and self._hvConnected and self._configured:
-            self._state = READY
         elif self._txConnected and self._configured:
-            self._state = CONFIGURED
+            # Check if HV is ready (connected and mode is not OFF)
+            hv_ready = self._hvConnected and self._hv_enable_mode != 3  # 3 = OFF mode
+            if hv_ready:
+                self._state = READY
+            else:
+                self._state = CONFIGURED
         self.stateChanged.emit(self._state)  # Notify QML of state update
         logger.debug(f"Updated state: {self._state}")
 
@@ -301,6 +310,12 @@ class LIFUConnector(QObject):
             self._txConnected = False
         elif descriptor == "HV":
             self._hvConnected = False
+            # If HV was set to "ON" mode, automatically switch to "OFF" when disconnected
+            if self._hv_enable_mode == 2:  # ON mode
+                self._hv_enable_mode = 3  # Switch to OFF
+                self.hvEnableModeChanged.emit(self._hv_enable_mode)
+                logger.info("HV enable mode automatically switched to OFF due to HV disconnection")
+                
         self.signalDisconnected.emit(descriptor, port)
         self.connectionStatusChanged.emit() 
         self.update_state()
@@ -731,6 +746,15 @@ class LIFUConnector(QObject):
             self._configured = True
             self.update_state()
             logger.info("Transmitter configured")
+            
+            # Handle "While Configured" HV mode (but NOT "OFF" mode)
+            if self._hv_enable_mode == 1 and self._hvConnected:
+                try:
+                    self.interface.hvcontroller.turn_hv_on()
+                    logger.info("HV turned on (While Configured mode)")
+                except Exception as hv_e:
+                    logger.error(f"Failed to turn on HV in While Configured mode: {hv_e}")
+                    
         except Exception as e:
             logger.error(f"Error configuring transmitter: {e}")
         finally:
@@ -749,12 +773,18 @@ class LIFUConnector(QObject):
         if self._state == READY:
             self._interface_mutex.lock()
             try:
-                if self.interface.start_sonication(async_mode=False):
+                # Determine HV control parameters based on enable mode
+                turn_hv_on = (self._hv_enable_mode == 0)  # Only for "While Running" mode
+                wait_for_settle = True  # Always wait for settle
+                
+                if self.interface.start_sonication(turn_hv_on=turn_hv_on, 
+                                                    wait_for_settle=wait_for_settle, 
+                                                    async_mode=False):
                     self._state = RUNNING
                 else:
                     raise RuntimeError("Failed to start sonication")
                 self.stateChanged.emit(self._state)
-                logger.info("Sonication started")
+                logger.info(f"Sonication started (HV mode: {self._hv_enable_mode}, turn_hv_on: {turn_hv_on})")
             except Exception as e:
                 logger.error(f"Error starting sonication: {e}")
             finally:
@@ -766,12 +796,15 @@ class LIFUConnector(QObject):
         if self._state == RUNNING:
             self._interface_mutex.lock()
             try:
-                if self.interface.stop_sonication():
+                # Determine HV control parameters based on enable mode
+                turn_hv_off = (self._hv_enable_mode == 0)  # Only for "While Running" mode
+                
+                if self.interface.stop_sonication(turn_hv_off=turn_hv_off):
                     self._state = READY
                 else:
                     raise RuntimeError("Failed to stop sonication")
                 self.stateChanged.emit(self._state)
-                logger.info("Sonication stopped")
+                logger.info(f"Sonication stopped (HV mode: {self._hv_enable_mode}, turn_hv_off: {turn_hv_off})")
             except Exception as e:
                 logger.error(f"Error stopping sonication: {e}")
             finally:
@@ -817,6 +850,58 @@ class LIFUConnector(QObject):
     def solutionName(self):
         """Expose loaded solution name to QML."""
         return self._solution_name
+    
+    @pyqtProperty(int, notify=hvEnableModeChanged)
+    def hvEnableMode(self):
+        """Expose HV enable mode to QML."""
+        return self._hv_enable_mode
+    
+    @pyqtSlot(int)
+    def setHvEnableMode(self, mode):
+        """Set HV enable mode (0=While Running, 1=While Configured, 2=ON, 3=OFF)."""
+        if mode < 0 or mode > 3:
+            logger.warning(f"Invalid HV enable mode: {mode}")
+            return
+            
+        # Prevent changing HV mode while running
+        if self._state == RUNNING:
+            logger.warning("Cannot change HV enable mode while running")
+            return
+            
+        # Prevent setting "ON" mode when HV is not connected
+        if mode == 2 and not self._hvConnected:  # ON mode
+            logger.warning("Cannot set HV to ON mode: HV device not connected")
+            return
+            
+        old_mode = self._hv_enable_mode
+        self._hv_enable_mode = mode
+        self.hvEnableModeChanged.emit(mode)
+        logger.info(f"HV enable mode changed: {old_mode} -> {mode}")
+        
+        # Handle immediate HV changes for ON/OFF modes
+        if self._hvConnected:
+            try:
+                if mode == 2:  # ON
+                    self.interface.hvcontroller.turn_hv_on()
+                    logger.info("HV turned on (ON mode)")
+                elif mode == 3:  # OFF
+                    self.interface.hvcontroller.turn_hv_off()
+                    logger.info("HV turned off (OFF mode)")
+            except Exception as e:
+                logger.error(f"Error setting HV for mode {mode}: {e}")
+        
+        # Update state after mode change (important for OFF->ON transitions)
+        self.update_state()
+    
+    @pyqtSlot(result='QStringList')
+    def getHvEnableModes(self):
+        """Return the list of HV enable mode options."""
+        return ["While Running", "While Configured", "ON", "OFF"]
+        
+    @pyqtSlot(result=bool)
+    def canSetHvOn(self):
+        """Return whether HV can be set to ON mode (requires HV connection)."""
+        return self._hvConnected
     
     @pyqtSlot()
     def queryHvInfo(self):
@@ -1770,6 +1855,12 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def makeLoadedSolutionEditable(self):
         """Release the loaded solution data while preserving UI field values."""
+        if self._hv_enable_mode == 1 and self._hvConnected:
+            try:
+                self.interface.hvcontroller.turn_hv_off()
+                logger.info("HV turned off to allow editing (While Configured mode)")
+            except Exception as hv_e:
+                logger.error(f"Failed to turn off HV in While Configured mode: {hv_e}")
         if self._solution_loaded:
             solution_name = self._solution_name
             self._solution_loaded = False

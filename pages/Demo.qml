@@ -144,7 +144,7 @@ Rectangle {
 
     function getSystemStateText() {
         return "System State: " + (LIFUConnector.state === 0 ? "Disconnected"
-                            : LIFUConnector.state === 1 ? "TX Connected, Not Configured"
+                            : LIFUConnector.state === 1 ? "Connected"
                             : LIFUConnector.state === 2 ? "Configured"
                             : LIFUConnector.state === 3 ? "Ready"
                             : "Running")
@@ -1155,7 +1155,7 @@ Rectangle {
                     anchors.margins: 12
                     spacing: 10
 
-                    // Status text + module count row
+                    // Status text, module count, and HV enable mode row
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
@@ -1196,6 +1196,59 @@ Rectangle {
                                 radius: 4
                             }
                             onCurrentValueChanged: LIFUConnector.setManualNumModules(currentValue)
+                        }
+                        
+                        Text {
+                            text: "HV Enable:"
+                            font.pixelSize: 12
+                            color: "#BDC3C7"
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        
+                        ComboBox {
+                            id: hvEnableModeComboBox
+                            model: LIFUConnector.getHvEnableModes()
+                            currentIndex: LIFUConnector.hvEnableMode
+                            implicitWidth: 140
+                            implicitHeight: 26
+                            font.pixelSize: 12
+                            enabled: LIFUConnector.state !== 4  // Disable when running
+                            background: Rectangle {
+                                color: "#222"
+                                border.color: hvEnableModeComboBox.enabled ? "#999" : "#555"
+                                radius: 4
+                            }
+                            
+                            // Custom delegate to handle disabled "ON" option when HV not connected
+                            delegate: ItemDelegate {
+                                width: hvEnableModeComboBox.width
+                                height: 26
+                                enabled: !(index === 2 && !LIFUConnector.hvConnected)  // Disable "ON" when HV not connected
+                                
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: parent.enabled ? (parent.hovered ? "#333" : "#222") : "#1A1A1A"
+                                    
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: model[modelData] || modelData
+                                        color: parent.parent.enabled ? "white" : "#666"
+                                        font.pixelSize: 12
+                                    }
+                                }
+                            }
+                            
+                            onCurrentIndexChanged: {
+                                if (currentIndex >= 0) {
+                                    // Only attempt to change if it's a valid selection
+                                    if (currentIndex !== 2 || LIFUConnector.hvConnected) {
+                                        LIFUConnector.setHvEnableMode(currentIndex)
+                                    } else {
+                                        // Reset to previous valid selection if trying to select ON while disconnected
+                                        currentIndex = LIFUConnector.hvEnableMode
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -1385,6 +1438,12 @@ Rectangle {
 
         function onSignalConnected(descriptor, port) {
             console.log(descriptor + " connected on " + port);
+            if (descriptor === "HV") {
+                // Force ComboBox to refresh its delegate states when HV connects
+                // This ensures the "ON" option gets enabled properly
+                hvEnableModeComboBox.model = []
+                hvEnableModeComboBox.model = LIFUConnector.getHvEnableModes()
+            }
             statusOverrideText = ""
         }
 
@@ -1397,6 +1456,10 @@ Rectangle {
             if (descriptor === "HV") {
                 hvPositiveRail = NaN;
                 hvNegativeRail = NaN;
+                // Force ComboBox to refresh its delegate states when HV disconnects
+                // This ensures the "ON" option gets disabled properly
+                hvEnableModeComboBox.model = []
+                hvEnableModeComboBox.model = LIFUConnector.getHvEnableModes()
             }
             statusOverrideText = ""
         }
@@ -1477,6 +1540,12 @@ Rectangle {
             }
 
             previousConnectorState = state;
+        }
+        
+        function onHvEnableModeChanged(mode) {
+            if (hvEnableModeComboBox.currentIndex !== mode) {
+                hvEnableModeComboBox.currentIndex = mode
+            }
         }
     }
 
