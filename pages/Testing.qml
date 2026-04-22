@@ -170,7 +170,7 @@ Rectangle {
                         // }
 
                         GroupBox {
-                            title: "Short Duration Hardware/Software Test"
+                            title: "Short Duration Verification Test"
                             Layout.fillWidth: true
                             anchors.fill: parent
                             anchors.margins: 12

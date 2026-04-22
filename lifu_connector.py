@@ -142,6 +142,8 @@ class LIFUConnector(QObject):
         self._hvConnected = False
         self._configured = False
         self._running = False
+        self._abort_requested = False
+        self.thermal_test_instance = None
         self._state = DISCONNECTED
         self._trigger_state = False  # Internal state to track trigger status
         self._txconfigured_state = False  # Internal state to track trigger status
@@ -1882,7 +1884,18 @@ class LIFUConnector(QObject):
         args.interface = self.interface
         # args.test_runthrough = True
 
-        self.thermal_test_instance = TransmitterShortVerificationTest(args=args)
+        self._abort_requested = False
+        self._running = True
+        self.update_state()
+
+        try:
+            self.thermal_test_instance = TransmitterShortVerificationTest(args=args)
+        except Exception as e:
+            self._running = False
+            self.update_state()
+            logger.error(f"Failed to initialize thermal test: {e}")
+            return
+
         self._start_progress_timer()
 
         def _run():
@@ -1890,8 +1903,15 @@ class LIFUConnector(QObject):
             asyncio.set_event_loop(loop)
             try:
                 logger.info("Running thermal test...")
-                self._running = True
-                self.update_state()
+
+                # Honor immediate stop presses made during startup/pre-check windows.
+                if self._abort_requested and self.thermal_test_instance:
+                    with contextlib.suppress(Exception):
+                        self.thermal_test_instance.shutdown_event.set()
+                    self.thermal_test_instance.test_status = "aborted by user"
+                    logger.info("Thermal test aborted before execution started")
+                    return
+
                 self.thermal_test_instance.run()
                 
             except Exception as e:
@@ -1935,12 +1955,14 @@ class LIFUConnector(QObject):
 
     @pyqtSlot()
     def _stop_thermal_test(self):
-        if not self._running:
-            logger.warning("Stop called but no test is running, ignoring.")
-            return
+        self._abort_requested = True
         if self.thermal_test_instance:
-            self.thermal_test_instance.shutdown_event.set()
+            with contextlib.suppress(Exception):
+                self.thermal_test_instance.shutdown_event.set()
             self.thermal_test_instance.test_status = "aborted by user"
+            logger.info("Thermal test stop requested")
+        else:
+            logger.info("Thermal test stop requested before runner initialization")
         # if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
         #     self._worker_thread.join(timeout=5)
         #     if self._worker_thread.is_alive():
