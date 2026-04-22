@@ -25,8 +25,18 @@ import json
 import copy
 from scripts.generate_ultrasound_plot import generate_ultrasound_plot_from_solution  # Import the function directly
 from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
-from openlifu_sdk.io import LIFUInterface
+from openlifu_sdk.io import LIFUInterface, LIFUInterfaceStatus
 from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
+from openlifu_sdk.io.exceptions import (
+    LIFUError,
+    LIFUCommunicationError,
+    LIFUDeviceError,
+    LIFUHVSettleError,
+    LIFUNotConnectedError,
+    LIFUProtocolError,
+    LIFUSolutionError,
+    LIFUSonicationError,
+)
 
 # import verification-tests
 from verification.prodreqs_base_class import *
@@ -35,23 +45,18 @@ from verification.prodreqs_voltage_accuracy_test import VoltageAccuracyTest, TES
 from verification.prodreqs_tx_short_verification_test import TransmitterShortVerificationTest
 from verification.prodreqs_run_indefinitely_test import TransmitterIndefiniteRun
 
-logger = logging.getLogger("LIFUConnector")
-# Set up logging
-logger.setLevel(logging.INFO)
-logger.propagate = True
 
-# Create console handler and set level to debug
+# Set up logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
-logger.setLevel(logging.INFO)
-logger.propagate = True
 
-sdklogger = logging.getLogger('openlifu_sdk.io')
-sdklogger.setLevel(logging.INFO)
-#print(sdklogger)
+#sdklogger = logging.getLogger('openlifu_sdk.io')
+#sdklogger.setLevel(logging.DEBUG)
 
 
 def _parse_tx_module(target: str):
@@ -65,13 +70,28 @@ def _parse_tx_module(target: str):
     return None
 
 
-# Define system states
+# Define system states.
+#
+# These are app-level states surfaced to QML and DO NOT mirror
+# ``LIFUInterfaceStatus`` from the SDK. We intentionally collapse the previous
+# CONFIGURED/READY split (which conflated HV-rail readiness with solution
+# configuration) into a single READY state that means "TX has a valid
+# solution loaded". HV connection / energization is reported separately via
+# ``hvConnected`` and ``powerStatusReceived``.
 DISCONNECTED = 0
-TX_CONNECTED = 1
-CONFIGURED = 2
-READY = 3
-RUNNING = 4
-TEST_SCRIPT_READY = 5
+CONNECTED = 1            # TX device connected, no solution configured
+READY = 2                # TX configured with a solution; ready to start
+RUNNING = 3              # Sonication or verification test in progress
+TEST_SCRIPT_READY = 4    # HV connected without TX (verification scripts)
+
+HV_EN_AUTO = 0
+HV_EN_ON = 1
+HV_EN_OFF = 2
+HV_EN_MODES = {
+    HV_EN_AUTO: "AUTO",
+    HV_EN_ON: "ON",
+    HV_EN_OFF: "OFF",
+}
 
 #
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
@@ -129,6 +149,15 @@ class LIFUConnector(QObject):
     solutionStateChanged = pyqtSignal()  # Notifies when solution is loaded/unloaded
     solutionSaveStatus = pyqtSignal(bool, str)  # (success, message)
     testReportLoaded = pyqtSignal(bool, str)  # (success, message)
+    
+    # HV enable mode signals
+    hvEnableModeChanged = pyqtSignal(int)  # Notifies when HV enable mode changes
+
+    # Generic device error signal for surfacing SDK failures to QML as popups.
+    # Emitted whenever a LIFUError (or unexpected Exception) is caught while
+    # talking to the hardware. The message already includes the [LIFU-<code>]
+    # prefix for LIFUError subclasses.
+    deviceError = pyqtSignal(str, str)  # (title, message)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -155,6 +184,9 @@ class LIFUConnector(QObject):
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
+        
+        # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
+        self._hv_enable_mode = HV_EN_AUTO
 
         self._interface_mutex = QRecursiveMutex()
 
@@ -188,22 +220,61 @@ class LIFUConnector(QObject):
         except Exception as e:
             logger.error(f"Error closing LIFU interface: {e}")
 
+    def _emit_device_error(self, title: str, message: str):
+        """Log a device/communication failure and surface it to QML as a popup."""
+        logger.error(f"{title}: {message}")
+        try:
+            self.deviceError.emit(title, message)
+        except Exception as e:
+            logger.error(f"Failed to emit deviceError signal: {e}")
+
+    def _handle_lifu_error(self, title: str, exc: BaseException, context: str = ""):
+        """Format a caught LIFUError (or other exception) and emit a popup.
+
+        The message passed to the user includes the ``[LIFU-<code>]`` prefix
+        that ``LIFUError`` embeds in its string representation, so operators
+        can reference the exact error code when reporting issues.
+        """
+        if isinstance(exc, LIFUError):
+            detail = str(exc)
+        else:
+            detail = f"{type(exc).__name__}: {exc}"
+        if context:
+            detail = f"{context}: {detail}"
+        self._emit_device_error(title, detail)
+
     def update_state(self):
-        """Update system state based on connection and configuration."""
+        """Update system state based on connection and configuration.
+
+        State is purely a function of TX/HV connection + whether a solution
+        has been programmed (or a verification test is running). RUNNING is
+        set explicitly by start/stop_sonication and by the verification test
+        runner via ``self._running``. HV connection/enable status is tracked
+        independently and surfaced via ``hvConnected``/``powerStatusReceived``
+        rather than folded into ``state`` (except for the TEST_SCRIPT_READY
+        case where only HV is attached).
+        """
         if self._running:
             self._state = RUNNING
+        elif self._state == RUNNING and self._txConnected:
+            # Sonication-driven RUNNING is owned by start/stop_sonication;
+            # preserve it as long as the TX is still attached.
+            pass
         elif not self._txConnected and not self._hvConnected:
             self._state = DISCONNECTED
-        elif self._txConnected and self._hvConnected and self._configured:
-            self._state = READY
         elif self._txConnected and self._configured:
-            self._state = CONFIGURED
-        elif self._txConnected and not self._configured:
-            self._state = TX_CONNECTED
-        elif self._hvConnected and not self._txConnected:
+            self._state = READY
+        elif self._txConnected:
+            self._state = CONNECTED
+        else:
+            # HV connected without TX – verification scripts can run.
             self._state = TEST_SCRIPT_READY
-        # Notify QML of state change
         self.stateChanged.emit(self._state)
+        logger.debug(f"Updated state: {self._state}")
+
+    def _hv_ready(self) -> bool:
+        """Return True if HV is connected and not disabled by the user."""
+        return self._hvConnected and self._hv_enable_mode != HV_EN_OFF
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
@@ -326,6 +397,12 @@ class LIFUConnector(QObject):
             self._txConnected = False
         elif descriptor == "HV":
             self._hvConnected = False
+            # If HV was set to "ON" mode, automatically switch to "OFF" when disconnected
+            if self._hv_enable_mode == HV_EN_ON:  # ON mode
+                self._hv_enable_mode = HV_EN_OFF  # Switch to OFF
+                self.hvEnableModeChanged.emit(self._hv_enable_mode)
+                logger.info("HV enable mode automatically switched to OFF due to HV disconnection")
+                
         self.signalDisconnected.emit(descriptor, port)
         self.connectionStatusChanged.emit() 
         self.update_state()
@@ -369,15 +446,17 @@ class LIFUConnector(QObject):
         try:
             logger.debug("Configuring solution: %s with amplitude: %s", solutionName, amplitude)
             solution = None  # Replace with actual configuration logic
-            if self.interface.set_solution(solution):
-                logger.info("Solution '%s' configured successfully.", solutionName)
-                self.solutionConfigured.emit(f"Solution '{solutionName}' configured.")
-            else:
-                logger.error("Failed to configure solution '%s'.", solutionName)
-                self.solutionConfigured.emit("Configuration failed.")
+            self.interface.set_solution(solution)
+            logger.info("Solution '%s' configured successfully.", solutionName)
+            self.solutionConfigured.emit(f"Solution '{solutionName}' configured.")
+        except LIFUError as e:
+            self.solutionConfigured.emit("Configuration failed.")
+            self._handle_lifu_error("Configure Solution", e,
+                                    context=f"Failed to configure solution '{solutionName}'")
         except Exception as e:
-            logger.error("Error configuring solution: %s", e)
             self.solutionConfigured.emit("Configuration error.")
+            self._handle_lifu_error("Configure Solution", e,
+                                    context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -439,7 +518,7 @@ class LIFUConnector(QObject):
             pinmap_data = self._load_pinmap_data(num_modules)
             element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
             numelements = element_positions.shape[0]
-            print(f"{num_modules}x config file loaded")
+            logger.debug(f"{num_modules}x config file loaded")
             distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
             tof = distances*1e-3 / SPEED_OF_SOUND
             delays = tof.max() - tof
@@ -741,23 +820,129 @@ class LIFUConnector(QObject):
             self.solutionSaveStatus.emit(False, message)
             return False
 
+    @pyqtSlot(str, result=bool)
+    def directSetVoltage(self, voltage_str):
+        """Directly set the HV rail voltage without reconfiguring the solution."""
+        if not self._hvConnected:
+            logger.error("Cannot set voltage: No HV device connected")
+            return False
+        self._interface_mutex.lock()
+        try:
+            voltage = float(voltage_str)
+            if self.interface.hvcontroller.set_voltage(voltage=voltage):
+                logger.info(f"Voltage directly set to {voltage} V")
+                return True
+            logger.error("Failed to directly set voltage")
+            return False
+        except Exception as e:
+            logger.error(f"Error in directSetVoltage: {e}")
+            return False
+        finally:
+            self._interface_mutex.unlock()
+
+    @pyqtSlot(str, str, str, str, str, result=bool)
+    def directSetSequence(self, pulseInterval, pulseCount, trainInterval, trainCount, mode):
+        """Directly update trigger/sequence parameters without re-running the full configuration."""
+        if not self._txConnected:
+            self._emit_device_error("Set Sequence", "No TX device connected.")
+            return False
+        self._interface_mutex.lock()
+        try:
+            pulse_interval_s = float(pulseInterval) * 1e-3  # UI ms -> s
+            pulse_count = int(pulseCount)
+            pulse_train_interval_s = float(trainInterval)   # UI already in seconds
+            pulse_train_count = int(trainCount)
+            trigger_mode = str(mode).lower()
+            result = self.interface.txdevice.set_trigger(
+                pulse_interval=pulse_interval_s,
+                pulse_count=pulse_count,
+                pulse_train_interval=pulse_train_interval_s,
+                pulse_train_count=pulse_train_count,
+                trigger_mode=trigger_mode,
+            )
+            self._update_trigger_state(result)
+            logger.info("Sequence settings directly updated")
+            return True
+        except LIFUError as e:
+            self._handle_lifu_error("Set Sequence", e)
+            return False
+        except (ValueError, TypeError) as e:
+            self._emit_device_error("Set Sequence", f"Invalid sequence parameters: {e}")
+            return False
+        except Exception as e:
+            self._handle_lifu_error("Set Sequence", e, context="Unexpected error")
+            return False
+        finally:
+            self._interface_mutex.unlock()
+
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, result=bool)
+    def directSetPulse(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
+        """Directly update pulse/transducer settings without touching the HV controller."""
+        if not self._txConnected:
+            self._emit_device_error("Set Pulse", "No TX device connected.")
+            return False
+        self._interface_mutex.lock()
+        try:
+            solution = self.get_solution(xInput, yInput, zInput, freq, voltage,
+                                         pulseInterval, pulseCount, trainInterval, trainCount, durationS)
+            if solution is None:
+                self._emit_device_error("Set Pulse", "Failed to build a valid solution.")
+                return False
+            transducer = solution.get("transducer") if isinstance(solution, dict) else None
+            if transducer is not None and "module_invert" in transducer:
+                self.interface.txdevice.set_module_invert(transducer["module_invert"])
+            else:
+                self.interface.txdevice.set_module_invert(False)
+            self.interface.txdevice.set_solution(
+                pulse=solution['pulse'],
+                delays=solution['delays'],
+                apodizations=solution['apodizations'],
+                sequence=solution['sequence'],
+                trigger_mode=str(mode).lower(),
+            )
+            logger.info("Pulse settings directly updated")
+            return True
+        except LIFUError as e:
+            self._handle_lifu_error("Set Pulse", e)
+            return False
+        except Exception as e:
+            self._handle_lifu_error("Set Pulse", e, context="Unexpected error")
+            return False
+        finally:
+            self._interface_mutex.unlock()
+
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
         if not self._txConnected:
-            logger.error("Cannot configure transmitter: No TX device connected")
+            self._emit_device_error("Configure Transmitter", "No TX device connected.")
             return
         self.queryNumModules()
-        solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS)        
-        
+        solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS)
+        if solution is None:
+            self._emit_device_error("Configure Transmitter", "Failed to build a valid solution.")
+            return
+
         self._interface_mutex.lock()
         try:
             self.interface.set_solution(solution, trigger_mode=mode)
             self._configured = True
             self.update_state()
             logger.info("Transmitter configured")
+
+        except LIFUSolutionError as e:
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Configure Transmitter", e,
+                                    context="Solution failed safety checks")
+        except LIFUError as e:
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Configure Transmitter", e)
         except Exception as e:
-            logger.error(f"Error configuring transmitter: {e}")
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Configure Transmitter", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -771,37 +956,61 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
-        if self._state == READY:
-            self._interface_mutex.lock()
-            try:
-                if self.interface.start_sonication(async_mode=False):
-                    self._state = RUNNING
-                else:
-                    raise RuntimeError("Failed to start sonication")
-                self.stateChanged.emit(self._state)
-                logger.info("Sonication started")
-            except Exception as e:
-                logger.error(f"Error starting sonication: {e}")
-            finally:
-                self._interface_mutex.unlock()
+        if self._state != READY:
+            return
+        if not self._hv_ready():
+            self._emit_device_error(
+                "Start Sonication",
+                "HV is not ready (disconnected or HV enable set to OFF).",
+            )
+            return
+        self._interface_mutex.lock()
+        try:
+            # Determine HV control parameters based on enable mode
+            turn_hv_on = (self._hv_enable_mode == HV_EN_AUTO)
+            wait_for_settle = True  # Always wait for settle
+
+            self.interface.start_sonication(turn_hv_on=turn_hv_on,
+                                            wait_for_settle=wait_for_settle,
+                                            async_mode=False)
+            self._state = RUNNING
+            self.stateChanged.emit(self._state)
+            logger.info(f"Sonication started (HV mode: {self._hv_enable_mode}, turn_hv_on: {turn_hv_on})")
+        except LIFUHVSettleError as e:
+            # Stay in READY state; notify UI of the failure.
+            self.stateChanged.emit(self._state)
+            self._handle_lifu_error("Start Sonication", e,
+                                    context="HV rail did not settle")
+        except LIFUError as e:
+            self.stateChanged.emit(self._state)
+            self._handle_lifu_error("Start Sonication", e)
+        except Exception as e:
+            self.stateChanged.emit(self._state)
+            self._handle_lifu_error("Start Sonication", e, context="Unexpected error")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtSlot()
     def stop_sonication(self):
         """Stop the beam and return to READY state."""
-        if self._state == RUNNING:
-            self._interface_mutex.lock()
-            try:
-                if self.interface.stop_sonication():
-                    self._state = READY
-                else:
-                    raise RuntimeError("Failed to stop sonication")
-                self.stateChanged.emit(self._state)
-                logger.info("Sonication stopped")
-            except Exception as e:
-                logger.error(f"Error stopping sonication: {e}")
-            finally:
-                self._interface_mutex.unlock()
-            logger.info("Sonication stopped")
+        if self._state != RUNNING:
+            return
+        self._interface_mutex.lock()
+        try:
+            turn_hv_off = (self._hv_enable_mode == HV_EN_AUTO)
+            self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+            self._state = READY
+            self.stateChanged.emit(self._state)
+            logger.info(f"Sonication stopped (HV mode: {self._hv_enable_mode}, turn_hv_off: {turn_hv_off})")
+        except LIFUError as e:
+            # Do not change local state if the stop failed – hardware may still be running.
+            self.stateChanged.emit(self._state)
+            self._handle_lifu_error("Stop Sonication", e)
+        except Exception as e:
+            self.stateChanged.emit(self._state)
+            self._handle_lifu_error("Stop Sonication", e, context="Unexpected error")
+        finally:
+            self._interface_mutex.unlock()
 
     @pyqtProperty(bool, notify=connectionStatusChanged)
     def txConnected(self):
@@ -843,6 +1052,74 @@ class LIFUConnector(QObject):
         """Expose loaded solution name to QML."""
         return self._solution_name
     
+    @pyqtProperty(int, notify=hvEnableModeChanged)
+    def hvEnableMode(self):
+        """Expose HV enable mode to QML."""
+        return self._hv_enable_mode
+    
+    @pyqtSlot(int)
+    def setHvEnableMode(self, hv_en_mode):
+        """Set HV enable mode (0=AUTO, 1=ON, 2=OFF)."""
+        if hv_en_mode < 0 or hv_en_mode > 2:
+            logger.warning(f"Invalid HV enable mode: {hv_en_mode}")
+            return
+            
+        # Prevent changing HV mode while running
+        if self._state == RUNNING:
+            logger.warning("Cannot change HV enable mode while running")
+            return
+            
+        # Prevent setting "ON" mode when HV is not connected
+        if hv_en_mode == HV_EN_ON and not self._hvConnected:  # ON mode
+            logger.warning("Cannot set HV to ON mode: HV device not connected")
+            return
+            
+        old_mode = self._hv_enable_mode
+        self._hv_enable_mode = hv_en_mode
+        self.hvEnableModeChanged.emit(hv_en_mode)
+        logger.info(f"HV enable mode changed: {HV_EN_MODES.get(old_mode, 'Unknown')} -> {HV_EN_MODES.get(hv_en_mode, 'Unknown')}")
+        
+        # Handle immediate HV changes for ON/OFF modes
+        if self._hvConnected:
+            try:
+                if hv_en_mode == HV_EN_ON:  # ON
+                    self.interface.hvcontroller.turn_hv_on()
+                    logger.info("HV turned on (ON mode)")
+                elif hv_en_mode == HV_EN_OFF:  # OFF
+                    self.interface.hvcontroller.turn_hv_off()
+                    logger.info("HV turned off (OFF mode)")
+                elif hv_en_mode == HV_EN_AUTO and old_mode == HV_EN_ON and not self._state == RUNNING:  # AUTO and was previously ON
+                    self.interface.hvcontroller.turn_hv_off()
+                    logger.info("HV turned off (AUTO mode)")
+            except LIFUError as e:
+                self._handle_lifu_error("HV Enable Mode", e,
+                                        context=f"Failed to apply mode '{HV_EN_MODES.get(hv_en_mode, 'Unknown')}'")
+            except Exception as e:
+                self._handle_lifu_error("HV Enable Mode", e, context="Unexpected error")
+
+            # Refresh the QML side immediately so the HV LED reacts without
+            # waiting for the next telemetry poll.
+            if hv_en_mode in (HV_EN_ON, HV_EN_OFF):
+                try:
+                    hv_state = self.interface.hvcontroller.get_hv_status()
+                    v12_state = self.interface.hvcontroller.get_12v_status()
+                    self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+                except Exception as e:
+                    logger.warning(f"Could not refresh power status after HV mode change: {e}")
+
+        # Update state after mode change (important for OFF->ON transitions)
+        self.update_state()
+    
+    @pyqtSlot(result='QStringList')
+    def getHvEnableModes(self):
+        """Return the list of HV enable mode options."""
+        return ["AUTO", "ON", "OFF"]
+        
+    @pyqtSlot(result=bool)
+    def canSetHvOn(self):
+        """Return whether HV can be set to ON mode (requires HV connection)."""
+        return self._hvConnected
+    
     @pyqtSlot()
     def queryHvInfo(self):
         """Fetch and emit device information."""
@@ -853,14 +1130,16 @@ class LIFUConnector(QObject):
             hw_id = self.interface.hvcontroller.get_hardware_id(raw_hex=True)
             if hw_id:
                 if len(hw_id) > HW_ID_DATA_LENGTH:
-                    hw_id =  base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
-                device_id = hw_id 
+                    hw_id = base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
+                device_id = hw_id
             else:
                 device_id = 'N/A'
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
             logger.info(f"Device Info - Firmware: {fw_version}, Device ID: {device_id}")
+        except LIFUError as e:
+            self._handle_lifu_error("Console Info", e)
         except Exception as e:
-            logger.error(f"Error querying device info: {e}")
+            self._handle_lifu_error("Console Info", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -873,13 +1152,21 @@ class LIFUConnector(QObject):
             module_count = self.interface.txdevice.get_module_count()
             modules_info = []
             for module_idx in range(module_count):
-                fw_version = self.interface.txdevice.get_version(module=module_idx)
-                logger.info(f"Version: {fw_version}")
-                hw_id = self.interface.txdevice.get_hardware_id(module=module_idx, raw_hex=True)
+                try:
+                    fw_version = self.interface.txdevice.get_version(module=module_idx)
+                    logger.info(f"Module {module_idx} version: {fw_version}")
+                except LIFUError as e:
+                    logger.warning(f"Module {module_idx}: failed to read firmware version: {e}")
+                    fw_version = "N/A"
+                try:
+                    hw_id = self.interface.txdevice.get_hardware_id(module=module_idx, raw_hex=True)
+                except LIFUError as e:
+                    logger.warning(f"Module {module_idx}: failed to read hardware id: {e}")
+                    hw_id = ""
                 if hw_id:
                     if len(hw_id) > HW_ID_DATA_LENGTH:
-                        hw_id =  base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
-                    device_id = hw_id 
+                        hw_id = base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
+                    device_id = hw_id
                 else:
                     device_id = 'N/A'
                 logger.info(f"Module {module_idx} - Firmware: {fw_version}, Device ID: {device_id}")
@@ -889,8 +1176,10 @@ class LIFUConnector(QObject):
                     "deviceId": device_id
                 })
             self.txDeviceInfoReceived.emit(modules_info)
+        except LIFUError as e:
+            self._handle_lifu_error("TX Info", e)
         except Exception as e:
-            logger.error(f"Error querying device info: {e}")
+            self._handle_lifu_error("TX Info", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -904,11 +1193,13 @@ class LIFUConnector(QObject):
         """Fetch and emit temperature data."""
         self._interface_mutex.lock()
         try:
-            temp1 = self.interface.hvcontroller.get_temperature1()  
-            temp2 = self.interface.hvcontroller.get_temperature2()  
-
+            temp1 = self.interface.hvcontroller.get_temperature1()
+            temp2 = self.interface.hvcontroller.get_temperature2()
             self.temperatureHvUpdated.emit(temp1, temp2)
-            logger.info(f"Temperature Data - Temp1: {temp1}, Temp2: {temp2}")
+            logger.debug(f"Temperature Data - Temp1: {temp1}, Temp2: {temp2}")
+        except LIFUError as e:
+            # Avoid popups for periodic polling; log only.
+            logger.warning(f"Failed to read console temperatures: {e}")
         except Exception as e:
             logger.error(f"Error querying temperature data: {e}")
         finally:
@@ -922,10 +1213,25 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             for module in range(0, self._num_modules_connected):
-                tx_temp = self.interface.txdevice.get_temperature(module=module)
-                amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
+                try:
+                    tx_temp = self.interface.txdevice.get_temperature(module=module)
+                    amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
+                except LIFUError as e:
+                    logger.warning(f"Module {module}: failed to read temperature: {e}")
+                    continue
                 self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
-                logger.info(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
+                logger.debug(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
+            try:
+                is_running = self.interface.is_running()
+                logger.debug(f"Running state during temperature update: {is_running}")
+                if not is_running and self.interface.status == LIFUInterfaceStatus.STATUS_RUNNING:
+                    # The sequence has completed on the hardware but we haven't updated our state yet. Update now to reflect the new state and ensure HV is turned off if in AUTO mode.
+                    turn_hv_off = (self._hv_enable_mode == HV_EN_AUTO)
+                    self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+                    self._state = READY
+                    self.stateChanged.emit(self._state)                
+            except LIFUError as e:
+                logger.warning(f"Failed to query running state during temperature update: {e}")                            
         except Exception as e:
             logger.error(f"Error querying Module temperature data: {e}")
         finally:
@@ -937,12 +1243,14 @@ class LIFUConnector(QObject):
         """Fetch and emit number of connected TX modules."""
         self._interface_mutex.lock()
         try:
-            self._num_modules_connected = self.interface.txdevice.get_tx_module_count()
+            count = self.interface.txdevice.get_tx_module_count()
+            self._num_modules_connected = count
             self.numModulesUpdated.emit()
             logger.info(f"Number of connected TX modules: {self._num_modules_connected}")
-
+        except LIFUError as e:
+            self._handle_lifu_error("TX Modules", e)
         except Exception as e:
-            logger.error(f"Error querying number of TX modules: {e}")
+            self._handle_lifu_error("TX Modules", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -954,18 +1262,20 @@ class LIFUConnector(QObject):
         try:
             valid_states = [0, 1, 2, 3]
             if state not in valid_states:
-                logger.error(f"Invalid RGB state value: {state}")
+                self._emit_device_error("Set RGB State", f"Invalid RGB state value: {state}")
                 return
-
-            if self.interface.hvcontroller.set_rgb_led(state) == state:
-                logger.info(f"RGB state set to: {state}")
-            else:
-                logger.error(f"Failed to set RGB state to: {state}")
+            self.interface.hvcontroller.set_rgb_led(state)
+            logger.info(f"RGB state set to: {state}")
+        except LIFUError as e:
+            self._handle_lifu_error("Set RGB State", e)
+            # Re-query so the UI snaps back to the hardware's real state.
+            self.queryRGBState()
         except Exception as e:
-            logger.error(f"Error setting RGB state: {e}")
+            self._handle_lifu_error("Set RGB State", e, context="Unexpected error")
+            self.queryRGBState()
         finally:
             self._interface_mutex.unlock()
-            
+
     @pyqtSlot()
     def queryRGBState(self):
         """Fetch and emit RGB state."""
@@ -973,11 +1283,12 @@ class LIFUConnector(QObject):
         try:
             state = self.interface.hvcontroller.get_rgb_led()
             state_text = {0: "Off", 1: "Red", 2: "Green", 3: "Blue"}.get(state, "Unknown")
-
             logger.info(f"RGB State: {state_text}")
-            self.rgbStateReceived.emit(state, state_text)  # Emit both values
+            self.rgbStateReceived.emit(state, state_text)
+        except LIFUError as e:
+            self._handle_lifu_error("RGB State", e)
         except Exception as e:
-            logger.error(f"Error querying RGB state: {e}")
+            self._handle_lifu_error("RGB State", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -986,24 +1297,34 @@ class LIFUConnector(QObject):
         """Fetch and emit HV state."""
         self._interface_mutex.lock()
         try:
-            hv_state = self.interface.hvcontroller.get_hv_status()            
+            hv_state = self.interface.hvcontroller.get_hv_status()
             v12_state = self.interface.hvcontroller.get_12v_status()
-            logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
-            self.powerStatusReceived.emit(v12_state, hv_state)
+            logger.debug(f"HV State: {hv_state} - 12V State: {v12_state}")
+            self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+        except LIFUError as e:
+            self._handle_lifu_error("Power Status", e)
         except Exception as e:
-            logger.error(f"Error querying Power status: {e}")
+            self._handle_lifu_error("Power Status", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
-    
+
     @pyqtSlot(bool)
     def setAsyncMode(self, enable: bool):
         """Set the async mode for the interface."""
         self._interface_mutex.lock()
         try:
-            ret = self.interface.txdevice.async_mode(enable)
-            logger.debug(f"Async mode set to: {ret}")
+            async_mode = self.interface.txdevice.async_mode(enable)
+            if async_mode == enable:
+                logger.debug(f"Async mode set to: {enable}")
+            else:
+                self._emit_device_error(
+                    "Async Mode",
+                    f"Device did not accept async mode {enable} (reported {async_mode})."
+                )
+        except LIFUError as e:
+            self._handle_lifu_error("Async Mode", e)
         except Exception as e:
-            logger.error(f"Error setting async mode: {e}")
+            self._handle_lifu_error("Async Mode", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -1014,29 +1335,26 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             if target == "HV":
-                if self.interface.hvcontroller.ping():
-                    logger.info(f"Ping command sent successfully")
-                    return True
-                else:
-                    logger.error(f"Failed to send ping command")
-                    return False
+                self.interface.hvcontroller.ping()
+                logger.info("HV ping command sent successfully")
+                return True
             elif target == "TX":
-                logger.info(f"Ping command sent to Module {index}")
-                if self.interface.txdevice.ping(module=index):
-                    logger.info(f"Ping command sent successfully")
-                    return True
-                else:
-                    logger.error(f"Failed to send ping command")
-                    return False
+                self.interface.txdevice.ping(module=index)
+                logger.info(f"TX module {index} ping command sent successfully")
+                return True
             else:
-                logger.error(f"Invalid target for ping command")
+                self._emit_device_error("Ping", f"Invalid target for ping command: {target}")
                 return False
+        except LIFUError as e:
+            label = "HV" if target == "HV" else f"TX module {index}"
+            self._handle_lifu_error("Ping", e, context=f"{label} ping failed")
+            return False
         except Exception as e:
-            logger.error(f"Error sending ping command: {e}")
+            self._handle_lifu_error("Ping", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
-        
+
     @pyqtSlot(str, result=bool)
     @pyqtSlot(str, int, result=bool)
     def sendLedToggleCommand(self, target: str, index: int = 0):
@@ -1044,29 +1362,26 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             if target == "HV":
-                if self.interface.hvcontroller.toggle_led():
-                    logger.info(f"Toggle command sent successfully")
-                    return True
-                else:
-                    logger.error(f"Failed to Toggle command")
-                    return False
-            elif target == "TX":                
-                logger.info(f"Toggle command sent to Module {index}")
-                if self.interface.txdevice.toggle_led(module=index):
-                    logger.info(f"Toggle command sent successfully")
-                    return True
-                else:
-                    logger.error(f"Failed to send Toggle command")
-                    return False
+                self.interface.hvcontroller.toggle_led()
+                logger.info("HV LED toggle command sent successfully")
+                return True
+            elif target == "TX":
+                self.interface.txdevice.toggle_led(module=index)
+                logger.info(f"TX module {index} LED toggle command sent successfully")
+                return True
             else:
-                logger.error(f"Invalid target for Toggle command")
+                self._emit_device_error("LED Toggle", f"Invalid target for toggle command: {target}")
                 return False
+        except LIFUError as e:
+            label = "HV" if target == "HV" else f"TX module {index}"
+            self._handle_lifu_error("LED Toggle", e, context=f"{label} LED toggle failed")
+            return False
         except Exception as e:
-            logger.error(f"Error sending Toggle command: {e}")
+            self._handle_lifu_error("LED Toggle", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
-    
+
     @pyqtSlot(str, result=bool)
     @pyqtSlot(str, int, result=bool)
     def sendEchoCommand(self, target: str, index: int = 0):
@@ -1076,22 +1391,23 @@ class LIFUConnector(QObject):
             expected_data = b"Hello FROM Test Application!"
             if target == "HV":
                 echoed_data, data_len = self.interface.hvcontroller.echo(echo_data=expected_data)
-            elif target == "TX":                
-                logger.info(f"Echo command sent to Module {index}")
+            elif target == "TX":
                 echoed_data, data_len = self.interface.txdevice.echo(echo_data=expected_data, module=index)
             else:
-                logger.error("Invalid target for Echo command")
+                self._emit_device_error("Echo", f"Invalid target for echo command: {target}")
                 return False
 
             if echoed_data == expected_data and data_len == len(expected_data):
                 logger.info("Echo command successful - Data matched")
                 return True
-            else:
-                logger.error("Echo command failed - Data mismatch")
-                return False
-            
+            self._emit_device_error("Echo", "Echo command failed - data mismatch.")
+            return False
+        except LIFUError as e:
+            label = "HV" if target == "HV" else f"TX module {index}"
+            self._handle_lifu_error("Echo", e, context=f"{label} echo failed")
+            return False
         except Exception as e:
-            logger.error(f"Error sending Echo command: {e}")
+            self._handle_lifu_error("Echo", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
@@ -1102,34 +1418,43 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             voltage = float(strval)
-            if self.interface.hvcontroller.set_voltage(voltage=voltage):
-                logger.info("Voltage set successfully")
-                return True
-            else:   
-                logger.error("Failed to set voltage")
-                return False    
-                        
+            self.interface.hvcontroller.set_voltage(voltage=voltage)
+            logger.info("Voltage set successfully")
+            return True
+        except ValueError as e:
+            self._emit_device_error("Set HV Voltage", f"Invalid voltage value '{strval}': {e}")
+            return False
+        except LIFUError as e:
+            self._handle_lifu_error("Set HV Voltage", e)
+            return False
         except Exception as e:
-            logger.error(f"Error setting High Voltage: {e}")
+            self._handle_lifu_error("Set HV Voltage", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
-    
+
     @pyqtSlot(int, int, result=bool)
     def setFanLevel(self, fid: int, speed: int):
         """Set Fan Level to device."""
         self._interface_mutex.lock()
         try:
-            
-            if self.interface.hvcontroller.set_fan_speed(fan_id=fid, fan_speed=speed) == speed:
-                logger.info(f"Fan set successfully")
+            result = self.interface.hvcontroller.set_fan_speed(fan_id=fid, fan_speed=speed)
+            if result == speed:
+                logger.info("Fan set successfully")
                 return True
-            else:   
-                logger.error(f"Failed to set Fan Speed")
-                return False    
-                        
+            self._emit_device_error(
+                "Set Fan Speed",
+                f"Fan {fid} did not accept speed {speed}% (reported {result})."
+            )
+            return False
+        except ValueError as e:
+            self._emit_device_error("Set Fan Speed", f"Invalid fan parameters: {e}")
+            return False
+        except LIFUError as e:
+            self._handle_lifu_error("Set Fan Speed", e)
+            return False
         except Exception as e:
-            logger.error(f"Error setting Fan Speed: {e}")
+            self._handle_lifu_error("Set Fan Speed", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
@@ -1140,27 +1465,18 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             json_trigger_data = json.loads(triggerjson)
-            
             trigger_setting = self.interface.txdevice.set_trigger_json(data=json_trigger_data)
-
-            if trigger_setting:
-                self._update_trigger_state(trigger_setting)  # Update trigger state dynamically
-                logger.info(f"Trigger Setting: {trigger_setting}")
-                return True
-            else:
-                logger.error("Failed to set trigger setting.")
-                return False
-
+            self._update_trigger_state(trigger_setting)
+            logger.info(f"Trigger Setting: {trigger_setting}")
+            return True
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON data: {e}")
+            self._emit_device_error("Set Trigger", f"Failed to parse trigger JSON: {e}")
             return False
-
-        except AttributeError as e:
-            logger.error(f"Invalid interface or method: {e}")
+        except LIFUError as e:
+            self._handle_lifu_error("Set Trigger", e)
             return False
-
         except Exception as e:
-            logger.error(f"Unexpected error while setting trigger: {e}")
+            self._handle_lifu_error("Set Trigger", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
@@ -1169,36 +1485,40 @@ class LIFUConnector(QObject):
     def toggleTrigger(self):
         """Toggle the trigger state (start or stop)."""
         self._interface_mutex.lock()
+        previous_state = self._trigger_state
         try:
             if self._trigger_state:
                 # Stop the trigger
                 self.interface.txdevice.async_mode(False)
-                success = self.interface.txdevice.stop_trigger()
-                if success:
-                    logger.info("Trigger stopped successfully.")
-                    self._trigger_state = False
-                else:
-                    logger.error("Failed to stop trigger.")
+                self.interface.txdevice.stop_trigger()
+                logger.info("Trigger stopped successfully.")
+                self._trigger_state = False
             else:
                 # Start the trigger
                 self.interface.txdevice.async_mode(True)
-                success = self.interface.txdevice.start_trigger()
-                if success:
-                    logger.info("Trigger started successfully.")
-                    self._trigger_state = True
-                else:
-                    logger.error("Failed to start trigger.")
+                try:
+                    self.interface.txdevice.start_trigger()
+                except LIFUError:
+                    # Revert to stopped on failure and make sure async mode is off.
+                    try:
+                        self.interface.txdevice.async_mode(False)
+                    except Exception:
+                        pass
+                    raise
+                logger.info("Trigger started successfully.")
+                self._trigger_state = True
 
-            # Emit the updated trigger state
             self.triggerStateChanged.emit(self._trigger_state)
-            return success
-
-        except AttributeError as e:
-            logger.error(f"Invalid interface or method: {e}")
+            return True
+        except LIFUError as e:
+            self._trigger_state = previous_state
+            self.triggerStateChanged.emit(self._trigger_state)
+            self._handle_lifu_error("Toggle Trigger", e)
             return False
-
         except Exception as e:
-            logger.error(f"Unexpected error while toggling trigger: {e}")
+            self._trigger_state = previous_state
+            self.triggerStateChanged.emit(self._trigger_state)
+            self._handle_lifu_error("Toggle Trigger", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
@@ -1213,23 +1533,18 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             trigger_data = self.interface.txdevice.get_trigger_json()
-
             if isinstance(trigger_data, str):
                 trigger_data = json.loads(trigger_data)
-
             self._update_trigger_state(trigger_data)
             return True
-
         except json.JSONDecodeError:
-            logger.error("Failed to decode trigger status JSON.")
+            self._emit_device_error("Trigger Status", "Failed to decode trigger status JSON.")
             return False
-
-        except AttributeError as e:
-            logger.error(f"Invalid interface or method: {e}")
+        except LIFUError as e:
+            self._handle_lifu_error("Trigger Status", e)
             return False
-
         except Exception as e:
-            logger.error(f"Unexpected error while querying trigger info: {e}")
+            self._handle_lifu_error("Trigger Status", e, context="Unexpected error")
             return False
         finally:
             self._interface_mutex.unlock()
@@ -1239,12 +1554,12 @@ class LIFUConnector(QObject):
         """reset hardware HV device."""
         self._interface_mutex.lock()
         try:
-            if self.interface.hvcontroller.soft_reset():
-                logger.info(f"Software Reset Sent")
-            else:
-                logger.error(f"Failed to send Software Reset")
+            self.interface.hvcontroller.soft_reset()
+            logger.info("Software Reset Sent")
+        except LIFUError as e:
+            self._handle_lifu_error("Soft Reset HV", e)
         except Exception as e:
-            logger.error(f"Error Sending Software Reset: {e}")
+            self._handle_lifu_error("Soft Reset HV", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -1254,46 +1569,50 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             # Check the current state of HV
-            if self.interface.hvcontroller.get_hv_status():
-                # If HV is on, turn it off
-                if self.interface.hvcontroller.turn_hv_off():
-                    logger.info("HV turned off successfully")
-                else:
-                    logger.error("Failed to turn off HV")
+            current_hv = self.interface.hvcontroller.get_hv_status()
+
+            if current_hv:
+                self.interface.hvcontroller.turn_hv_off()
+                logger.info("HV turned off successfully")
             else:
-                # If HV is off, turn it on
-                if self.interface.hvcontroller.turn_hv_on():
-                    logger.info("HV turned on successfully")
-                else:
-                    logger.error("Failed to turn on HV")
-            hv_state = self.interface.hvcontroller.get_hv_status()            
+                self.interface.hvcontroller.turn_hv_on()
+                logger.info("HV turned on successfully")
+
+            # Re-query the hardware and emit the real state.
+            hv_state = self.interface.hvcontroller.get_hv_status()
             v12_state = self.interface.hvcontroller.get_12v_status()
             logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
-            self.powerStatusReceived.emit(v12_state, hv_state)
+            self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+        except LIFUError as e:
+            self._handle_lifu_error("Toggle HV", e)
+            # Refresh UI with whatever the hardware currently reports.
+            self._refresh_power_status_silent()
         except Exception as e:
-            logger.error(f"Error toggling HV: {e}")
+            self._handle_lifu_error("Toggle HV", e, context="Unexpected error")
+            self._refresh_power_status_silent()
         finally:
             self._interface_mutex.unlock()
 
     @pyqtSlot()
     def turnOffHV(self):
-        """Toggle HV on console."""
+        """Turn HV off on console (no-op if already off)."""
         self._interface_mutex.lock()
         try:
-            # Check the current state of HV
-            if self.interface.hvcontroller.get_hv_status():
-                # If HV is on, turn it off
-                if self.interface.hvcontroller.turn_hv_off():
-                    logger.info("HV turned off successfully")
-                else:
-                    logger.error("Failed to turn off HV")
+            current_hv = self.interface.hvcontroller.get_hv_status()
+            if current_hv:
+                self.interface.hvcontroller.turn_hv_off()
+                logger.info("HV turned off successfully")
 
-            hv_state = self.interface.hvcontroller.get_hv_status()            
+            hv_state = self.interface.hvcontroller.get_hv_status()
             v12_state = self.interface.hvcontroller.get_12v_status()
             logger.debug(f"HV State: {hv_state} - 12V State: {v12_state}")
-            self.powerStatusReceived.emit(v12_state, hv_state)
+            self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+        except LIFUError as e:
+            self._handle_lifu_error("Turn Off HV", e)
+            self._refresh_power_status_silent()
         except Exception as e:
-            logger.error(f"Error toggling HV: {e}")
+            self._handle_lifu_error("Turn Off HV", e, context="Unexpected error")
+            self._refresh_power_status_silent()
         finally:
             self._interface_mutex.unlock()
 
@@ -1302,27 +1621,40 @@ class LIFUConnector(QObject):
         """Toggle V12 on console."""
         self._interface_mutex.lock()
         try:
-            # Check the current state of HV
-            if self.interface.hvcontroller.get_12v_status():
-                # If HV is on, turn it off
-                if self.interface.hvcontroller.turn_12v_off():
-                    logger.info("V12 turned off successfully")
-                else:
-                    logger.error("Failed to turn off HV")
+            current_v12 = self.interface.hvcontroller.get_12v_status()
+
+            if current_v12:
+                self.interface.hvcontroller.turn_12v_off()
+                logger.info("V12 turned off successfully")
             else:
-                # If HV is off, turn it on
-                if self.interface.hvcontroller.turn_12v_on():
-                    logger.info("V12 turned on successfully")
-                else:
-                    logger.error("Failed to turn on V12")
-            hv_state = self.interface.hvcontroller.get_hv_status()            
+                self.interface.hvcontroller.turn_12v_on()
+                logger.info("V12 turned on successfully")
+
+            hv_state = self.interface.hvcontroller.get_hv_status()
             v12_state = self.interface.hvcontroller.get_12v_status()
             logger.info(f"HV State: {hv_state} - 12V State: {v12_state}")
-            self.powerStatusReceived.emit(v12_state, hv_state)
+            self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+        except LIFUError as e:
+            self._handle_lifu_error("Toggle 12V", e)
+            self._refresh_power_status_silent()
         except Exception as e:
-            logger.error(f"Error toggling HV: {e}")
+            self._handle_lifu_error("Toggle 12V", e, context="Unexpected error")
+            self._refresh_power_status_silent()
         finally:
             self._interface_mutex.unlock()
+
+    def _refresh_power_status_silent(self):
+        """Best-effort re-query of HV/12V state to keep the UI in sync after a failure.
+
+        Any further errors are logged but not surfaced as popups so that a
+        single operation produces at most one popup.
+        """
+        try:
+            hv_state = self.interface.hvcontroller.get_hv_status()
+            v12_state = self.interface.hvcontroller.get_12v_status()
+            self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+        except Exception as e:
+            logger.warning(f"Could not refresh power status after failure: {e}")
 
     @pyqtSlot()
     def getMonitorVoltages(self):
@@ -1331,8 +1663,10 @@ class LIFUConnector(QObject):
         try:
             voltages = self.interface.hvcontroller.get_vmon_values()
             logger.debug(f"Voltage readings: {voltages}")
-            # Emit the voltage readings to QML
             self.monVoltagesReceived.emit(voltages)
+        except LIFUError as e:
+            # Do not spam popups on periodic polling; log only.
+            logger.warning(f"Failed to read voltage monitor values: {e}")
         except Exception as e:
             logger.error(f"Error getting voltages: {e}")
         finally:
@@ -1343,12 +1677,12 @@ class LIFUConnector(QObject):
         """reset hardware TX device."""
         self._interface_mutex.lock()
         try:
-            if self.interface.txdevice.soft_reset():
-                logger.info(f"Software Reset Sent")
-            else:
-                logger.error(f"Failed to send Software Reset")
+            self.interface.txdevice.soft_reset()
+            logger.info("Software Reset Sent")
+        except LIFUError as e:
+            self._handle_lifu_error("Soft Reset TX", e)
         except Exception as e:
-            logger.error(f"Error Sending Software Reset: {e}")
+            self._handle_lifu_error("Soft Reset TX", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -1357,12 +1691,14 @@ class LIFUConnector(QObject):
         """Soft reset a specific TX module by index."""
         self._interface_mutex.lock()
         try:
-            if self.interface.txdevice.soft_reset(module=module):
-                logger.info(f"Software Reset Sent to module {module}")
-            else:
-                logger.error(f"Failed to send Software Reset to module {module}")
+            self.interface.txdevice.soft_reset(module=module)
+            logger.info(f"Software Reset Sent to module {module}")
+        except LIFUError as e:
+            self._handle_lifu_error("Soft Reset TX Module", e,
+                                    context=f"Module {module}")
         except Exception as e:
-            logger.error(f"Error Sending Software Reset to module {module}: {e}")
+            self._handle_lifu_error("Soft Reset TX Module", e,
+                                    context=f"Module {module} unexpected error")
         finally:
             self._interface_mutex.unlock()
 
@@ -1409,8 +1745,13 @@ class LIFUConnector(QObject):
             self.fwVersionRead.emit("console", version)
             logger.info(f"Console firmware version: {version}")
             return version
+        except LIFUError as e:
+            self._handle_lifu_error("Firmware Version", e,
+                                    context="Failed to read console firmware version")
+            self.fwVersionRead.emit("console", "Error")
+            return "Error"
         except Exception as e:
-            logger.error(f"Error reading console firmware version: {e}")
+            self._handle_lifu_error("Firmware Version", e, context="Unexpected error")
             self.fwVersionRead.emit("console", "Error")
             return "Error"
         finally:
@@ -1425,8 +1766,14 @@ class LIFUConnector(QObject):
             self.fwVersionRead.emit(f"transmitter_{module}", version)
             logger.info(f"Transmitter module {module} firmware version: {version}")
             return version
+        except LIFUError as e:
+            self._handle_lifu_error("Firmware Version", e,
+                                    context=f"Failed to read transmitter module {module} firmware version")
+            self.fwVersionRead.emit(f"transmitter_{module}", "Error")
+            return "Error"
         except Exception as e:
-            logger.error(f"Error reading transmitter module {module} firmware version: {e}")
+            self._handle_lifu_error("Firmware Version", e,
+                                    context=f"Module {module} unexpected error")
             self.fwVersionRead.emit(f"transmitter_{module}", "Error")
             return "Error"
         finally:
@@ -1513,13 +1860,13 @@ class LIFUConnector(QObject):
                     return
 
                 config = self.interface.txdevice.read_config(module=module)
-                if config is None:
-                    self.userConfigStatus.emit(target, False, "Failed to read config – no response from device.")
-                    return
-
                 json_str = config.get_json_str()
                 logger.info(f"User config read from {target}: {json_str}")
                 self.userConfigRead.emit(target, json_str)
+            except LIFUError as e:
+                msg = f"{str(e)}"
+                logger.error(f"Error reading config from {target}: {msg}")
+                self.userConfigStatus.emit(target, False, msg)
             except Exception as e:
                 msg = f"Error reading config from {target}: {e}"
                 logger.error(msg)
@@ -1544,16 +1891,16 @@ class LIFUConnector(QObject):
                     return
 
                 updated = self.interface.txdevice.write_config_json(json_str, module=module)
-                if updated is None:
-                    self.userConfigStatus.emit(target, False, "Write failed – no response from device.")
-                    return
-
                 msg = f"Config written to {target}. Seq: {updated.header.seq}, CRC: 0x{updated.header.crc:04X}"
                 logger.info(msg)
                 self.userConfigStatus.emit(target, True, msg)
             except json.JSONDecodeError as e:
                 msg = f"Invalid JSON: {e}"
                 logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+            except LIFUError as e:
+                msg = f"{str(e)}"
+                logger.error(f"Error writing config to {target}: {msg}")
                 self.userConfigStatus.emit(target, False, msg)
             except Exception as e:
                 msg = f"Error writing config to {target}: {e}"
@@ -1795,6 +2142,16 @@ class LIFUConnector(QObject):
     @pyqtSlot()
     def makeLoadedSolutionEditable(self):
         """Release the loaded solution data while preserving UI field values."""
+        if self._hv_enable_mode == HV_EN_ON and self._hvConnected:
+            try:
+                self.interface.hvcontroller.turn_hv_off()
+                logger.info("HV turned off to allow editing")
+            except LIFUError as hv_e:
+                self._handle_lifu_error("Edit Solution", hv_e,
+                                        context="Failed to turn off HV")
+            except Exception as hv_e:
+                self._handle_lifu_error("Edit Solution", hv_e,
+                                        context="Unexpected error turning off HV")
         if self._solution_loaded:
             solution_name = self._solution_name
             self._solution_loaded = False
