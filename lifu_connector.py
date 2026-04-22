@@ -17,6 +17,8 @@ def _base_path():
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
 import threading
+import time
+from datetime import datetime, timedelta
 import numpy as np
 import re
 import base58
@@ -1928,31 +1930,6 @@ class LIFUConnector(QObject):
         self.running_thread.start()
         logger.info("Thread started, returning to event loop")
 
-
-    # def _run_thermal_test_worker(self):
-    #     try:
-    #         # self._state = RUNNING
-    #         # self.stateChanged.emit(self._state)
-
-    #         self._running = True
-    #         self.update_state()  # Notify QML of state update
-
-    #         self.thermal_test_instance.run()
-    #         # Notify QML of state update
-
-    #     except Exception as e:
-    #         logger.error(f"\n !! Fatal error in thermal test worker: {e}")
-    #         logger.info("Attempting to clean up after thermal test error...")
-    #         self.thermal_test_instance.shutdown_event.set()
-    #         # self._running = True
-    #         # self.update_state()  # Notify QML of state update
-    #         # logger.info(f"Updated state: {self._state}")
-    #     finally:
-    #         self._running = False
-    #         # self.stateChanged.emit(self._state) # Notify QML of state update
-    #         self.update_state()  # Notify QML of state update
-    #         logger.info(f"Updated state: {self._state}")
-
     @pyqtSlot()
     def _stop_thermal_test(self):
         self._abort_requested = True
@@ -1963,13 +1940,6 @@ class LIFUConnector(QObject):
             logger.info("Thermal test stop requested")
         else:
             logger.info("Thermal test stop requested before runner initialization")
-        # if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
-        #     self._worker_thread.join(timeout=5)
-        #     if self._worker_thread.is_alive():
-        #         logger.warning("Thermal test thread did not exit within timeout")
-
-        # self._state = TX_CONNECTED
-        # self.stateChanged.emit(self._state)  # Notify QML of state update
 
     testProgressUpdated = pyqtSignal(float, float, str, str, str, str)  # (total_frac, case_frac, total_label, case_label, status_color, log_file_path)
 
@@ -2029,7 +1999,9 @@ class LIFUConnector(QObject):
         total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
         
         if is_in_cooldown:
-            case_label = f"waiting for temperature cooldown"
+            check_time = datetime.now() + timedelta(seconds=TIME_BETWEEN_TESTS_TEMPERATURE_CHECK_SECONDS)
+            time_str = check_time.strftime("%H:%M")
+            case_label = f"Test Status: waiting for temperature cooldown, will check again at {time_str}"
         else:
             case_label = f"Test Status: {status}"
 
