@@ -617,7 +617,7 @@ Rectangle {
                 spacing: 15
 
                 GroupBox {
-                    title: "Pulse Profile"
+                    title: "Voltage"
                     Layout.fillWidth: true
 
                     GridLayout {
@@ -655,75 +655,11 @@ Rectangle {
                                 radius: 4
                             }
                         }
-
-                        Text { 
-                            text: "Frequency (kHz):" 
-                            color: "white" 
-                            Layout.preferredWidth: solutionConfigLabelWidth
-                            Layout.alignment: Qt.AlignLeft
-                            
-                            HoverHandler {
-                                id: frequencyHover
-                            }
-                            
-                            ToolTip {
-                                visible: frequencyHover.hovered
-                                text: "Ultrasound center frequency (kHz)"
-                                delay: 500
-                            }
-                        }
-                        TextField { 
-                            id: frequencyInput
-                            Layout.preferredWidth: solutionConfigInputWidth
-                            Layout.preferredHeight: 32
-                            Layout.alignment: Qt.AlignLeft
-                            font.pixelSize: 14
-                            text: "400"
-                            color: controlsReadOnly ? "#BBB" : "white" 
-                            enabled: !controlsReadOnly
-                            background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
-                                radius: 4
-                            }
-                        }
-
-                        Text { 
-                            text: "Duration (uS):" 
-                            color: "white" 
-                            Layout.preferredWidth: solutionConfigLabelWidth
-                            Layout.alignment: Qt.AlignLeft
-                            
-                            HoverHandler {
-                                id: durationHover
-                            }
-                            
-                            ToolTip {
-                                visible: durationHover.hovered
-                                text: "Duration of each ultrasound pulse (uS)"
-                                delay: 500
-                            }
-                        }
-                        TextField { 
-                            id: durationInput
-                            Layout.preferredWidth: solutionConfigInputWidth
-                            Layout.preferredHeight: 32
-                            Layout.alignment: Qt.AlignLeft
-                            font.pixelSize: 14
-                            text: "200"
-                            color: controlsReadOnly ? "#BBB" : "white" 
-                            enabled: !controlsReadOnly
-                            background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
-                                radius: 4
-                            }
-                        }
                     }
                 }
 
                 GroupBox {
-                    title: "Pulse Timing Settings"
+                    title: "Sequence Settings"
                     Layout.fillWidth: true
 
                     GridLayout {
@@ -902,39 +838,75 @@ Rectangle {
                 }
 
                 GroupBox {
-                    title: solutionLoaded ? "Beam Focus (Delays and Apodizations Loaded Directly from Solution)" : "Beam Focus"
+                    title: solutionLoaded ? "Pulse Settings (Delays and Apodizations Loaded Directly from Solution)" : "Pulse Settings"
                     Layout.fillWidth: true
 
-                    RowLayout {
+                    ColumnLayout {
                         width: parent.width
-                        spacing: 16
+                        spacing: 12
 
-                        RowLayout {
-                            spacing: 6
+                        // Frequency and Duration
+                        GridLayout {
+                            columns: 2
+                            width: parent.width
+                            //Layout.fillWidth: true
 
-                            Text {
-                                text: "Lateral (X):"
-                                color: "white"
-
+                            Text { 
+                                text: "Frequency (kHz):" 
+                                color: "white" 
+                                Layout.preferredWidth: solutionConfigLabelWidth
+                                Layout.alignment: Qt.AlignLeft
+                                
                                 HoverHandler {
-                                    id: xPositionHover
+                                    id: frequencyHover
                                 }
-
+                                
                                 ToolTip {
-                                    visible: xPositionHover.hovered
-                                    text: "Lateral beam focus position (mm)"
+                                    visible: frequencyHover.hovered
+                                    text: "Ultrasound center frequency (kHz)"
                                     delay: 500
                                 }
                             }
-                            TextField {
-                                id: xInput
-                                Layout.preferredWidth: 56
-                                Layout.minimumWidth: 56
-                                Layout.maximumWidth: 56
+                            TextField { 
+                                id: frequencyInput
+                                Layout.preferredWidth: solutionConfigInputWidth
                                 Layout.preferredHeight: 32
+                                Layout.alignment: Qt.AlignLeft
                                 font.pixelSize: 14
-                                text: "0"
-                                color: controlsReadOnly ? "#BBB" : "white"
+                                text: "400"
+                                color: controlsReadOnly ? "#BBB" : "white" 
+                                enabled: !controlsReadOnly
+                                background: Rectangle {
+                                    color: controlsReadOnly ? "#333" : "#222"
+                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    radius: 4
+                                }
+                            }
+
+                            Text { 
+                                text: "Duration (uS):" 
+                                color: "white" 
+                                Layout.preferredWidth: solutionConfigLabelWidth
+                                Layout.alignment: Qt.AlignLeft
+                                
+                                HoverHandler {
+                                    id: durationHover
+                                }
+                                
+                                ToolTip {
+                                    visible: durationHover.hovered
+                                    text: "Duration of each ultrasound pulse (uS)"
+                                    delay: 500
+                                }
+                            }
+                            TextField { 
+                                id: durationInput
+                                Layout.preferredWidth: solutionConfigInputWidth
+                                Layout.preferredHeight: 32
+                                Layout.alignment: Qt.AlignLeft
+                                font.pixelSize: 14
+                                text: "200"
+                                color: controlsReadOnly ? "#BBB" : "white" 
                                 enabled: !controlsReadOnly
                                 background: Rectangle {
                                     color: controlsReadOnly ? "#333" : "#222"
@@ -944,72 +916,113 @@ Rectangle {
                             }
                         }
 
+                        // Beam Focus
                         RowLayout {
-                            spacing: 6
+                            Layout.fillWidth: true
+                            spacing: 16
 
-                            Text {
-                                text: "Elevation (Y):"
-                                color: "white"
+                            RowLayout {
+                                spacing: 6
 
-                                HoverHandler {
-                                    id: yPositionHover
+                                Text {
+                                    text: "Lateral (X):"
+                                    color: "white"
+
+                                    HoverHandler {
+                                        id: xPositionHover
+                                    }
+
+                                    ToolTip {
+                                        visible: xPositionHover.hovered
+                                        text: "Lateral beam focus position (mm)"
+                                        delay: 500
+                                    }
                                 }
-
-                                ToolTip {
-                                    visible: yPositionHover.hovered
-                                    text: "Elevational beam focus position (mm)"
-                                    delay: 500
-                                }
-                            }
-                            TextField {
-                                id: yInput
-                                Layout.preferredWidth: 56
-                                Layout.minimumWidth: 56
-                                Layout.maximumWidth: 56
-                                Layout.preferredHeight: 32
-                                font.pixelSize: 14
-                                text: "0"
-                                color: controlsReadOnly ? "#BBB" : "white"
-                                enabled: !controlsReadOnly
-                                background: Rectangle {
-                                    color: controlsReadOnly ? "#333" : "#222"
-                                    border.color: controlsReadOnly ? "#777" : "#999"
-                                    radius: 4
-                                }
-                            }
-                        }
-
-                        RowLayout {
-                            spacing: 6
-
-                            Text {
-                                text: "Axial (Z):"
-                                color: "white"
-
-                                HoverHandler {
-                                    id: zPositionHover
-                                }
-
-                                ToolTip {
-                                    visible: zPositionHover.hovered
-                                    text: "Axial beam focus position (mm)"
-                                    delay: 500
+                                TextField {
+                                    id: xInput
+                                    Layout.preferredWidth: 56
+                                    Layout.minimumWidth: 56
+                                    Layout.maximumWidth: 56
+                                    Layout.preferredHeight: 32
+                                    font.pixelSize: 14
+                                    text: "0"
+                                    color: controlsReadOnly ? "#BBB" : "white"
+                                    enabled: !controlsReadOnly
+                                    background: Rectangle {
+                                        color: controlsReadOnly ? "#333" : "#222"
+                                        border.color: controlsReadOnly ? "#777" : "#999"
+                                        radius: 4
+                                    }
                                 }
                             }
-                            TextField {
-                                id: zInput
-                                Layout.preferredWidth: 56
-                                Layout.minimumWidth: 56
-                                Layout.maximumWidth: 56
-                                Layout.preferredHeight: 32
-                                font.pixelSize: 14
-                                text: "50"
-                                color: controlsReadOnly ? "#BBB" : "white"
-                                enabled: !controlsReadOnly
-                                background: Rectangle {
-                                    color: controlsReadOnly ? "#333" : "#222"
-                                    border.color: controlsReadOnly ? "#777" : "#999"
-                                    radius: 4
+
+                            RowLayout {
+                                spacing: 6
+
+                                Text {
+                                    text: "Elevation (Y):"
+                                    color: "white"
+
+                                    HoverHandler {
+                                        id: yPositionHover
+                                    }
+
+                                    ToolTip {
+                                        visible: yPositionHover.hovered
+                                        text: "Elevational beam focus position (mm)"
+                                        delay: 500
+                                    }
+                                }
+                                TextField {
+                                    id: yInput
+                                    Layout.preferredWidth: 56
+                                    Layout.minimumWidth: 56
+                                    Layout.maximumWidth: 56
+                                    Layout.preferredHeight: 32
+                                    font.pixelSize: 14
+                                    text: "0"
+                                    color: controlsReadOnly ? "#BBB" : "white"
+                                    enabled: !controlsReadOnly
+                                    background: Rectangle {
+                                        color: controlsReadOnly ? "#333" : "#222"
+                                        border.color: controlsReadOnly ? "#777" : "#999"
+                                        radius: 4
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                spacing: 6
+
+                                Text {
+                                    text: "Axial (Z):"
+                                    color: "white"
+
+                                    HoverHandler {
+                                        id: zPositionHover
+                                    }
+
+                                    ToolTip {
+                                        visible: zPositionHover.hovered
+                                        text: "Axial beam focus position (mm)"
+                                        delay: 500
+                                    }
+                                }
+                                TextField {
+                                    id: zInput
+                                    Layout.preferredWidth: 56
+                                    Layout.minimumWidth: 56
+                                    Layout.maximumWidth: 56
+                                    Layout.preferredHeight: 32
+                                    font.pixelSize: 14
+                                    text: "50"
+                                    color: controlsReadOnly ? "#BBB" : "white"
+                                    enabled: !controlsReadOnly
+                                    background: Rectangle {
+                                        color: controlsReadOnly ? "#333" : "#222"
+                                        border.color: controlsReadOnly ? "#777" : "#999"
+                                        radius: 4
+                                    }
                                 }
                             }
                         }

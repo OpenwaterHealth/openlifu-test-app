@@ -60,6 +60,17 @@ CONFIGURED = 2
 READY = 3
 RUNNING = 4
 
+HV_EN_WHILE_RUNNING = 0
+HV_EN_WHILE_CONFIGURED = 1
+HV_EN_ON = 2
+HV_EN_OFF = 3
+HV_EN_MODES = {
+    HV_EN_WHILE_RUNNING: "While Running",
+    HV_EN_WHILE_CONFIGURED: "While Configured",
+    HV_EN_ON: "ON",
+    HV_EN_OFF: "OFF"
+}
+
 #
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
@@ -139,7 +150,7 @@ class LIFUConnector(QObject):
         self._solution_name = ""
         
         # HV enable mode: 0=While Running, 1=While Configured, 2=ON, 3=OFF
-        self._hv_enable_mode = 0
+        self._hv_enable_mode = HV_EN_WHILE_RUNNING
 
         self._interface_mutex = QRecursiveMutex()
 
@@ -181,7 +192,7 @@ class LIFUConnector(QObject):
             self._state = TX_CONNECTED
         elif self._txConnected and self._configured:
             # Check if HV is ready (connected and mode is not OFF)
-            hv_ready = self._hvConnected and self._hv_enable_mode != 3  # 3 = OFF mode
+            hv_ready = self._hvConnected and self._hv_enable_mode != HV_EN_OFF
             if hv_ready:
                 self._state = READY
             else:
@@ -311,8 +322,8 @@ class LIFUConnector(QObject):
         elif descriptor == "HV":
             self._hvConnected = False
             # If HV was set to "ON" mode, automatically switch to "OFF" when disconnected
-            if self._hv_enable_mode == 2:  # ON mode
-                self._hv_enable_mode = 3  # Switch to OFF
+            if self._hv_enable_mode == HV_EN_ON:  # ON mode
+                self._hv_enable_mode = HV_EN_OFF  # Switch to OFF
                 self.hvEnableModeChanged.emit(self._hv_enable_mode)
                 logger.info("HV enable mode automatically switched to OFF due to HV disconnection")
                 
@@ -748,7 +759,7 @@ class LIFUConnector(QObject):
             logger.info("Transmitter configured")
             
             # Handle "While Configured" HV mode (but NOT "OFF" mode)
-            if self._hv_enable_mode == 1 and self._hvConnected:
+            if self._hv_enable_mode == HV_EN_WHILE_CONFIGURED and self._hvConnected:
                 try:
                     self.interface.hvcontroller.turn_hv_on()
                     logger.info("HV turned on (While Configured mode)")
@@ -774,7 +785,7 @@ class LIFUConnector(QObject):
             self._interface_mutex.lock()
             try:
                 # Determine HV control parameters based on enable mode
-                turn_hv_on = (self._hv_enable_mode == 0)  # Only for "While Running" mode
+                turn_hv_on = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)  # Only for "While Running" mode
                 wait_for_settle = True  # Always wait for settle
                 
                 if self.interface.start_sonication(turn_hv_on=turn_hv_on, 
@@ -797,7 +808,7 @@ class LIFUConnector(QObject):
             self._interface_mutex.lock()
             try:
                 # Determine HV control parameters based on enable mode
-                turn_hv_off = (self._hv_enable_mode == 0)  # Only for "While Running" mode
+                turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)  # Only for "While Running" mode
                 
                 if self.interface.stop_sonication(turn_hv_off=turn_hv_off):
                     self._state = READY
@@ -857,10 +868,10 @@ class LIFUConnector(QObject):
         return self._hv_enable_mode
     
     @pyqtSlot(int)
-    def setHvEnableMode(self, mode):
-        """Set HV enable mode (0=While Running, 1=While Configured, 2=ON, 3=OFF)."""
-        if mode < 0 or mode > 3:
-            logger.warning(f"Invalid HV enable mode: {mode}")
+    def setHvEnableMode(self, hv_en_mode):
+        """Set HV enable mode (0=While Running, 1=While Configured, 2=ON, 3=OFF)."""            
+        if hv_en_mode < 0 or hv_en_mode > 3:
+            logger.warning(f"Invalid HV enable mode: {hv_en_mode}")
             return
             
         # Prevent changing HV mode while running
@@ -869,26 +880,26 @@ class LIFUConnector(QObject):
             return
             
         # Prevent setting "ON" mode when HV is not connected
-        if mode == 2 and not self._hvConnected:  # ON mode
+        if hv_en_mode == HV_EN_ON and not self._hvConnected:  # ON mode
             logger.warning("Cannot set HV to ON mode: HV device not connected")
             return
             
         old_mode = self._hv_enable_mode
-        self._hv_enable_mode = mode
-        self.hvEnableModeChanged.emit(mode)
-        logger.info(f"HV enable mode changed: {old_mode} -> {mode}")
+        self._hv_enable_mode = hv_en_mode
+        self.hvEnableModeChanged.emit(hv_en_mode)
+        logger.info(f"HV enable mode changed: {HV_EN_MODES.get(old_mode, 'Unknown')} -> {HV_EN_MODES.get(hv_en_mode, 'Unknown')}")
         
         # Handle immediate HV changes for ON/OFF modes
         if self._hvConnected:
             try:
-                if mode == 2:  # ON
+                if hv_en_mode == HV_EN_ON:  # ON
                     self.interface.hvcontroller.turn_hv_on()
                     logger.info("HV turned on (ON mode)")
-                elif mode == 3:  # OFF
+                elif hv_en_mode == HV_EN_OFF:  # OFF
                     self.interface.hvcontroller.turn_hv_off()
                     logger.info("HV turned off (OFF mode)")
             except Exception as e:
-                logger.error(f"Error setting HV for mode {mode}: {e}")
+                logger.error(f"Error setting HV for mode {HV_EN_MODES.get(hv_en_mode, 'Unknown')}: {e}")
         
         # Update state after mode change (important for OFF->ON transitions)
         self.update_state()
