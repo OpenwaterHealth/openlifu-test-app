@@ -617,8 +617,64 @@ Rectangle {
                 spacing: 15
 
                 GroupBox {
+                    id: voltageGroup
                     title: "Voltage"
                     Layout.fillWidth: true
+
+                    property bool directEdit: false
+                    readonly property bool sectionReadOnly: controlsReadOnly && !directEdit
+
+                    Connections {
+                        target: LIFUConnector
+                        function onStateChanged(state) {
+                            if (state < 2 || state >= 4) {
+                                voltageGroup.directEdit = false
+                            }
+                        }
+                    }
+
+                    label: Item {
+                        implicitWidth: voltageGroupLabelRow.implicitWidth
+                        implicitHeight: voltageGroupLabelRow.implicitHeight
+                        RowLayout {
+                            id: voltageGroupLabelRow
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            spacing: 8
+                            Text {
+                                text: voltageGroup.title
+                                color: "white"
+                                font: voltageGroup.font
+                            }
+                            Item { Layout.fillWidth: true }
+                            Button {
+                                id: voltageDirectEditButton
+                                text: voltageGroup.directEdit ? "Direct Send" : "Direct Edit"
+                                visible: LIFUConnector.hvConnected && LIFUConnector.state >= 2 && LIFUConnector.state < 4
+                                Layout.preferredHeight: 24
+                                padding: 4
+                                font.pixelSize: 11
+                                background: Rectangle {
+                                    color: voltageDirectEditButton.down ? "#2F333D"
+                                         : (voltageGroup.directEdit ? "#4B6B3E" : "#3A3F4B")
+                                    radius: 4
+                                    border.color: "#BDC3C7"
+                                }
+                                onClicked: {
+                                    if (voltageGroup.directEdit) {
+                                        if (LIFUConnector.directSetVoltage(voltage.text)) {
+                                            voltageGroup.directEdit = false
+                                            statusOverrideText = "Voltage updated"
+                                        } else {
+                                            statusOverrideText = "Error: failed to set voltage"
+                                        }
+                                    } else {
+                                        voltageGroup.directEdit = true
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     GridLayout {
                         columns: 2
@@ -647,11 +703,11 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "12.0"
-                            color: controlsReadOnly ? "#BBB" : "white"
-                            enabled: !controlsReadOnly
+                            color: voltageGroup.sectionReadOnly ? "#BBB" : "white"
+                            enabled: !voltageGroup.sectionReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
+                                color: voltageGroup.sectionReadOnly ? "#333" : "#222"
+                                border.color: voltageGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
                         }
@@ -659,8 +715,71 @@ Rectangle {
                 }
 
                 GroupBox {
+                    id: sequenceGroup
                     title: "Sequence Settings"
                     Layout.fillWidth: true
+
+                    property bool directEdit: false
+                    readonly property bool sectionReadOnly: controlsReadOnly && !directEdit
+
+                    Connections {
+                        target: LIFUConnector
+                        function onStateChanged(state) {
+                            if (state < 2 || state >= 4) {
+                                sequenceGroup.directEdit = false
+                            }
+                        }
+                    }
+
+                    label: Item {
+                        implicitWidth: sequenceGroupLabelRow.implicitWidth
+                        implicitHeight: sequenceGroupLabelRow.implicitHeight
+                        RowLayout {
+                            id: sequenceGroupLabelRow
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            spacing: 8
+                            Text {
+                                text: sequenceGroup.title
+                                color: "white"
+                                font: sequenceGroup.font
+                            }
+                            Item { Layout.fillWidth: true }
+                            Button {
+                                id: sequenceDirectEditButton
+                                text: sequenceGroup.directEdit ? "Direct Send" : "Direct Edit"
+                                visible: LIFUConnector.txConnected && LIFUConnector.state >= 2 && LIFUConnector.state < 4
+                                Layout.preferredHeight: 24
+                                padding: 4
+                                font.pixelSize: 11
+                                background: Rectangle {
+                                    color: sequenceDirectEditButton.down ? "#2F333D"
+                                         : (sequenceGroup.directEdit ? "#4B6B3E" : "#3A3F4B")
+                                    radius: 4
+                                    border.color: "#BDC3C7"
+                                }
+                                onClicked: {
+                                    if (sequenceGroup.directEdit) {
+                                        var ok = LIFUConnector.directSetSequence(
+                                            triggerPulseInterval.text,
+                                            triggerPulseCount.text,
+                                            triggerPulseTrainInterval.text,
+                                            triggerPulseTrainCount.text,
+                                            triggerModeDropdown.currentText
+                                        )
+                                        if (ok) {
+                                            sequenceGroup.directEdit = false
+                                            statusOverrideText = "Sequence updated"
+                                        } else {
+                                            statusOverrideText = "Error: failed to set sequence"
+                                        }
+                                    } else {
+                                        sequenceGroup.directEdit = true
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     GridLayout {
                         columns: 2
@@ -689,7 +808,7 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
 							model: ["Single", "Continuous", "Sequence"]
                             currentIndex: 1
-                            enabled: !controlsReadOnly
+                            enabled: !sequenceGroup.sectionReadOnly
 							
 							background: Rectangle {
                                 color: "#222"
@@ -727,11 +846,11 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "100"
-                            color: controlsReadOnly ? (pulseIntervalActive ? "#BBB" : "#777") : (pulseIntervalActive ? "white" : "#888")
-                            enabled: !controlsReadOnly
+                            color: sequenceGroup.sectionReadOnly ? (pulseIntervalActive ? "#BBB" : "#777") : (pulseIntervalActive ? "white" : "#888")
+                            enabled: !sequenceGroup.sectionReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
+                                color: sequenceGroup.sectionReadOnly ? "#333" : "#222"
+                                border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
                             onTextChanged: updateTrainIntervalValidation()
@@ -760,11 +879,11 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
-                            color: controlsReadOnly ? (pulseCountActive ? "#BBB" : "#777") : (pulseCountActive ? "white" : "#888")
-                            enabled: !controlsReadOnly
+                            color: sequenceGroup.sectionReadOnly ? (pulseCountActive ? "#BBB" : "#777") : (pulseCountActive ? "white" : "#888")
+                            enabled: !sequenceGroup.sectionReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
+                                color: sequenceGroup.sectionReadOnly ? "#333" : "#222"
+                                border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
                             onTextChanged: updateTrainIntervalValidation()
@@ -793,11 +912,11 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "0"
-                            color: controlsReadOnly ? (trainIntervalActive ? "#BBB" : "#777") : (trainIntervalActive ? "white" : "#888")
-                            enabled: !controlsReadOnly
+                            color: sequenceGroup.sectionReadOnly ? (trainIntervalActive ? "#BBB" : "#777") : (trainIntervalActive ? "white" : "#888")
+                            enabled: !sequenceGroup.sectionReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
+                                color: sequenceGroup.sectionReadOnly ? "#333" : "#222"
+                                border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
                             onTextChanged: updateTrainIntervalValidation()
@@ -826,11 +945,11 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
-                            color: controlsReadOnly ? (trainCountActive ? "#BBB" : "#777") : (trainCountActive ? "white" : "#888")
-                            enabled: !controlsReadOnly
+                            color: sequenceGroup.sectionReadOnly ? (trainCountActive ? "#BBB" : "#777") : (trainCountActive ? "white" : "#888")
+                            enabled: !sequenceGroup.sectionReadOnly
                             background: Rectangle {
-                                color: controlsReadOnly ? "#333" : "#222"
-                                border.color: controlsReadOnly ? "#777" : "#999"
+                                color: sequenceGroup.sectionReadOnly ? "#333" : "#222"
+                                border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
                         }
@@ -838,8 +957,78 @@ Rectangle {
                 }
 
                 GroupBox {
+                    id: pulseGroup
                     title: solutionLoaded ? "Pulse Settings (Delays and Apodizations Loaded Directly from Solution)" : "Pulse Settings"
                     Layout.fillWidth: true
+
+                    property bool directEdit: false
+                    readonly property bool sectionReadOnly: controlsReadOnly && !directEdit
+
+                    Connections {
+                        target: LIFUConnector
+                        function onStateChanged(state) {
+                            if (state < 2 || state >= 4) {
+                                pulseGroup.directEdit = false
+                            }
+                        }
+                    }
+
+                    label: Item {
+                        implicitWidth: pulseGroupLabelRow.implicitWidth
+                        implicitHeight: pulseGroupLabelRow.implicitHeight
+                        RowLayout {
+                            id: pulseGroupLabelRow
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            spacing: 8
+                            Text {
+                                text: pulseGroup.title
+                                color: "white"
+                                font: pulseGroup.font
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Button {
+                                id: pulseDirectEditButton
+                                text: pulseGroup.directEdit ? "Direct Send" : "Direct Edit"
+                                visible: LIFUConnector.txConnected && LIFUConnector.state >= 2 && LIFUConnector.state < 4
+                                Layout.preferredHeight: 24
+                                padding: 4
+                                font.pixelSize: 11
+                                background: Rectangle {
+                                    color: pulseDirectEditButton.down ? "#2F333D"
+                                         : (pulseGroup.directEdit ? "#4B6B3E" : "#3A3F4B")
+                                    radius: 4
+                                    border.color: "#BDC3C7"
+                                }
+                                onClicked: {
+                                    if (pulseGroup.directEdit) {
+                                        var ok = LIFUConnector.directSetPulse(
+                                            xInput.text, yInput.text, zInput.text,
+                                            frequencyInput.text, voltage.text,
+                                            triggerPulseInterval.text, triggerPulseCount.text,
+                                            triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                                            durationInput.text, triggerModeDropdown.currentText
+                                        )
+                                        if (ok) {
+                                            pulseGroup.directEdit = false
+                                            statusOverrideText = "Pulse updated"
+                                            LIFUConnector.generate_plot(
+                                                xInput.text, yInput.text, zInput.text,
+                                                frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                                                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                                                durationInput.text, "buffer"
+                                            )
+                                        } else {
+                                            statusOverrideText = "Error: failed to set pulse"
+                                        }
+                                    } else {
+                                        pulseGroup.directEdit = true
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     ColumnLayout {
                         width: parent.width
@@ -874,11 +1063,11 @@ Rectangle {
                                 Layout.alignment: Qt.AlignLeft
                                 font.pixelSize: 14
                                 text: "400"
-                                color: controlsReadOnly ? "#BBB" : "white" 
-                                enabled: !controlsReadOnly
+                                color: pulseGroup.sectionReadOnly ? "#BBB" : "white" 
+                                enabled: !pulseGroup.sectionReadOnly
                                 background: Rectangle {
-                                    color: controlsReadOnly ? "#333" : "#222"
-                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    color: pulseGroup.sectionReadOnly ? "#333" : "#222"
+                                    border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
                                     radius: 4
                                 }
                             }
@@ -906,11 +1095,11 @@ Rectangle {
                                 Layout.alignment: Qt.AlignLeft
                                 font.pixelSize: 14
                                 text: "200"
-                                color: controlsReadOnly ? "#BBB" : "white" 
-                                enabled: !controlsReadOnly
+                                color: pulseGroup.sectionReadOnly ? "#BBB" : "white" 
+                                enabled: !pulseGroup.sectionReadOnly
                                 background: Rectangle {
-                                    color: controlsReadOnly ? "#333" : "#222"
-                                    border.color: controlsReadOnly ? "#777" : "#999"
+                                    color: pulseGroup.sectionReadOnly ? "#333" : "#222"
+                                    border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
                                     radius: 4
                                 }
                             }
@@ -946,11 +1135,11 @@ Rectangle {
                                     Layout.preferredHeight: 32
                                     font.pixelSize: 14
                                     text: "0"
-                                    color: controlsReadOnly ? "#BBB" : "white"
-                                    enabled: !controlsReadOnly
+                                    color: pulseGroup.sectionReadOnly ? "#BBB" : "white"
+                                    enabled: !pulseGroup.sectionReadOnly
                                     background: Rectangle {
-                                        color: controlsReadOnly ? "#333" : "#222"
-                                        border.color: controlsReadOnly ? "#777" : "#999"
+                                        color: pulseGroup.sectionReadOnly ? "#333" : "#222"
+                                        border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
                                         radius: 4
                                     }
                                 }
@@ -981,11 +1170,11 @@ Rectangle {
                                     Layout.preferredHeight: 32
                                     font.pixelSize: 14
                                     text: "0"
-                                    color: controlsReadOnly ? "#BBB" : "white"
-                                    enabled: !controlsReadOnly
+                                    color: pulseGroup.sectionReadOnly ? "#BBB" : "white"
+                                    enabled: !pulseGroup.sectionReadOnly
                                     background: Rectangle {
-                                        color: controlsReadOnly ? "#333" : "#222"
-                                        border.color: controlsReadOnly ? "#777" : "#999"
+                                        color: pulseGroup.sectionReadOnly ? "#333" : "#222"
+                                        border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
                                         radius: 4
                                     }
                                 }
@@ -1016,11 +1205,11 @@ Rectangle {
                                     Layout.preferredHeight: 32
                                     font.pixelSize: 14
                                     text: "50"
-                                    color: controlsReadOnly ? "#BBB" : "white"
-                                    enabled: !controlsReadOnly
+                                    color: pulseGroup.sectionReadOnly ? "#BBB" : "white"
+                                    enabled: !pulseGroup.sectionReadOnly
                                     background: Rectangle {
-                                        color: controlsReadOnly ? "#333" : "#222"
-                                        border.color: controlsReadOnly ? "#777" : "#999"
+                                        color: pulseGroup.sectionReadOnly ? "#333" : "#222"
+                                        border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
                                         radius: 4
                                     }
                                 }
@@ -1221,11 +1410,11 @@ Rectangle {
                         ComboBox {
                             id: hvEnableModeComboBox
                             model: LIFUConnector.getHvEnableModes()
-                            currentIndex: LIFUConnector.hvEnableMode
                             implicitWidth: 140
                             implicitHeight: 26
                             font.pixelSize: 12
                             enabled: LIFUConnector.state !== 4  // Disable when running
+                            Component.onCompleted: currentIndex = LIFUConnector.hvEnableMode
                             background: Rectangle {
                                 color: "#222"
                                 border.color: hvEnableModeComboBox.enabled ? "#999" : "#555"
@@ -1251,15 +1440,17 @@ Rectangle {
                                 }
                             }
                             
-                            onCurrentIndexChanged: {
-                                if (currentIndex >= 0) {
-                                    // Only attempt to change if it's a valid selection
-                                    if (currentIndex !== 2 || LIFUConnector.hvConnected) {
-                                        LIFUConnector.setHvEnableMode(currentIndex)
-                                    } else {
-                                        // Reset to previous valid selection if trying to select ON while disconnected
-                                        currentIndex = LIFUConnector.hvEnableMode
-                                    }
+                            onActivated: (index) => {
+                                if (index < 0) {
+                                    return
+                                }
+                                // Block selecting "ON" while HV is disconnected
+                                if (index === 2 && !LIFUConnector.hvConnected) {
+                                    currentIndex = LIFUConnector.hvEnableMode
+                                    return
+                                }
+                                if (index !== LIFUConnector.hvEnableMode) {
+                                    LIFUConnector.setHvEnableMode(index)
                                 }
                             }
                         }

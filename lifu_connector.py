@@ -742,6 +742,88 @@ class LIFUConnector(QObject):
             self.solutionSaveStatus.emit(False, message)
             return False
 
+    @pyqtSlot(str, result=bool)
+    def directSetVoltage(self, voltage_str):
+        """Directly set the HV rail voltage without reconfiguring the solution."""
+        if not self._hvConnected:
+            logger.error("Cannot set voltage: No HV device connected")
+            return False
+        self._interface_mutex.lock()
+        try:
+            voltage = float(voltage_str)
+            if self.interface.hvcontroller.set_voltage(voltage=voltage):
+                logger.info(f"Voltage directly set to {voltage} V")
+                return True
+            logger.error("Failed to directly set voltage")
+            return False
+        except Exception as e:
+            logger.error(f"Error in directSetVoltage: {e}")
+            return False
+        finally:
+            self._interface_mutex.unlock()
+
+    @pyqtSlot(str, str, str, str, str, result=bool)
+    def directSetSequence(self, pulseInterval, pulseCount, trainInterval, trainCount, mode):
+        """Directly update trigger/sequence parameters without re-running the full configuration."""
+        if not self._txConnected:
+            logger.error("Cannot set sequence: No TX device connected")
+            return False
+        self._interface_mutex.lock()
+        try:
+            pulse_interval_s = float(pulseInterval) * 1e-3  # UI ms -> s
+            pulse_count = int(pulseCount)
+            pulse_train_interval_s = float(trainInterval)   # UI already in seconds
+            pulse_train_count = int(trainCount)
+            trigger_mode = str(mode).lower()
+            result = self.interface.txdevice.set_trigger(
+                pulse_interval=pulse_interval_s,
+                pulse_count=pulse_count,
+                pulse_train_interval=pulse_train_interval_s,
+                pulse_train_count=pulse_train_count,
+                trigger_mode=trigger_mode,
+            )
+            if result:
+                self._update_trigger_state(result)
+                logger.info("Sequence settings directly updated")
+                return True
+            logger.error("Failed to directly set sequence")
+            return False
+        except Exception as e:
+            logger.error(f"Error in directSetSequence: {e}")
+            return False
+        finally:
+            self._interface_mutex.unlock()
+
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, result=bool)
+    def directSetPulse(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
+        """Directly update pulse/transducer settings without touching the HV controller."""
+        if not self._txConnected:
+            logger.error("Cannot set pulse: No TX device connected")
+            return False
+        self._interface_mutex.lock()
+        try:
+            solution = self.get_solution(xInput, yInput, zInput, freq, voltage,
+                                         pulseInterval, pulseCount, trainInterval, trainCount, durationS)
+            transducer = solution.get("transducer") if isinstance(solution, dict) else None
+            if transducer is not None and "module_invert" in transducer:
+                self.interface.txdevice.set_module_invert(transducer["module_invert"])
+            else:
+                self.interface.txdevice.set_module_invert(False)
+            self.interface.txdevice.set_solution(
+                pulse=solution['pulse'],
+                delays=solution['delays'],
+                apodizations=solution['apodizations'],
+                sequence=solution['sequence'],
+                trigger_mode=str(mode).lower(),
+            )
+            logger.info("Pulse settings directly updated")
+            return True
+        except Exception as e:
+            logger.error(f"Error in directSetPulse: {e}")
+            return False
+        finally:
+            self._interface_mutex.unlock()
+
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
@@ -1071,8 +1153,11 @@ class LIFUConnector(QObject):
         """Set the async mode for the interface."""
         self._interface_mutex.lock()
         try:
-            ret = self.interface.txdevice.async_mode(enable)
-            logger.debug(f"Async mode set to: {ret}")
+            async_mode = self.interface.txdevice.async_mode(enable)
+            if async_mode == enable:
+                logger.debug(f"Async mode set to: {enable}")
+            else:
+                logger.error(f"Failed to set async mode to: {enable}")
         except Exception as e:
             logger.error(f"Error setting async mode: {e}")
         finally:
