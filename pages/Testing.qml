@@ -270,7 +270,7 @@ Rectangle {
                     // Shared settings box
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 112
+                        Layout.preferredHeight: 125
                         radius: 10
                         color: "#1E1E20"
                         border.color: "#3E4E6F"
@@ -287,9 +287,10 @@ Rectangle {
                             ComboBox {
                                 id: testSelectorDropdown
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 26
+                                Layout.preferredHeight: 30
+                                font.pixelSize: 12
                                 model: [
-                                    { key: "short", label: "Short Duration Verification" },
+                                    { key: "short", label: "Short Verification" },
                                     { key: "long", label: "Long Verification" },
                                     { key: "indefinite", label: "Run Indefinitely" },
                                     { key: "voltage", label: "Voltage Accuracy" }
@@ -298,13 +299,15 @@ Rectangle {
                                 onCurrentIndexChanged: updateSelectedTestKey()
                             }
 
-                            Text { text: "Frequency (kHz):"; color: "white" }
+                            Text { text: "Frequency (kHz):"; color: selectedTestKey === "voltage" ? "#555" : "white" }
                             TextField {
                                 id: frequencyInput
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 26
-                                font.pixelSize: 13
+                                Layout.preferredHeight: 30
+                                font.pixelSize: 12
                                 text: "400"
+                                enabled: selectedTestKey !== "voltage"
+                                opacity: selectedTestKey === "voltage" ? 0.35 : 1.0
                                 validator: IntValidator { bottom: 100; top: 500 }
                                 onEditingFinished: {
                                     var val = parseInt(text)
@@ -313,12 +316,14 @@ Rectangle {
                                 }
                             }
 
-                            Text { text: "Number of Modules:"; color: "white" }
+                            Text { text: "Number of Modules:"; color: selectedTestKey === "voltage" ? "#555" : "white" }
                             ComboBox {
                                 id: numModulesDropdown
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 26
+                                Layout.preferredHeight: 30
                                 model: [1, 2]
+                                enabled: selectedTestKey !== "voltage"
+                                opacity: selectedTestKey === "voltage" ? 0.35 : 1.0
                             }
 
                             Text { text: ""; color: "transparent" }
