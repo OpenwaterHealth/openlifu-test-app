@@ -32,7 +32,7 @@ dependencies = [
     "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
     "openlifu-sdk>=1.0.6",
-    "openlifu-verification-tests>=1.0.0",
+    "openlifu-test-scripts>=1.0.0",
     "openpyxl"
 ]
 
