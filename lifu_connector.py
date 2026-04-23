@@ -132,8 +132,7 @@ class LIFUConnector(QObject):
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
-        self.interface = LIFUInterface(HV_test_mode=True,
-                                       TX_test_mode=True, 
+        self.interface = LIFUInterface(HV_test_mode=hv_test_mode,
                                        run_async=True, 
                                        voltage_table_selection="evt0",
                                        sequence_time_selection="stress_test",
@@ -1920,6 +1919,7 @@ class LIFUConnector(QObject):
         args.frequency = int(frequency)
         args.num_modules = int(num_modules)
         args.interface = self.interface
+        args.test_runthrough = True
         if test_case is not None:
             args.test_case = int(test_case)
         return args
@@ -2010,6 +2010,8 @@ class LIFUConnector(QObject):
             self._stop_progress_timer()
             return
 
+        worker_alive = hasattr(self, "running_thread") and self.running_thread is not None and self.running_thread.is_alive()
+
         test_kind = self._active_test_kind or "short"
 
         status = str(getattr(runner, "test_status", "not started") or "not started")
@@ -2028,14 +2030,13 @@ class LIFUConnector(QObject):
             if status_lower == "running" and sequence_duration > 0 and test_case_start_time > 0:
                 elapsed_case = time.time() - test_case_start_time
                 case_frac = min(elapsed_case / sequence_duration, 1.0)
-            elif status_lower in terminal_status:
+            elif status_lower in terminal_status and test_case_start_time > 0:
                 case_frac = 1.0
             else:
                 case_frac = 0.0
 
             total_frac = case_frac
-            elapsed_total = time.time() - start_time if start_time else 0.0
-            total_label = f"Overall - indefinite run ({format_duration(int(elapsed_total))} elapsed)"
+            total_label = "Overall - indefinite run"
             if is_in_cooldown:
                 check_time = datetime.now() + timedelta(seconds=TIME_BETWEEN_TESTS_TEMPERATURE_CHECK_SECONDS)
                 case_label = f"Cycle test status: cooldown, checking again at {check_time.strftime('%H:%M')}"
@@ -2058,22 +2059,29 @@ class LIFUConnector(QObject):
             if status_lower == "running" and sequence_duration > 0 and test_case_start_time > 0:
                 elapsed_case = time.time() - test_case_start_time
                 case_frac = min(elapsed_case / sequence_duration, 1.0)
-            elif status_lower in terminal_status:
+            elif status_lower in terminal_status and test_case_start_time > 0:
                 case_frac = 1.0
             else:
                 case_frac = 0.0
 
             cases_completed = max(current_case - starting_case, 0)
-            if is_in_cooldown:
-                total_frac = min(cases_completed / actual_total_cases, 1.0)
-            else:
-                total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
+            if test_kind == "voltage":
+                if is_in_cooldown:
+                    total_frac = min(cases_completed / actual_total_cases, 1.0)
+                else:
+                    total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
 
-            elapsed_total = time.time() - start_time if start_time else 0.0
-            total_label = (
-                f"Overall - case {min(cases_completed + 1, actual_total_cases)}/{actual_total_cases}, "
-                f"{format_duration(int(elapsed_total))} elapsed"
-            )
+                if (not worker_alive) and status_lower in terminal_status and current_case >= (starting_case + actual_total_cases - 1):
+                    total_frac = 1.0
+
+                total_label = f"Overall - case {min(cases_completed + 1, actual_total_cases)}/{actual_total_cases}"
+            else:
+                if is_in_cooldown:
+                    total_frac = min(cases_completed / actual_total_cases, 1.0)
+                else:
+                    total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
+
+                total_label = f"Overall - case {min(cases_completed + 1, actual_total_cases)}/{actual_total_cases}"
 
             if is_in_cooldown:
                 check_time = datetime.now() + timedelta(seconds=TIME_BETWEEN_TESTS_TEMPERATURE_CHECK_SECONDS)
@@ -2097,6 +2105,5 @@ class LIFUConnector(QObject):
         self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color, log_file_path)
 
         # Keep polling until the worker thread has fully exited run(), including its finally block.
-        worker_alive = hasattr(self, "running_thread") and self.running_thread.is_alive()
         if not worker_alive:
             self._stop_progress_timer()

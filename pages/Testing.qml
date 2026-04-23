@@ -21,6 +21,7 @@ Rectangle {
     property string hvState: "Off" // Add property for HV state
     property string v12State: "Off" // Add property for 12V state
     property string activeTestKey: "short"
+    property string selectedTestKey: "short"
 
     property real shortOverallProgress: 0.0
     property real shortCaseProgress: 0.0
@@ -54,6 +55,23 @@ Rectangle {
         return (LIFUConnector.state === 5 || LIFUConnector.state === 1 || LIFUConnector.state === 2 || LIFUConnector.state === 3) && LIFUConnector.state !== 4
     }
 
+    function updateSelectedTestKey() {
+        if (!testSelectorDropdown) {
+            selectedTestKey = "short"
+            return
+        }
+
+        if (testSelectorDropdown.currentIndex === 1) {
+            selectedTestKey = "long"
+        } else if (testSelectorDropdown.currentIndex === 2) {
+            selectedTestKey = "indefinite"
+        } else if (testSelectorDropdown.currentIndex === 3) {
+            selectedTestKey = "voltage"
+        } else {
+            selectedTestKey = "short"
+        }
+    }
+
     function applyProgressToActiveTest(total_frac, case_frac, total_label, case_label, status_color, log_file_path) {
         if (activeTestKey === "short") {
             shortOverallProgress = total_frac
@@ -83,6 +101,38 @@ Rectangle {
             voltageCaseLabel = case_label
             voltageStatusColor = status_color
             voltageLogPath = log_file_path
+        }
+    }
+
+    function resetProgressForTest(testKey) {
+        if (testKey === "short") {
+            shortOverallProgress = 0.0
+            shortCaseProgress = 0.0
+            shortTotalLabel = "Overall: waiting..."
+            shortCaseLabel = "Status: idle"
+            shortStatusColor = "#BDC3C7"
+            shortLogPath = ""
+        } else if (testKey === "long") {
+            longOverallProgress = 0.0
+            longCaseProgress = 0.0
+            longTotalLabel = "Overall: waiting..."
+            longCaseLabel = "Status: idle"
+            longStatusColor = "#BDC3C7"
+            longLogPath = ""
+        } else if (testKey === "indefinite") {
+            indefiniteOverallProgress = 0.0
+            indefiniteCaseProgress = 0.0
+            indefiniteTotalLabel = "Overall: waiting..."
+            indefiniteCaseLabel = "Status: idle"
+            indefiniteStatusColor = "#BDC3C7"
+            indefiniteLogPath = ""
+        } else if (testKey === "voltage") {
+            voltageOverallProgress = 0.0
+            voltageCaseProgress = 0.0
+            voltageTotalLabel = "Overall: waiting..."
+            voltageCaseLabel = "Status: idle"
+            voltageStatusColor = "#BDC3C7"
+            voltageLogPath = ""
         }
     }
 
@@ -127,10 +177,10 @@ Rectangle {
                 temperature2 = 0.0
                 rgbState = "Off" // Reset RGB state
                 // voltageState = "Off" // Reset voltage state
-                pingResult.text = ""
-                echoResult.text = ""
-                toggleLedResult.text = ""
-                rgbLedResult.text = ""
+                if (typeof pingResult !== "undefined") pingResult.text = ""
+                if (typeof echoResult !== "undefined") echoResult.text = ""
+                if (typeof toggleLedResult !== "undefined") toggleLedResult.text = ""
+                if (typeof rgbLedResult !== "undefined") rgbLedResult.text = ""
 
             }
         }
@@ -159,14 +209,14 @@ Rectangle {
             else
                 v12State = "Off"
 
-            hvStatus.text = hvState // Update the UI with the new voltage state
-            v12Status.text = v12State
+            if (typeof hvStatus !== "undefined") hvStatus.text = hvState
+            if (typeof v12Status !== "undefined") v12Status.text = v12State
         }
 
         function onRgbStateReceived(stateValue, stateText) {
             rgbState = stateText
-            rgbLedResult.text = stateText  // Display the state as text
-            rgbLedDropdown.currentIndex = stateValue  // Sync ComboBox to received state
+            if (typeof rgbLedResult !== "undefined") rgbLedResult.text = stateText
+            if (typeof rgbLedDropdown !== "undefined") rgbLedDropdown.currentIndex = stateValue
         }
 
         function onTestProgressUpdated(total_frac, case_frac, total_label, case_label, status_color, log_file_path) {
@@ -213,12 +263,14 @@ Rectangle {
                 // Verification Test Section
                 ColumnLayout {
                     Layout.fillHeight: true
+                    Layout.fillWidth: true
                     Layout.preferredWidth: parent.width * 0.60
                     spacing: 10
 
+                    // Shared settings box
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 84
+                        Layout.preferredHeight: 112
                         radius: 10
                         color: "#1E1E20"
                         border.color: "#3E4E6F"
@@ -230,6 +282,21 @@ Rectangle {
                             columns: 2
                             columnSpacing: 10
                             rowSpacing: 8
+
+                            Text { text: "Test Case:"; color: "white" }
+                            ComboBox {
+                                id: testSelectorDropdown
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 26
+                                model: [
+                                    { key: "short", label: "Short Duration Verification" },
+                                    { key: "long", label: "Long Verification" },
+                                    { key: "indefinite", label: "Run Indefinitely" },
+                                    { key: "voltage", label: "Voltage Accuracy" }
+                                ]
+                                textRole: "label"
+                                onCurrentIndexChanged: updateSelectedTestKey()
+                            }
 
                             Text { text: "Frequency (kHz):"; color: "white" }
                             TextField {
@@ -253,168 +320,50 @@ Rectangle {
                                 Layout.preferredHeight: 26
                                 model: [1, 2]
                             }
-                        }
-                    }
 
-                    GridLayout {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        columns: 2
-                        columnSpacing: 10
-                        rowSpacing: 10
+                            Text { text: ""; color: "transparent" }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
 
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            radius: 10
-                            color: "#1E1E20"
-                            border.color: "#3E4E6F"
-                            border.width: 2
-
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 10
-                                spacing: 6
-
-                                Text { text: "Short Duration Verification"; color: "white"; font.bold: true; font.pixelSize: 13 }
-                                Text { text: shortCaseLabel; color: "#BDC3C7"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: shortLogPath ? "Log: " + shortLogPath : "Log: --"; color: "#999999"; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideLeft }
-
-                                RowLayout {
+                                Button {
+                                    text: "Start"
                                     Layout.fillWidth: true
-                                    Button {
-                                        text: "Start"
-                                        Layout.fillWidth: true
-                                        enabled: canStartTest()
-                                        onClicked: {
-                                            activeTestKey = "short"
+                                    enabled: canStartTest()
+                                    onClicked: {
+                                        var key = selectedTestKey
+                                        activeTestKey = key
+                                        resetProgressForTest(key)
+                                        testProgressSection.totalProgressValue = 0.0
+                                        testProgressSection.caseProgressValue = 0.0
+                                        testProgressSection.totalProgressLabelText = "Overall: waiting..."
+                                        testProgressSection.caseProgressLabelText = "Status: idle"
+                                        testProgressSection.progressColor = "#BDC3C7"
+                                        testProgressSection.logFilePath = ""
+                                        if (key === "short") {
                                             LIFUConnector.runThermalTest(frequencyInput.text, numModulesDropdown.currentText)
-                                        }
-                                    }
-                                    Button {
-                                        text: "Stop"
-                                        Layout.fillWidth: true
-                                        enabled: LIFUConnector.state === 4 && activeTestKey === "short"
-                                        onClicked: LIFUConnector.stopVerificationTest()
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            radius: 10
-                            color: "#1E1E20"
-                            border.color: "#3E4E6F"
-                            border.width: 2
-
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 10
-                                spacing: 6
-
-                                Text { text: "Long Verification"; color: "white"; font.bold: true; font.pixelSize: 13 }
-                                Text { text: longTotalLabel; color: "#BDC3C7"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: longCaseLabel; color: "#BDC3C7"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: longLogPath ? "Log: " + longLogPath : "Log: --"; color: "#999999"; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideLeft }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Button {
-                                        text: "Start"
-                                        Layout.fillWidth: true
-                                        enabled: canStartTest()
-                                        onClicked: {
-                                            activeTestKey = "long"
+                                        } else if (key === "long") {
                                             LIFUConnector.runLongVerificationTest(frequencyInput.text, numModulesDropdown.currentText)
-                                        }
-                                    }
-                                    Button {
-                                        text: "Stop"
-                                        Layout.fillWidth: true
-                                        enabled: LIFUConnector.state === 4 && activeTestKey === "long"
-                                        onClicked: LIFUConnector.stopVerificationTest()
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            radius: 10
-                            color: "#1E1E20"
-                            border.color: "#3E4E6F"
-                            border.width: 2
-
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 10
-                                spacing: 6
-
-                                Text { text: "Run Indefinitely"; color: "white"; font.bold: true; font.pixelSize: 13 }
-                                Text { text: indefiniteCaseLabel; color: "#BDC3C7"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: indefiniteLogPath ? "Log: " + indefiniteLogPath : "Log: --"; color: "#999999"; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideLeft }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Button {
-                                        text: "Start"
-                                        Layout.fillWidth: true
-                                        enabled: canStartTest()
-                                        onClicked: {
-                                            activeTestKey = "indefinite"
+                                        } else if (key === "indefinite") {
                                             LIFUConnector.runIndefiniteTest(frequencyInput.text, numModulesDropdown.currentText)
-                                        }
-                                    }
-                                    Button {
-                                        text: "Stop"
-                                        Layout.fillWidth: true
-                                        enabled: LIFUConnector.state === 4 && activeTestKey === "indefinite"
-                                        onClicked: LIFUConnector.stopVerificationTest()
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            radius: 10
-                            color: "#1E1E20"
-                            border.color: "#3E4E6F"
-                            border.width: 2
-
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: 10
-                                spacing: 6
-
-                                Text { text: "Voltage Accuracy"; color: "white"; font.bold: true; font.pixelSize: 13 }
-                                Text { text: voltageCaseLabel; color: "#BDC3C7"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: voltageLogPath ? "Log: " + voltageLogPath : "Log: --"; color: "#999999"; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideLeft }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    Button {
-                                        text: "Start"
-                                        Layout.fillWidth: true
-                                        enabled: canStartTest()
-                                        onClicked: {
-                                            activeTestKey = "voltage"
+                                        } else {
                                             LIFUConnector.runVoltageAccuracyTest(frequencyInput.text, numModulesDropdown.currentText)
                                         }
                                     }
-                                    Button {
-                                        text: "Stop"
-                                        Layout.fillWidth: true
-                                        enabled: LIFUConnector.state === 4 && activeTestKey === "voltage"
-                                        onClicked: LIFUConnector.stopVerificationTest()
-                                    }
+                                }
+
+                                Button {
+                                    text: "Stop"
+                                    Layout.fillWidth: true
+                                    enabled: LIFUConnector.state === 4
+                                    onClicked: LIFUConnector.stopVerificationTest()
                                 }
                             }
                         }
+                    }
+
+                    Item {
+                        Layout.fillHeight: true
                     }
                 }
 
@@ -579,7 +528,13 @@ Rectangle {
             property string progressColor: "#BDC3C7"
             property string logFilePath: ""
 
+            function showOverallProgress() {
+                return activeTestKey === "long" || activeTestKey === "voltage"
+            }
+
             onProgressColorChanged: caseStatusColor = progressColor
+
+            Component.onCompleted: updateSelectedTestKey()
 
             ColumnLayout {
                 id: progressColumn
@@ -593,39 +548,6 @@ Rectangle {
                     font.weight: Font.Bold
                     color: "white"
                     Layout.alignment: Qt.AlignHCenter
-                }
-
-                Text {
-                    id: totalProgressLabelItem
-                    text: testProgressSection.totalProgressLabelText
-                    color: "#BDC3C7"
-                    font.pixelSize: 11
-                    Layout.fillWidth: true
-                    elide: Text.ElideRight
-                }
-
-                ProgressBar {
-                    id: totalProgressBar
-                    Layout.fillWidth: true
-                    from: 0.0
-                    to: 1.0
-                    value: testProgressSection.totalProgressValue
-
-                    background: Rectangle {
-                        implicitHeight: 10
-                        color: "#2A2F3B"
-                        radius: 6
-                        border.color: "#3E4E6F"
-                    }
-                    contentItem: Item {
-                        implicitHeight: 10
-                        Rectangle {
-                            width: totalProgressBar.visualPosition * parent.width
-                            height: parent.height
-                            radius: 6
-                            color: "#5DADE2"
-                        }
-                    }
                 }
 
                 Text {
@@ -670,6 +592,41 @@ Rectangle {
                         }
                     }
                 }
+
+                Text {
+                    id: totalProgressLabelItem
+                    text: testProgressSection.totalProgressLabelText
+                    color: "#BDC3C7"
+                    font.pixelSize: 11
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                    visible: testProgressSection.showOverallProgress()
+                }
+
+                ProgressBar {
+                    id: totalProgressBar
+                    Layout.fillWidth: true
+                    from: 0.0
+                    to: 1.0
+                    value: testProgressSection.totalProgressValue
+                    visible: testProgressSection.showOverallProgress()
+
+                    background: Rectangle {
+                        implicitHeight: 10
+                        color: "#2A2F3B"
+                        radius: 6
+                        border.color: "#3E4E6F"
+                    }
+                    contentItem: Item {
+                        implicitHeight: 10
+                        Rectangle {
+                            width: totalProgressBar.visualPosition * parent.width
+                            height: parent.height
+                            radius: 6
+                            color: "#5DADE2"
+                        }
+                    }
+                }
             }
         }
 
@@ -677,5 +634,6 @@ Rectangle {
             id: iconFont
             source: "../assets/fonts/keenicons-outline.ttf"
         }
+    
     }
 }
