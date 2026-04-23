@@ -6,8 +6,6 @@ import logging
 import os
 import shutil
 import sys
-import argparse
-from pathlib import Path
 import glob
 
 def _base_path():
@@ -86,10 +84,6 @@ class _Bridge(QObject):
     sig_error = pyqtSignal(str, int, str)
     
 class LIFUConnector(QObject):
-    # Ensure signals are correctly defined
-    signalConnected = pyqtSignal(str, str)  # (descriptor, port)
-    signalDisconnected = pyqtSignal(str, str)  # (descriptor, port)
-    signalDataReceived = pyqtSignal(str, str)  # (descriptor, data)
     plotGenerated = pyqtSignal(str)  # Signal to notify QML when a new plot is ready
     solutionConfigured = pyqtSignal(str)  # Signal for solution configuration feedback
 
@@ -120,7 +114,8 @@ class LIFUConnector(QObject):
     fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
 
     # Test sequence signals
-    testProgressUpdated = pyqtSignal(str, int, int)  # (test_case, written, total)
+    testProgressUpdated = pyqtSignal(float, float, str, str, str, str)  # (total_frac, case_frac, total_label, case_label, status_color, log_file_path)
+
 
     # User config signals
     userConfigRead = pyqtSignal(str, str)   # (target, json_str)  target: "console" | "tx_N"
@@ -1940,8 +1935,6 @@ class LIFUConnector(QObject):
             logger.info("Thermal test stop requested")
         else:
             logger.info("Thermal test stop requested before runner initialization")
-
-    testProgressUpdated = pyqtSignal(float, float, str, str, str, str)  # (total_frac, case_frac, total_label, case_label, status_color, log_file_path)
 
     def _start_progress_timer(self):
         logger.info("_____Starting progress timer for thermal test")
