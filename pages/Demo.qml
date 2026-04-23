@@ -147,7 +147,8 @@ Rectangle {
                             : LIFUConnector.state === 1 ? "TX Connected, Not Configured"
                             : LIFUConnector.state === 2 ? "Configured"
                             : LIFUConnector.state === 3 ? "Ready"
-                            : "Running")
+                            : LIFUConnector.state === 4 ? "Running"
+                            : "Disconnected")
     }
 
     function getTxTemperatureText() {

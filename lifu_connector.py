@@ -6,6 +6,8 @@ import logging
 import os
 import shutil
 import sys
+import argparse
+from pathlib import Path
 import glob
 
 def _base_path():
@@ -15,6 +17,8 @@ def _base_path():
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
 import threading
+import time
+from datetime import datetime, timedelta
 import numpy as np
 import re
 import base58
@@ -25,8 +29,16 @@ from scripts.test_reports import read_test_report, test_report_to_config, check_
 from openlifu_sdk.io import LIFUInterface
 from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
+# import verification-tests
+from verification.prodreqs_base_class import *
+from verification.prodreqs_tx_long_verification_test import TransmitterHeatingPlaceholder, parse_arguments
+from verification.prodreqs_voltage_accuracy_placeholder import VoltageAccuracyTest
+from verification.prodreqs_tx_short_verification_test import TransmitterShortVerificationTest
+
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
 # Create console handler and set level to debug
 ch = logging.StreamHandler()
@@ -59,6 +71,7 @@ TX_CONNECTED = 1
 CONFIGURED = 2
 READY = 3
 RUNNING = 4
+TEST_SCRIPT_READY = 5
 
 #
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
@@ -74,6 +87,9 @@ class _Bridge(QObject):
     
 class LIFUConnector(QObject):
     # Ensure signals are correctly defined
+    signalConnected = pyqtSignal(str, str)  # (descriptor, port)
+    signalDisconnected = pyqtSignal(str, str)  # (descriptor, port)
+    signalDataReceived = pyqtSignal(str, str)  # (descriptor, data)
     plotGenerated = pyqtSignal(str)  # Signal to notify QML when a new plot is ready
     solutionConfigured = pyqtSignal(str)  # Signal for solution configuration feedback
 
@@ -103,6 +119,9 @@ class LIFUConnector(QObject):
     fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
     fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
 
+    # Test sequence signals
+    testProgressUpdated = pyqtSignal(str, int, int)  # (test_case, written, total)
+
     # User config signals
     userConfigRead = pyqtSignal(str, str)   # (target, json_str)  target: "console" | "tx_N"
     userConfigStatus = pyqtSignal(str, bool, str)  # (target, success, message)
@@ -124,6 +143,9 @@ class LIFUConnector(QObject):
         self._txConnected = False
         self._hvConnected = False
         self._configured = False
+        self._running = False
+        self._abort_requested = False
+        self.thermal_test_instance = None
         self._state = DISCONNECTED
         self._trigger_state = False  # Internal state to track trigger status
         self._txconfigured_state = False  # Internal state to track trigger status
@@ -169,16 +191,20 @@ class LIFUConnector(QObject):
 
     def update_state(self):
         """Update system state based on connection and configuration."""
-        if not self._txConnected and not self._hvConnected:
+        if self._running:
+            self._state = RUNNING
+        elif not self._txConnected and not self._hvConnected:
             self._state = DISCONNECTED
-        elif self._txConnected and not self._configured:
-            self._state = TX_CONNECTED
         elif self._txConnected and self._hvConnected and self._configured:
             self._state = READY
         elif self._txConnected and self._configured:
             self._state = CONFIGURED
-        self.stateChanged.emit(self._state)  # Notify QML of state update
-        logger.debug(f"Updated state: {self._state}")
+        elif self._txConnected and not self._configured:
+            self._state = TX_CONNECTED
+        elif self._hvConnected and not self._txConnected:
+            self._state = TEST_SCRIPT_READY
+        # Notify QML of state change
+        self.stateChanged.emit(self._state)
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
@@ -1844,3 +1870,158 @@ class LIFUConnector(QObject):
                 self.testReportLoaded.emit(False, error_msg)
                 
         threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(int, int)
+    def runThermalTest(self, frequency, num_modules):
+        """Run the transmitter heating test."""
+        logger.info(f"runThermalTest called: frequency={frequency}, num_modules={num_modules}")
+
+        if hasattr(self, 'running_thread') and self.running_thread.is_alive():
+            logger.warning("Previous test still shutting down, ignoring start request")
+            return
+
+        args = parse_arguments()
+        args.frequency = frequency
+        args.num_modules = num_modules
+        args.interface = self.interface
+        # args.test_runthrough = True
+
+        self._abort_requested = False
+        self._running = True
+        self.update_state()
+
+        try:
+            self.thermal_test_instance = TransmitterShortVerificationTest(args=args)
+        except Exception as e:
+            self._running = False
+            self.update_state()
+            logger.error(f"Failed to initialize thermal test: {e}")
+            return
+
+        self._start_progress_timer()
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                logger.info("Running thermal test...")
+
+                # Honor immediate stop presses made during startup/pre-check windows.
+                if self._abort_requested and self.thermal_test_instance:
+                    with contextlib.suppress(Exception):
+                        self.thermal_test_instance.shutdown_event.set()
+                    self.thermal_test_instance.test_status = "aborted by user"
+                    logger.info("Thermal test aborted before execution started")
+                    return
+
+                self.thermal_test_instance.run()
+                
+            except Exception as e:
+                logger.error(f"\n !! Fatal error in thermal test worker: {e}")
+                with contextlib.suppress(Exception):
+                    self.thermal_test_instance.shutdown_event.set()
+            finally:
+                self._running = False
+                self.update_state()
+                loop.close()
+                logger.info(f"Updated state: {self._state}")
+
+        self.running_thread = threading.Thread(target=_run, daemon=True)
+        self.running_thread.start()
+        logger.info("Thread started, returning to event loop")
+
+    @pyqtSlot()
+    def _stop_thermal_test(self):
+        self._abort_requested = True
+        if self.thermal_test_instance:
+            with contextlib.suppress(Exception):
+                self.thermal_test_instance.shutdown_event.set()
+            self.thermal_test_instance.test_status = "aborted by user"
+            logger.info("Thermal test stop requested")
+        else:
+            logger.info("Thermal test stop requested before runner initialization")
+
+    testProgressUpdated = pyqtSignal(float, float, str, str, str, str)  # (total_frac, case_frac, total_label, case_label, status_color, log_file_path)
+
+    def _start_progress_timer(self):
+        logger.info("_____Starting progress timer for thermal test")
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(250)
+        self._progress_timer.timeout.connect(self._emit_test_progress)
+        self._progress_timer.start()
+        logger.info(f"Timer active: {self._progress_timer.isActive()}")
+
+    def _stop_progress_timer(self):
+        if hasattr(self, "_progress_timer"):
+            self._progress_timer.stop()
+
+    def _emit_test_progress(self):
+
+        runner = self.thermal_test_instance
+
+        total_cases = 1 
+        starting_case = 1
+        current_case = getattr(runner, "test_case_num", starting_case)
+        status = getattr(runner, "test_status", "not started")
+        sequence_duration = getattr(runner, "sequence_duration", 0)
+        test_case_start_time = getattr(runner, "test_case_start_time", 0.0)
+        start_time = getattr(runner, "start_time", 0.0) or 0.0
+        is_in_cooldown = getattr(runner, "is_in_cooldown", False)
+        log_file_path = getattr(runner, "log_file_path", "")
+
+
+        # Calculate the actual number of cases that will be run
+        actual_total_cases = total_cases - starting_case + 1
+        total_runtime = actual_total_cases * sequence_duration
+
+        # Per-case fraction: based on this specific test case's sequence_duration
+        if status == "running" and sequence_duration > 0 and test_case_start_time > 0:
+            elapsed_case = time.time() - test_case_start_time
+            case_frac = min(elapsed_case / sequence_duration, 1.0)
+        elif status in ("passed", "temperature shutdown", "voltage deviation"):
+            case_frac = 1.0
+        else:
+            case_frac = 0.0
+
+        # Total fraction: sum of completed cases + current case progress
+        # During cooldown, the overall progress should not advance beyond completed cases
+        cases_completed = current_case - starting_case  # 0-based count of fully completed cases
+        
+        if is_in_cooldown:
+            # Cooldown: overall progress is only completed cases, no current case progress
+            total_frac = min(cases_completed / actual_total_cases, 1.0)
+        else:
+            # Running or other status: include current case progress
+            total_frac = min((cases_completed + case_frac) / actual_total_cases, 1.0)
+
+        # Labels
+        elapsed_total = time.time() - start_time if start_time else 0.0
+        total_label = f"Overall — {format_duration(int(elapsed_total))} elapsed"
+        
+        if is_in_cooldown:
+            check_time = datetime.now() + timedelta(seconds=TIME_BETWEEN_TESTS_TEMPERATURE_CHECK_SECONDS)
+            time_str = check_time.strftime("%H:%M")
+            case_label = f"Test Status: waiting for temperature cooldown, will check again at {time_str}"
+        else:
+            case_label = f"Test Status: {status}"
+
+        # Case bar color
+        if is_in_cooldown:
+            status_color = "#3498DB"       # blue for cooldown
+        elif status == "running":
+            status_color = "#E2A84A"       # yellow
+        elif status == "passed":
+            status_color = "#2ECC71"       # green
+        elif status in ("temperature shutdown", "voltage deviation", "error"):
+            status_color = "#E74C3C"       # red
+        elif status == "aborted by user":
+            status_color = "#F39C12"       # orange
+        else:
+            status_color = "#BDC3C7"       # grey/idle
+
+        self.testProgressUpdated.emit(total_frac, case_frac, total_label, case_label, status_color, log_file_path)
+
+        # Keep polling until the worker thread has fully exited run(), including its finally block.
+        worker_alive = hasattr(self, "running_thread") and self.running_thread.is_alive()
+        if not worker_alive:
+            self._stop_progress_timer()
