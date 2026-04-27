@@ -283,7 +283,7 @@ Rectangle {
                             columnSpacing: 10
                             rowSpacing: 8
 
-                            Text { text: "Test Case:"; color: "white" }
+                            Text { text: "Test Sequence:"; color: "white" }
                             ComboBox {
                                 id: testSelectorDropdown
                                 Layout.fillWidth: true

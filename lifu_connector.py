@@ -1919,7 +1919,6 @@ class LIFUConnector(QObject):
         args.frequency = int(frequency)
         args.num_modules = int(num_modules)
         args.interface = self.interface
-        args.test_runthrough = True
         if test_case is not None:
             args.test_case = int(test_case)
         return args
@@ -1961,7 +1960,7 @@ class LIFUConnector(QObject):
                 self.thermal_test_instance.run()
 
             except Exception as e:
-                logger.error(f"\n !! Fatal error in {display_name} worker: {e}")
+                logger.exception(f"\n !! Fatal error in {display_name} worker: {e}")
                 with contextlib.suppress(Exception):
                     if self.thermal_test_instance:
                         self.thermal_test_instance.shutdown_event.set()
