@@ -1990,7 +1990,7 @@ class LIFUConnector(QObject):
         self._stop_thermal_test()
 
     def _start_progress_timer(self):
-        logger.info("_____Starting progress timer for thermal test")
+        logger.info("Starting progress timer for thermal test")
         if hasattr(self, "_progress_timer") and self._progress_timer.isActive():
             self._progress_timer.stop()
         self._progress_timer = QTimer(self)
