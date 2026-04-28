@@ -31,9 +31,9 @@ from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 # import verification-tests
 from verification.prodreqs_base_class import *
 from verification.prodreqs_tx_long_verification_test import TransmitterHeatingPlaceholder, parse_arguments
-from verification.prodreqs_voltage_accuracy_placeholder import VoltageAccuracyTest, TEST_VOLTAGES
+from verification.prodreqs_voltage_accuracy_test import VoltageAccuracyTest, TEST_VOLTAGES
 from verification.prodreqs_tx_short_verification_test import TransmitterShortVerificationTest
-from verification.prodreqs_run_indefinitely_placeholder import TransmitterIndefiniteRun
+from verification.prodreqs_run_indefinitely_test import TransmitterIndefiniteRun
 
 logger = logging.getLogger("LIFUConnector")
 # Set up logging
