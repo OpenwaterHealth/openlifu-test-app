@@ -548,7 +548,7 @@ Rectangle {
                 spacing: 6
 
                 Text {
-                    text: "Test Progress - " + activeTestKey
+                    text: "Test Progress"
                     font.pixelSize: 14
                     font.weight: Font.Bold
                     color: "white"
