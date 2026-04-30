@@ -268,7 +268,15 @@ Rectangle {
             if (configuredModuleCount <= 0) {
                 LIFUConnector.queryNumModules()
             }
-            LIFUConnector.queryTxTemperature()
+            // While the device is sonicating, the firmware pushes
+            // STATUS frames containing TX temp + ambient on each pulse
+            // train boundary. Polling get_temperature on the same
+            // endpoint races those frames and produces UART timeouts,
+            // so we rely on the push stream while RUNNING and only
+            // poll when idle (the firmware is silent then).
+            if (LIFUConnector.state !== 3) {
+                LIFUConnector.queryTxTemperature()
+            }
         }
 
         if (LIFUConnector.hvConnected) {
@@ -1636,24 +1644,14 @@ Rectangle {
     }
 
     Timer {
-        id: postReadyTimer
-        interval: 1000 // delay in milliseconds (e.g., 1000 = 1 second)
-        repeat: false
-        running: false
-        onTriggered: {
-            console.log("Calling follow-up connector method...");
-            LIFUConnector.turnOffHV(); 
-            LIFUConnector.setAsyncMode(false); 
-        }
-    }
-
-    Timer {
         id: telemetryPollTimer
         interval: 1000
         repeat: true
-        // Poll while the device is running, OR whenever HV is connected
-        // so the indicator and rail text stay current in "ON" mode.
-        running: LIFUConnector.state === 3 || LIFUConnector.hvConnected
+        // Poll while idle on Ready/Connected (firmware is silent then),
+        // OR whenever HV is connected (HV controller has no async push).
+        // While RUNNING, TX telemetry arrives via the unsolicited
+        // STATUS stream and only HV needs polling.
+        running: LIFUConnector.txConnected || LIFUConnector.hvConnected
         onTriggered: {
             refreshStatusTelemetry()
         }
@@ -1770,7 +1768,6 @@ Rectangle {
 
             if (previousConnectorState === 3 && state !== 3) {
                 clearStatusTelemetry();
-                postReadyTimer.stop();
             }
 
             // Track whether the device has been configured at least once on

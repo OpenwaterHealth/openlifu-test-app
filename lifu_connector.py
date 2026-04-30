@@ -154,6 +154,12 @@ class LIFUConnector(QObject):
     # HV enable mode signals
     hvEnableModeChanged = pyqtSignal(int)  # Notifies when HV enable mode changes
 
+    # Sonication progress (parsed from unsolicited TX STATUS frames). Only
+    # emitted while async_mode is enabled and a sonication is in progress;
+    # both percentages are 0..100. pulse_percent may be NaN when the
+    # firmware reports PULSE:[0/0] (e.g. continuous mode).
+    sonicationProgressUpdated = pyqtSignal(float, float)  # (pulse_train_pct, pulse_pct)
+
     # Generic device error signal for surfacing SDK failures to QML as popups.
     # Emitted whenever a LIFUError (or unexpected Exception) is caught while
     # talking to the hardware. The message already includes the [LIFU-<code>]
@@ -188,6 +194,15 @@ class LIFUConnector(QObject):
         
         # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
         self._hv_enable_mode = HV_EN_AUTO
+
+        # Tracks whether the TX device's unsolicited STATUS stream is
+        # currently enabled. The firmware only emits STATUS frames during
+        # active sonication; we keep async OFF while the host is issuing
+        # write_block-heavy commands (set_solution, direct setters) so the
+        # TX response packet is not delayed by an interleaved STATUS frame
+        # on the same CDC IN endpoint -- which is the dominant cause of
+        # UART timeouts during configuration.
+        self._async_mode_enabled = False
 
         self._interface_mutex = QRecursiveMutex()
 
@@ -396,6 +411,9 @@ class LIFUConnector(QObject):
         """Handle device disconnection."""
         if descriptor == "TX":
             self._txConnected = False
+            # The unsolicited STATUS stream is gone with the TX port; clear
+            # our tracker so a future reconnect doesn't think it's still on.
+            self._async_mode_enabled = False
         elif descriptor == "HV":
             self._hvConnected = False
             # If HV was set to "ON" mode, automatically switch to "OFF" when disconnected
@@ -418,6 +436,29 @@ class LIFUConnector(QObject):
             try:
                 parsed = self.parse_status_string(message)
                 if parsed["status"] in {"RUNNING", "STOPPED"}:
+                    # Explicit, structured log of the unsolicited STATUS
+                    # frame so it stands out from the raw "Data received"
+                    # line above. Helps diagnose contention between the
+                    # firmware's async push and host-issued commands.
+                    pt_pct = parsed.get("pulse_train_percent")
+                    p_pct = parsed.get("pulse_percent")
+                    pt_str = f"{pt_pct:0.1f}%" if pt_pct is not None else "--"
+                    p_str = f"{p_pct:0.1f}%" if p_pct is not None else "--"
+                    temp_tx = parsed.get("temp_tx")
+                    temp_amb = parsed.get("temp_ambient")
+                    temp_tx_str = f"{temp_tx:0.1f}" if temp_tx is not None else "--"
+                    temp_amb_str = f"{temp_amb:0.1f}" if temp_amb is not None else "--"
+                    logger.info(
+                        "TX STATUS: status=%s mode=%s train=%s pulse=%s "
+                        "temp_tx=%sC temp_amb=%sC",
+                        parsed.get("status"),
+                        parsed.get("mode"),
+                        pt_str,
+                        p_str,
+                        temp_tx_str,
+                        temp_amb_str,
+                    )
+
                     # Update internal trigger state based on parsed status
                     new_trigger_state = parsed["status"] == "RUNNING"
                     
@@ -436,6 +477,18 @@ class LIFUConnector(QObject):
                     # SDK monitoring thread owns the serial port.
                     if parsed["temp_tx"] is not None and parsed["temp_ambient"] is not None:
                         self.temperatureTxUpdated.emit(0, float(parsed["temp_tx"]), float(parsed["temp_ambient"]))
+
+                    # Forward sonication progress so the UI can render
+                    # train/pulse percentages without polling. The
+                    # firmware emits PULSE:[0/0] in continuous mode; we
+                    # surface that as NaN so consumers can ignore it.
+                    pt_pct = parsed.get("pulse_train_percent")
+                    p_pct = parsed.get("pulse_percent")
+                    if pt_pct is not None:
+                        self.sonicationProgressUpdated.emit(
+                            float(pt_pct),
+                            float(p_pct) if p_pct is not None else float("nan"),
+                        )
 
             except Exception as e:
                 logger.error(f"Failed to parse and update trigger state: {e}")
@@ -848,6 +901,8 @@ class LIFUConnector(QObject):
             self._emit_device_error("Set Sequence", "No TX device connected.")
             return False
         self._interface_mutex.lock()
+        prev_async = self._async_mode_enabled
+        self._set_async_mode(False, reason="directSetSequence")
         try:
             pulse_interval_s = float(pulseInterval) * 1e-3  # UI ms -> s
             pulse_count = int(pulseCount)
@@ -874,6 +929,8 @@ class LIFUConnector(QObject):
             self._handle_lifu_error("Set Sequence", e, context="Unexpected error")
             return False
         finally:
+            if prev_async and self._state == RUNNING:
+                self._set_async_mode(True, reason="directSetSequence-restore")
             self._interface_mutex.unlock()
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, result=bool)
@@ -883,6 +940,8 @@ class LIFUConnector(QObject):
             self._emit_device_error("Set Pulse", "No TX device connected.")
             return False
         self._interface_mutex.lock()
+        prev_async = self._async_mode_enabled
+        self._set_async_mode(False, reason="directSetPulse")
         try:
             solution = self.get_solution(xInput, yInput, zInput, freq, voltage,
                                          pulseInterval, pulseCount, trainInterval, trainCount, durationS)
@@ -910,6 +969,8 @@ class LIFUConnector(QObject):
             self._handle_lifu_error("Set Pulse", e, context="Unexpected error")
             return False
         finally:
+            if prev_async and self._state == RUNNING:
+                self._set_async_mode(True, reason="directSetPulse-restore")
             self._interface_mutex.unlock()
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
@@ -925,6 +986,11 @@ class LIFUConnector(QObject):
             return
 
         self._interface_mutex.lock()
+        # Async STATUS frames share the TX device's CDC IN endpoint with
+        # command responses; large set_solution writes (write_block chunks)
+        # routinely race with STATUS emissions when async is left on.
+        # Force async OFF for the duration of the write.
+        self._set_async_mode(False, reason="configure_transmitter")
         try:
             self.interface.set_solution(solution, trigger_mode=mode)
             self._configured = True
@@ -971,22 +1037,31 @@ class LIFUConnector(QObject):
             turn_hv_on = (self._hv_enable_mode == HV_EN_AUTO)
             wait_for_settle = True  # Always wait for settle
 
+            # Enable the unsolicited STATUS stream so the UI gets push-mode
+            # temperature and trigger-state updates without polling the TX
+            # device while it is sonicating.
             self.interface.start_sonication(turn_hv_on=turn_hv_on,
                                             wait_for_settle=wait_for_settle,
-                                            async_mode=False)
+                                            async_mode=True)
+            self._async_mode_enabled = True
             self._state = RUNNING
             self.stateChanged.emit(self._state)
             logger.info("Sonication started")
             logger.debug(f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, turn_hv_on: {turn_hv_on})")
         except LIFUHVSettleError as e:
+            # SDK leaves async OFF on settle failure (start_sonication only
+            # toggles it after the HV settle succeeds). Mirror that here.
+            self._async_mode_enabled = False
             # Stay in READY state; notify UI of the failure.
             self.stateChanged.emit(self._state)
             self._handle_lifu_error("Start Sonication", e,
                                     context="HV rail did not settle")
         except LIFUError as e:
+            self._async_mode_enabled = False
             self.stateChanged.emit(self._state)
             self._handle_lifu_error("Start Sonication", e)
         except Exception as e:
+            self._async_mode_enabled = False
             self.stateChanged.emit(self._state)
             self._handle_lifu_error("Start Sonication", e, context="Unexpected error")
         finally:
@@ -1001,6 +1076,10 @@ class LIFUConnector(QObject):
         try:
             turn_hv_off = (self._hv_enable_mode == HV_EN_AUTO)
             self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+            # SDK's stop_sonication() turns async OFF after stopping the
+            # trigger; mirror that on our tracker so subsequent state
+            # queries (e.g. directSet*) don't try to restore it.
+            self._async_mode_enabled = False
             self._state = READY
             self.stateChanged.emit(self._state)
             logger.info("Sonication stopped")
@@ -1311,25 +1390,65 @@ class LIFUConnector(QObject):
         finally:
             self._interface_mutex.unlock()
 
-    @pyqtSlot(bool)
-    def setAsyncMode(self, enable: bool):
-        """Set the async mode for the interface."""
+    def _set_async_mode(self, enable: bool, reason: str = "") -> bool:
+        """Enable/disable the TX device's unsolicited STATUS stream.
+
+        This is the only place that should call ``txdevice.async_mode()``.
+        It serializes the toggle through the interface mutex, verifies the
+        device echoed the requested state, and tracks the result on
+        ``self._async_mode_enabled``. It is a no-op (and returns the
+        cached state) when the TX device is not connected.
+
+        Args:
+            enable: target state.
+            reason: short tag for the log line, for traceability.
+
+        Returns:
+            True if the device confirmed the requested state, False
+            otherwise. Communication failures are logged but not raised
+            so callers can use this in finally blocks without masking
+            the original exception.
+        """
+        if not self._txConnected:
+            self._async_mode_enabled = False
+            return not enable
+        if self._async_mode_enabled == enable:
+            return True
         self._interface_mutex.lock()
         try:
-            async_mode = self.interface.txdevice.async_mode(enable)
-            if async_mode == enable:
-                logger.debug(f"Async mode set to: {enable}")
-            else:
-                self._emit_device_error(
-                    "Async Mode",
-                    f"Device did not accept async mode {enable} (reported {async_mode})."
-                )
+            reported = self.interface.txdevice.async_mode(enable)
+            if reported == enable:
+                self._async_mode_enabled = enable
+                tag = f" ({reason})" if reason else ""
+                logger.debug(f"Async mode -> {enable}{tag}")
+                return True
+            logger.warning(
+                f"TX device did not accept async mode {enable} "
+                f"(reported {reported}); reason={reason}"
+            )
+            self._async_mode_enabled = bool(reported)
+            return False
         except LIFUError as e:
-            self._handle_lifu_error("Async Mode", e)
+            logger.warning(f"Async mode toggle failed ({reason}): {e}")
+            return False
         except Exception as e:
-            self._handle_lifu_error("Async Mode", e, context="Unexpected error")
+            logger.warning(f"Async mode toggle failed ({reason}): {e}")
+            return False
         finally:
             self._interface_mutex.unlock()
+
+    @pyqtSlot(bool)
+    def setAsyncMode(self, enable: bool):
+        """QML/diagnostic slot to manually toggle the TX async stream.
+
+        Routes through :meth:`_set_async_mode` so the connector's tracked
+        state stays consistent with the device.
+        """
+        if not self._set_async_mode(enable, reason="manual"):
+            self._emit_device_error(
+                "Async Mode",
+                f"Device did not accept async mode {enable}.",
+            )
 
     @pyqtSlot(str, result=bool)
     @pyqtSlot(str, int, result=bool)
