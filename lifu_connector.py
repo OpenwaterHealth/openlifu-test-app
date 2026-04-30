@@ -232,7 +232,27 @@ class LIFUConnector(QObject):
         QTimer.singleShot(0, lambda: asyncio.ensure_future(self.interface.start_monitoring()))
 
     def close(self):
-        """Shut down the underlying LIFU interface cleanly."""
+        """Shut down the underlying LIFU interface cleanly.
+
+        Best-effort: stop any active sonication and de-energize the HV
+        rail before tearing the interface down so a crash-on-shutdown or
+        forced quit doesn't leave the device in a transmitting / hot
+        state.
+        """
+        # Stop sonication first; this also turns the trigger off and (in
+        # AUTO mode) drops HV via stop_sonication's own turn_hv_off path.
+        if self._state == RUNNING:
+            try:
+                self.interface.stop_sonication(turn_hv_off=True)
+            except Exception as e:
+                logger.error(f"Error stopping sonication during close: {e}")
+        # Independently force HV off, regardless of mode, in case the
+        # user had it pinned ON or stop_sonication was skipped.
+        if self._hvConnected:
+            try:
+                self.interface.hvcontroller.turn_hv_off()
+            except Exception as e:
+                logger.error(f"Error turning HV off during close: {e}")
         try:
             self.interface.close()
         except Exception as e:
