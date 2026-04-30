@@ -47,6 +47,19 @@ Rectangle {
     property var presetSolutions: []
     property string saveSolutionPath: ""
     property bool savePathAuto: true
+
+    // Sonication progress UI state. Driven by Start/Stop button clicks
+    // plus unsolicited STATUS frames from the firmware. State machine:
+    //   "idle"     -> bar is empty, no text (or "READY")
+    //   "running"  -> bar fills, text "RUNNING i/N" (or "RUNNING i" continuous)
+    //   "finished" -> bar full, green, text "FINISHED N/N"
+    //   "stopped"  -> bar at last value, orange, text "STOPPED"
+    property string progressState: "idle"
+    property int progressCurrent: 0
+    property int progressTotal: 0
+    // Cached at Start time so a mid-run mode change doesn't break the
+    // denominator display.
+    property string progressMode: "Sequence"
     
     // Function to update the validation
     function updateTrainIntervalValidation() {
@@ -189,6 +202,7 @@ Rectangle {
         if (!everConfigured) {
             return false
         }
+        resetProgressIdle()
         return LIFUConnector.directSetVoltage(voltage.text)
     }
 
@@ -196,6 +210,7 @@ Rectangle {
         if (!everConfigured) {
             return false
         }
+        resetProgressIdle()
         return LIFUConnector.directSetSequence(
             triggerPulseInterval.text,
             triggerPulseCount.text,
@@ -209,6 +224,7 @@ Rectangle {
         if (!everConfigured) {
             return false
         }
+        resetProgressIdle()
         var ok = LIFUConnector.directSetPulse(
             xInput.text, yInput.text, zInput.text,
             frequencyInput.text, voltage.text,
@@ -329,6 +345,77 @@ Rectangle {
             return "#269cf6"  // blue: HV rail energized
         }
         return "#1f963d"  // green: connected, rail off
+    }
+
+    // ----- Sonication progress helpers -----
+    function resetProgressIdle() {
+        progressState = "idle"
+        progressCurrent = 0
+        progressTotal = 0
+    }
+
+    function startProgressFromUi() {
+        progressMode = triggerModeDropdown.currentText
+        if (progressMode === "Single") {
+            progressTotal = 1
+            progressCurrent = 1
+        } else if (progressMode === "Continuous") {
+            // No meaningful denominator; treat total as a sentinel that
+            // disables percent-based fill in getProgressFillFraction().
+            progressTotal = 0
+            progressCurrent = 1
+        } else { // Sequence
+            var n = parseInt(triggerPulseTrainCount.text)
+            if (isNaN(n) || n < 1) { n = 1 }
+            progressTotal = n
+            progressCurrent = 1
+        }
+        progressState = "running"
+    }
+
+    function getProgressFillFraction() {
+        if (progressState === "idle") {
+            return 0
+        }
+        if (progressState === "finished") {
+            return 1
+        }
+        if (progressMode === "Continuous") {
+            // No determinate end; show the bar fully filled while
+            // running and on terminal states.
+            return 1
+        }
+        if (progressTotal <= 0) {
+            return 0
+        }
+        return Math.max(0, Math.min(1, progressCurrent / progressTotal))
+    }
+
+    function getProgressText() {
+        if (progressState === "idle") {
+            return ""
+        }
+        if (progressState === "stopped") {
+            return "STOPPED"
+        }
+        var prefix = progressState === "finished" ? "FINISHED" : "RUNNING"
+        if (progressMode === "Continuous") {
+            return prefix + " " + progressCurrent
+        }
+        return prefix + " " + progressCurrent + "/" + progressTotal
+    }
+
+    function getProgressColor() {
+        if (progressState === "finished") {
+            return "#1f963d"  // green
+        }
+        if (progressState === "stopped") {
+            return "#E67E22"  // orange
+        }
+        if (progressState === "running") {
+            return "#269cf6"  // blue
+        }
+        return "#3A3F4B"      // idle / dim
     }
 
     // File dialog for loading solutions
@@ -1466,10 +1553,13 @@ Rectangle {
                         }
                     }
 
-                    // Connection Indicators (TX, HV)
+                    // Connection Indicators (TX, HV) and progress bar.
+                    // The outer row spans the full width of the status
+                    // panel; the progress bar absorbs whatever space
+                    // the LEDs and their text labels do not consume.
                     RowLayout {
+                        Layout.fillWidth: true
                         spacing: 20
-                        Layout.alignment: Qt.AlignHCenter
 
                         // TX LED
                         RowLayout {
@@ -1527,6 +1617,47 @@ Rectangle {
                                 verticalAlignment: Text.AlignVCenter
                             }
                         }
+
+                        // Sonication progress bar. Lives to the right of
+                        // the HV LED. State and fill are driven by the
+                        // Start/Stop buttons and the firmware's
+                        // unsolicited STATUS frames.
+                        Rectangle {
+                            id: progressBar
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 120
+                            Layout.preferredHeight: 22
+                            Layout.maximumHeight: 22
+                            radius: 4
+                            color: "#1B1D22"
+                            border.color: "#3E4E6F"
+                            border.width: 1
+
+                            Rectangle {
+                                id: progressFill
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 2
+                                width: Math.max(0, (parent.width - 4) * getProgressFillFraction())
+                                radius: 3
+                                color: getProgressColor()
+                                Behavior on width { NumberAnimation { duration: 120 } }
+                                Behavior on color { ColorAnimation { duration: 120 } }
+                            }
+
+                            Text {
+                                anchors.fill: parent
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                text: getProgressText()
+                                font.pixelSize: 12
+                                font.weight: Font.Bold
+                                color: "white"
+                                style: Text.Outline
+                                styleColor: "#000000"
+                            }
+                        }
                     }
 
                     RowLayout {
@@ -1550,6 +1681,7 @@ Rectangle {
                             }
                             onClicked: {
                                 runWithButtonFeedback(configureButton, function() {
+                                    resetProgressIdle()
                                     var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
                                     LIFUConnector.configure_transmitter(xInput.text, yInput.text,
                                         zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
@@ -1593,6 +1725,7 @@ Rectangle {
                             onClicked: {
                                 runWithButtonFeedback(startButton, function() {
                                     console.log("Starting Sonication...");
+                                    startProgressFromUi()
                                     LIFUConnector.start_sonication();
                                 })
                             }
@@ -1612,6 +1745,9 @@ Rectangle {
                             onClicked: {
                                 runWithButtonFeedback(stopButton, function() {
                                     console.log("Stopping Sonication...");
+                                    if (progressState === "running") {
+                                        progressState = "stopped"
+                                    }
                                     clearStatusTelemetry()
                                     LIFUConnector.stop_sonication();
                                 })
@@ -1632,6 +1768,7 @@ Rectangle {
                             onClicked: {
                                 runWithButtonFeedback(resetButton, function() {
                                     console.log("Resetting parameters...");
+                                    resetProgressIdle()
                                     applySettingsToUi(LIFUConnector.getDefaultSolutionSettings())
                                     LIFUConnector.reset_configuration();
                                 })
@@ -1679,6 +1816,7 @@ Rectangle {
             if (descriptor === "TX") {
                 txTemperatures = [];
                 configuredModuleCount = 0;
+                resetProgressIdle();
             }
             if (descriptor === "HV") {
                 hvPositiveRail = NaN;
@@ -1707,6 +1845,7 @@ Rectangle {
             console.log("Solution loaded: " + solutionName + " - " + message);
             LIFUConnector.reset_configuration();
             applySolutionSettings();
+            resetProgressIdle();
             statusOverrideText = "";
         }
 
@@ -1739,6 +1878,54 @@ Rectangle {
             }
             updated[module] = tx_temp
             txTemperatures = updated
+        }
+
+        // Unsolicited TX STATUS frames carry pulse-train counts. The
+        // firmware emits one frame at the end of each pulse train, so
+        // PULSE_TRAIN:[k/N] means train k just finished and (for non-
+        // final trains in Sequence/Continuous mode) train k+1 is
+        // starting -- show that as the currently-running index.
+        // The final frame for Single/Sequence runs is STATUS:STOPPED
+        // with k==N; we use that to flip to FINISHED. Single mode
+        // never emits an intermediate RUNNING frame so this handler
+        // is the only place finishing is detected for that mode
+        // (triggerStateChanged is not emitted because the parsed
+        // trigger state never crossed False -> True).
+        function onSonicationProgressUpdated(pt_curr, pt_total, p_curr, p_total) {
+            if (progressState !== "running") {
+                return
+            }
+            if (progressMode === "Continuous") {
+                // Show the next train index that the device just
+                // started. Continuous never "finishes" on its own;
+                // user-initiated stop is handled by the Stop button.
+                progressCurrent = pt_curr + 1
+                return
+            }
+            // Single / Sequence: if this frame's index matches the
+            // total, the run is complete. Otherwise advance to the
+            // next train (k+1).
+            if (pt_total > 0 && pt_curr >= pt_total) {
+                progressCurrent = progressTotal > 0 ? progressTotal : pt_curr
+                progressState = "finished"
+                return
+            }
+            var next = pt_curr + 1
+            if (progressTotal > 0 && next > progressTotal) {
+                next = progressTotal
+            }
+            progressCurrent = next
+        }
+
+        function onTriggerStateChanged(running) {
+            // Defensive fallback: if STATUS:STOPPED arrives but the
+            // counts didn't match total (e.g. firmware abort mid-run),
+            // still leave RUNNING state. The Stop button already
+            // flips progressState to "stopped" before invoking
+            // stop_sonication() so we don't override that here.
+            if (!running && progressState === "running" && progressMode === "Continuous") {
+                progressState = "stopped"
+            }
         }
 
         function onNumModulesUpdated() {

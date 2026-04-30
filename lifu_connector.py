@@ -155,10 +155,12 @@ class LIFUConnector(QObject):
     hvEnableModeChanged = pyqtSignal(int)  # Notifies when HV enable mode changes
 
     # Sonication progress (parsed from unsolicited TX STATUS frames). Only
-    # emitted while async_mode is enabled and a sonication is in progress;
-    # both percentages are 0..100. pulse_percent may be NaN when the
-    # firmware reports PULSE:[0/0] (e.g. continuous mode).
-    sonicationProgressUpdated = pyqtSignal(float, float)  # (pulse_train_pct, pulse_pct)
+    # emitted while async_mode is enabled and a sonication is in progress.
+    # Raw counts come straight from the firmware's PULSE_TRAIN:[curr/total]
+    # and PULSE:[curr/total] fields. Pulse counts are typically (0, 0) on
+    # current firmware (PULSE field is reserved); QML should ignore them
+    # when total is 0.
+    sonicationProgressUpdated = pyqtSignal(int, int, int, int)  # (pt_curr, pt_total, p_curr, p_total)
 
     # Generic device error signal for surfacing SDK failures to QML as popups.
     # Emitted whenever a LIFUError (or unexpected Exception) is caught while
@@ -310,6 +312,10 @@ class LIFUConnector(QObject):
         result = {
             "status": None,
             "mode": None,
+            "pulse_train_current": None,
+            "pulse_train_total": None,
+            "pulse_current": None,
+            "pulse_total": None,
             "pulse_train_percent": None,
             "pulse_percent": None,
             "temp_tx": None,
@@ -346,6 +352,10 @@ class LIFUConnector(QObject):
 
                 result["status"] = status
                 result["mode"] = mode
+                result["pulse_train_current"] = pt_current
+                result["pulse_train_total"] = pt_total
+                result["pulse_current"] = p_current
+                result["pulse_total"] = p_total
                 result["pulse_train_percent"] = (pt_current / pt_total * 100) if pt_total > 0 else 0
                 result["pulse_percent"] = (p_current / p_total * 100) if p_total > 0 else 0
                 result["temp_tx"] = float(temp_tx)
@@ -379,6 +389,10 @@ class LIFUConnector(QObject):
 
                 result["status"] = status
                 result["mode"] = mode
+                result["pulse_train_current"] = pt_current
+                result["pulse_train_total"] = pt_total
+                result["pulse_current"] = None
+                result["pulse_total"] = None
                 result["pulse_train_percent"] = (pt_current / pt_total * 100) if pt_total > 0 else 0
                 result["pulse_percent"] = None  # No pulse data available
                 result["temp_tx"] = float(temp_tx)
@@ -429,17 +443,15 @@ class LIFUConnector(QObject):
     @pyqtSlot(str, str)
     def on_data_received(self, descriptor, message):
         """Handle incoming data from the LIFU device."""
-        logger.info(f"Data received from {descriptor}: {message}")
         self.signalDataReceived.emit(descriptor, message)
 
         if descriptor == "TX":
             try:
                 parsed = self.parse_status_string(message)
                 if parsed["status"] in {"RUNNING", "STOPPED"}:
-                    # Explicit, structured log of the unsolicited STATUS
-                    # frame so it stands out from the raw "Data received"
-                    # line above. Helps diagnose contention between the
-                    # firmware's async push and host-issued commands.
+                    # Structured DEBUG log of the unsolicited STATUS
+                    # frame. The raw text is reconstructable from these
+                    # fields, so we don't also log the wire payload.
                     pt_pct = parsed.get("pulse_train_percent")
                     p_pct = parsed.get("pulse_percent")
                     pt_str = f"{pt_pct:0.1f}%" if pt_pct is not None else "--"
@@ -448,7 +460,7 @@ class LIFUConnector(QObject):
                     temp_amb = parsed.get("temp_ambient")
                     temp_tx_str = f"{temp_tx:0.1f}" if temp_tx is not None else "--"
                     temp_amb_str = f"{temp_amb:0.1f}" if temp_amb is not None else "--"
-                    logger.info(
+                    logger.debug(
                         "TX STATUS: status=%s mode=%s train=%s pulse=%s "
                         "temp_tx=%sC temp_amb=%sC",
                         parsed.get("status"),
@@ -478,16 +490,17 @@ class LIFUConnector(QObject):
                     if parsed["temp_tx"] is not None and parsed["temp_ambient"] is not None:
                         self.temperatureTxUpdated.emit(0, float(parsed["temp_tx"]), float(parsed["temp_ambient"]))
 
-                    # Forward sonication progress so the UI can render
-                    # train/pulse percentages without polling. The
-                    # firmware emits PULSE:[0/0] in continuous mode; we
-                    # surface that as NaN so consumers can ignore it.
-                    pt_pct = parsed.get("pulse_train_percent")
-                    p_pct = parsed.get("pulse_percent")
-                    if pt_pct is not None:
+                    # Forward sonication progress raw counts so the UI
+                    # can drive a progress bar without doing its own
+                    # parsing. Pulse counts are typically (0, 0) on
+                    # current firmware (PULSE field reserved).
+                    pt_curr = parsed.get("pulse_train_current")
+                    pt_total = parsed.get("pulse_train_total")
+                    if pt_curr is not None and pt_total is not None:
+                        p_curr = parsed.get("pulse_current") or 0
+                        p_total = parsed.get("pulse_total") or 0
                         self.sonicationProgressUpdated.emit(
-                            float(pt_pct),
-                            float(p_pct) if p_pct is not None else float("nan"),
+                            int(pt_curr), int(pt_total), int(p_curr), int(p_total)
                         )
 
             except Exception as e:
