@@ -57,6 +57,7 @@ logger.addHandler(ch)
 
 #sdklogger = logging.getLogger('openlifu_sdk.io')
 #sdklogger.setLevel(logging.DEBUG)
+#sdklogger.addHandler(ch)
 
 
 def _parse_tx_module(target: str):
