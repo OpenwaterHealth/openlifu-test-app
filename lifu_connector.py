@@ -571,6 +571,8 @@ class LIFUConnector(QObject):
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
             solution = self._loaded_solution_data
+            if solution['sequence']['pulse_train_interval'] == 0:
+                solution['sequence']['pulse_train_interval'] = solution['sequence']['pulse_count'] * solution['sequence']['pulse_interval']
             #check if delays and apodizations match the number of elements in the loaded solution
             delays_arr = np.array(solution["delays"]).reshape(-1)  # Ensure it's a 1D array
             apodizations_arr = np.array(solution["apodizations"]).reshape(-1)  # Ensure it's a 1D array
@@ -610,9 +612,13 @@ class LIFUConnector(QObject):
             tof = distances*1e-3 / SPEED_OF_SOUND
             delays = tof.max() - tof
             apodizations = np.ones(numelements)
+            pulse_count = int(pulseCount)
+            pulse_train_interval = float(trainInterval)
+            if pulse_train_interval == 0:
+                pulse_train_interval = pulse_count * pulse_interval_seconds
             sequence = {"pulse_interval": pulse_interval_seconds,
-                        "pulse_count": int(pulseCount),
-                        "pulse_train_interval": float(trainInterval),
+                        "pulse_count": pulse_count,
+                        "pulse_train_interval": pulse_train_interval,
                         "pulse_train_count": int(trainCount)}
             transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
             solution = {
@@ -940,7 +946,9 @@ class LIFUConnector(QObject):
             pulse_interval_s = float(pulseInterval) * 1e-3  # UI ms -> s
             pulse_count = int(pulseCount)
             pulse_train_interval_s = float(trainInterval)   # UI already in seconds
-            pulse_train_count = int(trainCount)
+            if pulse_train_interval_s == 0:
+                pulse_train_interval_s = pulse_count * pulse_interval_s
+            pulse_train_count = int(trainCount)            
             trigger_mode = str(mode).lower()
             result = self.interface.txdevice.set_trigger(
                 pulse_interval=pulse_interval_s,
