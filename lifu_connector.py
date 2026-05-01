@@ -1056,8 +1056,21 @@ class LIFUConnector(QObject):
 
     @pyqtSlot()
     def reset_configuration(self):
-        """Reset system configuration to defaults."""
+        """Reset system configuration to defaults.
+
+        Also releases any solution that was loaded from file so the UI
+        controls become editable again and the next Configure rebuilds
+        the solution from the on-screen parameters rather than re-using
+        the buffered file-loaded solution.
+        """
         self._configured = False
+        if self._solution_loaded:
+            released = self._solution_name
+            self._solution_loaded = False
+            self._loaded_solution_data = None
+            self._solution_name = ""
+            self.solutionStateChanged.emit()
+            logger.info(f"Released loaded solution '{released}' on reset")
         self.update_state()
         logger.info("Configuration reset")
 
@@ -2185,7 +2198,12 @@ class LIFUConnector(QObject):
             self._loaded_solution_data = solution_data
             self._solution_loaded = True
             self._solution_name = solution_data.get('name', 'Unnamed Solution')
-            
+
+            # A freshly loaded solution must be re-Configured before it can
+            # run; drop the configured flag and refresh the UI state.
+            self._configured = False
+            self.update_state()
+
             # Emit success signal with solution details
             if "name" in solution_data:
                 message = f"Loaded solution '{solution_data['name']}' from file"

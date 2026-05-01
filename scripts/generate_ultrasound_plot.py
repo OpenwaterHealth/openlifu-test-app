@@ -31,7 +31,7 @@ def generate_ultrasound_plot_from_solution(solution, mode="file"):
     A = pulse['amplitude'] * voltage
     pulse_waveform = A * np.sin(2 * np.pi * pulse["frequency"] * pulse_t + np.pi/6)
     pulse_waveform_tristate = np.where(pulse_waveform > A/2, A, np.where(pulse_waveform < -A/2, -A, 0))
-    ax[0].plot(pulse_t * 1e6, pulse_waveform_tristate,'.:')
+    ax[0].plot(pulse_t * 1e6, pulse_waveform_tristate,'-')
     #ax[0].plot(pulse_t * 1e6, pulse_waveform)
     #ax[0].set_title("Single Pulse Waveform")
     ax[0].set_xlabel("Time (µs)")

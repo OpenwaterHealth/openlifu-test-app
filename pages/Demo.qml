@@ -203,7 +203,16 @@ Rectangle {
             return false
         }
         resetProgressIdle()
-        return LIFUConnector.directSetVoltage(voltage.text)
+        var ok = LIFUConnector.directSetVoltage(voltage.text)
+        if (ok) {
+            LIFUConnector.generate_plot(
+                xInput.text, yInput.text, zInput.text,
+                frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                durationInput.text, "buffer"
+            )
+        }
+        return ok
     }
 
     function commitSequence() {
@@ -211,13 +220,22 @@ Rectangle {
             return false
         }
         resetProgressIdle()
-        return LIFUConnector.directSetSequence(
+        var ok = LIFUConnector.directSetSequence(
             triggerPulseInterval.text,
             triggerPulseCount.text,
             triggerPulseTrainInterval.text,
             triggerPulseTrainCount.text,
             triggerModeDropdown.currentText
         )
+        if (ok) {
+            LIFUConnector.generate_plot(
+                xInput.text, yInput.text, zInput.text,
+                frequencyInput.text, voltage.text, triggerPulseInterval.text,
+                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+                durationInput.text, "buffer"
+            )
+        }
+        return ok
     }
 
     function commitPulse() {
@@ -900,7 +918,13 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
 							model: ["Single", "Continuous", "Sequence"]
                             currentIndex: 1
-                            enabled: !sequenceGroup.sectionReadOnly
+                            // Trigger Mode stays editable any time we're
+                            // not actively sonicating. Even when a solution
+                            // is loaded from file (which locks the other
+                            // parameter fields) the user can still flip
+                            // Single/Continuous/Sequence; once Configured
+                            // the change commits via directSetSequence().
+                            enabled: LIFUConnector.state !== 3
 							
 							background: Rectangle {
                                 color: "#222"
@@ -1093,98 +1117,94 @@ Rectangle {
                         width: pulseGroup.availableWidth
                     }
 
-                    ColumnLayout {
+                    GridLayout {
+                        columns: 2
                         width: parent.width
-                        spacing: 12
+                        rowSpacing: 12
 
-                        // Frequency and Duration
-                        GridLayout {
-                            columns: 2
-                            width: parent.width
-                            //Layout.fillWidth: true
-
-                            Text { 
-                                text: "Frequency (kHz):" 
-                                color: "white" 
-                                Layout.preferredWidth: solutionConfigLabelWidth
-                                Layout.alignment: Qt.AlignLeft
-                                
-                                HoverHandler {
-                                    id: frequencyHover
-                                }
-                                
-                                ToolTip {
-                                    visible: frequencyHover.hovered
-                                    text: "Ultrasound center frequency (kHz)"
-                                    delay: 500
-                                }
+                        Text { 
+                            text: "Frequency (kHz):" 
+                            color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
+                            
+                            HoverHandler {
+                                id: frequencyHover
                             }
-                            TextField { 
-                                id: frequencyInput
-                                property bool dirty: false
-                                Layout.preferredWidth: solutionConfigInputWidth
-                                Layout.preferredHeight: 32
-                                Layout.alignment: Qt.AlignLeft
-                                font.pixelSize: 14
-                                text: "400"
-                                color: getFieldColor(dirty, pulseGroup.sectionReadOnly)
-                                enabled: !pulseGroup.sectionReadOnly
-                                background: Rectangle {
-                                    color: pulseGroup.sectionReadOnly ? "#333" : "#222"
-                                    border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
-                                    radius: 4
-                                }
-                                onTextEdited: dirty = true
-                                onEditingFinished: {
-                                    if (dirty && commitPulse()) {
-                                        dirty = false
-                                    }
-                                }
+                            
+                            ToolTip {
+                                visible: frequencyHover.hovered
+                                text: "Ultrasound center frequency (kHz)"
+                                delay: 500
                             }
-
-                            Text { 
-                                text: "Duration (uS):" 
-                                color: "white" 
-                                Layout.preferredWidth: solutionConfigLabelWidth
-                                Layout.alignment: Qt.AlignLeft
-                                
-                                HoverHandler {
-                                    id: durationHover
-                                }
-                                
-                                ToolTip {
-                                    visible: durationHover.hovered
-                                    text: "Duration of each ultrasound pulse (uS)"
-                                    delay: 500
-                                }
+                        }
+                        TextField { 
+                            id: frequencyInput
+                            property bool dirty: false
+                            Layout.preferredWidth: solutionConfigInputWidth
+                            Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
+                            font.pixelSize: 14
+                            text: "400"
+                            color: getFieldColor(dirty, pulseGroup.sectionReadOnly)
+                            enabled: !pulseGroup.sectionReadOnly
+                            background: Rectangle {
+                                color: pulseGroup.sectionReadOnly ? "#333" : "#222"
+                                border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
+                                radius: 4
                             }
-                            TextField { 
-                                id: durationInput
-                                property bool dirty: false
-                                Layout.preferredWidth: solutionConfigInputWidth
-                                Layout.preferredHeight: 32
-                                Layout.alignment: Qt.AlignLeft
-                                font.pixelSize: 14
-                                text: "200"
-                                color: getFieldColor(dirty, pulseGroup.sectionReadOnly)
-                                enabled: !pulseGroup.sectionReadOnly
-                                background: Rectangle {
-                                    color: pulseGroup.sectionReadOnly ? "#333" : "#222"
-                                    border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
-                                    radius: 4
-                                }
-                                onTextEdited: dirty = true
-                                onEditingFinished: {
-                                    if (dirty && commitPulse()) {
-                                        dirty = false
-                                    }
+                            onTextEdited: dirty = true
+                            onEditingFinished: {
+                                if (dirty && commitPulse()) {
+                                    dirty = false
                                 }
                             }
                         }
 
-                        // Beam Focus
+                        Text { 
+                            text: "Duration (uS):" 
+                            color: "white" 
+                            Layout.preferredWidth: solutionConfigLabelWidth
+                            Layout.alignment: Qt.AlignLeft
+                            
+                            HoverHandler {
+                                id: durationHover
+                            }
+                            
+                            ToolTip {
+                                visible: durationHover.hovered
+                                text: "Duration of each ultrasound pulse (uS)"
+                                delay: 500
+                            }
+                        }
+                        TextField { 
+                            id: durationInput
+                            property bool dirty: false
+                            Layout.preferredWidth: solutionConfigInputWidth
+                            Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
+                            font.pixelSize: 14
+                            text: "200"
+                            color: getFieldColor(dirty, pulseGroup.sectionReadOnly)
+                            enabled: !pulseGroup.sectionReadOnly
+                            background: Rectangle {
+                                color: pulseGroup.sectionReadOnly ? "#333" : "#222"
+                                border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
+                                radius: 4
+                            }
+                            onTextEdited: dirty = true
+                            onEditingFinished: {
+                                if (dirty && commitPulse()) {
+                                    dirty = false
+                                }
+                            }
+                        }
+
+                        // Beam Focus spans the full grid width below the Frequency/Duration rows.
                         RowLayout {
+                            Layout.columnSpan: 2
                             Layout.fillWidth: true
+                            Layout.topMargin: 6
                             spacing: 16
 
                             RowLayout {
@@ -1769,8 +1789,23 @@ Rectangle {
                                 runWithButtonFeedback(resetButton, function() {
                                     console.log("Resetting parameters...");
                                     resetProgressIdle()
+                                    // If HV is pinned ON, drop it to OFF so
+                                    // the rail de-energizes as part of reset.
+                                    if (LIFUConnector.hvEnableMode === 1) {
+                                        LIFUConnector.setHvEnableMode(2)
+                                    }
                                     applySettingsToUi(LIFUConnector.getDefaultSolutionSettings())
                                     LIFUConnector.reset_configuration();
+                                    // Push the (now-default) voltage down to
+                                    // the HV controller so the hardware
+                                    // setpoint matches what the UI shows,
+                                    // independent of whether a solution had
+                                    // been loaded from file.
+                                    if (LIFUConnector.hvConnected) {
+                                        LIFUConnector.directSetVoltage(voltage.text)
+                                    }
+                                    // Clear the plot back to the placeholder.
+                                    ultrasoundGraph.source = "../assets/images/empty_graph.png"
                                 })
                             }
                         }
@@ -1843,8 +1878,10 @@ Rectangle {
         // Solution loading signal handlers
         function onSolutionFileLoaded(solutionName, message) {
             console.log("Solution loaded: " + solutionName + " - " + message);
-            LIFUConnector.reset_configuration();
             applySolutionSettings();
+            // A loaded solution always describes a fixed pulse-train
+            // sequence, so default the Trigger Mode to "Sequence".
+            triggerModeDropdown.currentIndex = 2;
             resetProgressIdle();
             statusOverrideText = "";
         }
