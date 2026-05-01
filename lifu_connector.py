@@ -1,6 +1,6 @@
 from turtle import mode
 
-from PyQt6.QtCore import QObject, QRecursiveMutex, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
+from PyQt6.QtCore import QObject, QRecursiveMutex, QThread, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import asyncio
 import contextlib
 import logging
@@ -176,6 +176,43 @@ SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculat
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
 
 
+class _TelemetryPollThread(QThread):
+    """QThread that polls hardware telemetry every 1 second.
+
+    Using QThread (not threading.Thread) ensures Qt's cross-thread queued
+    signal delivery works correctly so that signals emitted here are
+    reliably dispatched to the main-thread event loop and received by QML.
+    """
+
+    def __init__(self, connector):
+        super().__init__()
+        self._connector = connector
+        self._stop_event = threading.Event()
+
+    def run(self):
+        conn = self._connector
+        while not self._stop_event.wait(timeout=1.0):
+            try:
+                if conn._txConnected:
+                    if conn._num_modules_connected <= 0:
+                        conn.queryNumModules()
+                    # While sonicating, the firmware pushes unsolicited STATUS
+                    # frames with temperature; polling the same endpoint races
+                    # those frames and causes UART timeouts, so skip RUNNING.
+                    if conn._state != RUNNING:
+                        conn.queryTxTemperature()
+                if conn._hvConnected:
+                    # Re-check power status every cycle so AUTO-settle events
+                    # are reflected in the UI promptly.
+                    conn.queryPowerStatus()
+                    conn.getMonitorVoltages()
+            except Exception as e:
+                logger.warning(f"Telemetry poll loop error: {e}")
+
+    def stop(self):
+        self._stop_event.set()
+
+
 class _Bridge(QObject):
     """Thread-safe bridge from OWSignal to pyqtSignal."""
     sig_connected = pyqtSignal(str, str) # (descriptor, port)
@@ -306,6 +343,13 @@ class LIFUConnector(QObject):
         self._bridge.sig_data.connect(self.on_data_received)
         self._bridge.sig_error.connect(self.on_error)
 
+        # Background telemetry polling thread (temperature + HV voltages).
+        # QThread is used (not threading.Thread) so Qt's queued-connection
+        # mechanism correctly delivers signals from the poll thread to the
+        # main-thread event loop (and thus to QML).
+        self._poll_thread = _TelemetryPollThread(self)
+        self._poll_thread.start()
+
         QTimer.singleShot(0, lambda: asyncio.ensure_future(self.interface.start_monitoring()))
 
     def close(self):
@@ -316,6 +360,14 @@ class LIFUConnector(QObject):
         forced quit doesn't leave the device in a transmitting / hot
         state.
         """
+        # Signal the telemetry poll thread to stop and wait for it to finish
+        # its current hardware operation before we start tearing down the
+        # interface.  A 5-second timeout prevents an indefinite hang if the
+        # device is unresponsive.
+        self._poll_thread.stop()
+        if not self._poll_thread.wait(5000):  # 5 000 ms
+            logger.warning("Telemetry poll thread did not exit within timeout during close.")
+
         # Stop sonication first; this also turns the trigger off and (in
         # AUTO mode) drops HV via stop_sonication's own turn_hv_off path.
         if self._state == RUNNING:

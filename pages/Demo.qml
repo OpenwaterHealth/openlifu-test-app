@@ -297,30 +297,6 @@ Rectangle {
         return "Rails +" + hvPositiveRail.toFixed(2) + " / -" + Math.abs(hvNegativeRail).toFixed(2) + " V"
     }
 
-    function refreshStatusTelemetry() {
-        if (LIFUConnector.txConnected) {
-            if (configuredModuleCount <= 0) {
-                LIFUConnector.queryNumModules()
-            }
-            // While the device is sonicating, the firmware pushes
-            // STATUS frames containing TX temp + ambient on each pulse
-            // train boundary. Polling get_temperature on the same
-            // endpoint races those frames and produces UART timeouts,
-            // so we rely on the push stream while RUNNING and only
-            // poll when idle (the firmware is silent then).
-            if (LIFUConnector.state !== 3) {
-                LIFUConnector.queryTxTemperature()
-            }
-        }
-
-        if (LIFUConnector.hvConnected) {
-            // Always re-check power status so we notice when the device
-            // turns HV on/off out from under us (e.g. AUTO settle).
-            LIFUConnector.queryPowerStatus()
-            LIFUConnector.getMonitorVoltages()            
-        }
-    }
-
     function clearStatusTelemetry() {
         txTemperatures = []
         if (!hvOn) {
@@ -1812,20 +1788,6 @@ Rectangle {
                     }
                 }
             }
-        }
-    }
-
-    Timer {
-        id: telemetryPollTimer
-        interval: 1000
-        repeat: true
-        // Poll while idle on Ready/Connected (firmware is silent then),
-        // OR whenever HV is connected (HV controller has no async push).
-        // While RUNNING, TX telemetry arrives via the unsolicited
-        // STATUS stream and only HV needs polling.
-        running: LIFUConnector.txConnected || LIFUConnector.hvConnected
-        onTriggered: {
-            refreshStatusTelemetry()
         }
     }
 
