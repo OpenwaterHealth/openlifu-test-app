@@ -50,6 +50,83 @@ from verification.prodreqs_run_indefinitely_test import TransmitterIndefiniteRun
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
+# Minimum required openlifu-sdk version. Bump this whenever the test app
+# starts depending on a new SDK feature/fix. Keep in sync with the
+# `openlifu-sdk>=` pin in pyproject.toml.
+MIN_SDK_VERSION = "1.0.7"
+
+
+def _parse_sdk_version(version_str: str):
+    """Parse an openlifu-sdk version string into a comparable tuple.
+
+    Accepts PEP 440 strings (preferred path via ``packaging.version.Version``)
+    and falls back to a regex on the leading ``MAJOR.MINOR.PATCH`` so that
+    locally-installed editable builds from GitHub (e.g. setuptools_scm
+    versions like ``1.0.6.dev3+g1a2b3c4`` or ``1.0.7.dev0+g....d20260501``)
+    still compare cleanly against ``MIN_SDK_VERSION``.
+
+    Returns ``None`` if no leading numeric version can be extracted.
+    """
+    if not version_str:
+        return None
+    try:
+        from packaging.version import Version, InvalidVersion
+        try:
+            return Version(version_str)
+        except InvalidVersion:
+            pass
+    except ImportError:
+        pass
+    m = re.match(r"\s*(\d+)\.(\d+)(?:\.(\d+))?", str(version_str))
+    if not m:
+        return None
+    return tuple(int(p) if p is not None else 0 for p in m.groups())
+
+
+def check_sdk_version(min_version: str = MIN_SDK_VERSION):
+    """Verify the installed openlifu-sdk meets ``min_version``.
+
+    Returns a tuple ``(ok, installed_version, message)``. ``ok`` is True
+    when the installed version parses and is ``>= min_version``. The
+    message is human-readable and suitable for surfacing to the user.
+    """
+    try:
+        installed = LIFUInterface.get_sdk_version()
+    except Exception as e:
+        return False, "unknown", f"Could not determine openlifu-sdk version: {e}"
+
+    parsed_installed = _parse_sdk_version(installed)
+    parsed_min = _parse_sdk_version(min_version)
+    if parsed_installed is None or parsed_min is None:
+        return (
+            False,
+            installed,
+            f"Could not parse openlifu-sdk version '{installed}' "
+            f"(minimum required: {min_version}).",
+        )
+    # ``packaging.version.Version`` and the tuple fallback both support <.
+    # Mixing them shouldn't happen (both branches use the same parser),
+    # but guard anyway.
+    try:
+        ok = parsed_installed >= parsed_min
+    except TypeError:
+        return (
+            False,
+            installed,
+            f"Could not compare openlifu-sdk version '{installed}' "
+            f"to minimum '{min_version}'.",
+        )
+    if ok:
+        return True, installed, f"openlifu-sdk {installed} (>= {min_version})"
+    return (
+        False,
+        installed,
+        f"openlifu-sdk {installed} is older than the required minimum {min_version}. "
+        f"Please upgrade with: pip install --upgrade 'openlifu-sdk>={min_version}'",
+    )
+
+
 ch = logging.StreamHandler()
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 ch.setFormatter(formatter)

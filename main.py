@@ -7,7 +7,7 @@ import argparse
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
-from lifu_connector import LIFUConnector
+from lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
 from pathlib import Path
 
 from version import get_version
@@ -57,6 +57,31 @@ def main():
     os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
     app = QGuiApplication(sys.argv)
+
+    # Verify the installed openlifu-sdk meets our minimum required version
+    # before we start touching hardware. Editable installs from GitHub may
+    # report PEP 440 local versions (e.g. "1.0.6.dev3+g1a2b3c4"); the
+    # parser in check_sdk_version handles those.
+    sdk_ok, sdk_version, sdk_message = check_sdk_version(MIN_SDK_VERSION)
+    if sdk_ok:
+        logger.info(sdk_message)
+    else:
+        logger.error(sdk_message)
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            # QGuiApplication doesn't own QWidget; spin up a temporary
+            # QApplication only for the dialog. If QtWidgets isn't
+            # available (slim install) we still have the stderr path.
+            _msg_app = QApplication.instance() or QApplication(sys.argv)
+            QMessageBox.critical(
+                None,
+                "Incompatible openlifu-sdk version",
+                f"{sdk_message}\n\nThe application will now exit.",
+            )
+        except Exception:
+            print(f"ERROR: {sdk_message}", file=sys.stderr)
+        sys.exit(2)
+
     # Use the multi-size .ico on Windows so the taskbar/alt-tab/title-bar
     # each pick an appropriately sized image. A single large .png often
     # fails to render in the 16x16 taskbar slot.
