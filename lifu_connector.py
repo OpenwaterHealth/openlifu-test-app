@@ -162,13 +162,23 @@ READY = 2                # TX configured with a solution; ready to start
 RUNNING = 3              # Sonication or verification test in progress
 TEST_SCRIPT_READY = 4    # HV connected without TX (verification scripts)
 
+# HV enable modes:
+#   AUTO          - HV is held on whenever the TX has a solution loaded
+#                   (state >= READY) and turned off whenever it isn't.
+#   ON            - HV is held on continuously (requires HV connected).
+#   OFF           - HV is held off; sonication is blocked.
+#   WHILE_RUNNING - HV is energized only while sonication is actively running
+#                   (turned on at start_sonication, off at stop_sonication).
+#                   This was the old AUTO behavior.
 HV_EN_AUTO = 0
 HV_EN_ON = 1
 HV_EN_OFF = 2
+HV_EN_WHILE_RUNNING = 3
 HV_EN_MODES = {
     HV_EN_AUTO: "AUTO",
     HV_EN_ON: "ON",
     HV_EN_OFF: "OFF",
+    HV_EN_WHILE_RUNNING: "WHILE_RUNNING",
 }
 
 #
@@ -449,6 +459,40 @@ class LIFUConnector(QObject):
     def _hv_ready(self) -> bool:
         """Return True if HV is connected and not disabled by the user."""
         return self._hvConnected and self._hv_enable_mode != HV_EN_OFF
+
+    def _apply_auto_hv_for_state(self):
+        """Drive the HV rail to match AUTO mode + current configured state.
+
+        AUTO holds HV on whenever the TX has a solution loaded (state ==
+        READY); off otherwise. Called by configure / reset transitions.
+        Other modes (ON/OFF/WHILE_RUNNING) are no-ops here. No-op while
+        RUNNING (start/stop_sonication owns the rail then).
+        """
+        if not self._hvConnected:
+            return
+        if self._hv_enable_mode != HV_EN_AUTO:
+            return
+        if self._state == RUNNING:
+            return
+        try:
+            should_be_on = (self._state == READY)
+            if should_be_on:
+                self.interface.hvcontroller.turn_hv_on()
+                logger.info("HV turned on (AUTO mode, configured)")
+            else:
+                self.interface.hvcontroller.turn_hv_off()
+                logger.info("HV turned off (AUTO mode, not configured)")
+            try:
+                hv_state = self.interface.hvcontroller.get_hv_status()
+                v12_state = self.interface.hvcontroller.get_12v_status()
+                self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+            except Exception as e:
+                logger.warning(f"Could not refresh power status after AUTO HV change: {e}")
+        except LIFUError as e:
+            self._handle_lifu_error("HV Auto", e,
+                                    context="Failed to apply AUTO mode after state change")
+        except Exception as e:
+            self._handle_lifu_error("HV Auto", e, context="Unexpected error")
 
     def _update_trigger_state(self, trigger_data):
         """Helper method to update trigger state and emit signal."""
@@ -1172,6 +1216,7 @@ class LIFUConnector(QObject):
             self.interface.set_solution(solution, trigger_mode=mode)
             self._configured = True
             self.update_state()
+            self._apply_auto_hv_for_state()
             logger.info("Transmitter configured")
 
         except LIFUSolutionError as e:
@@ -1208,6 +1253,7 @@ class LIFUConnector(QObject):
             self.solutionStateChanged.emit()
             logger.info(f"Released loaded solution '{released}' on reset")
         self.update_state()
+        self._apply_auto_hv_for_state()
         logger.info("Configuration reset")
 
     @pyqtSlot()
@@ -1223,8 +1269,10 @@ class LIFUConnector(QObject):
             return
         self._interface_mutex.lock()
         try:
-            # Determine HV control parameters based on enable mode
-            turn_hv_on = (self._hv_enable_mode == HV_EN_AUTO)
+            # Determine HV control parameters based on enable mode.
+            # AUTO already energized HV at Configure time, but turn_hv_on=True
+            # is harmless if it's already on. WHILE_RUNNING turns it on now.
+            turn_hv_on = self._hv_enable_mode in (HV_EN_AUTO, HV_EN_WHILE_RUNNING)
             wait_for_settle = True  # Always wait for settle
 
             # Enable the unsolicited STATUS stream so the UI gets push-mode
@@ -1264,7 +1312,9 @@ class LIFUConnector(QObject):
             return
         self._interface_mutex.lock()
         try:
-            turn_hv_off = (self._hv_enable_mode == HV_EN_AUTO)
+            # AUTO keeps HV energized while still configured; only WHILE_RUNNING
+            # drops the rail at sonication-stop.
+            turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
             self.interface.stop_sonication(turn_hv_off=turn_hv_off)
             # SDK's stop_sonication() turns async OFF after stopping the
             # trigger; mirror that on our tracker so subsequent state
@@ -1331,38 +1381,51 @@ class LIFUConnector(QObject):
     
     @pyqtSlot(int)
     def setHvEnableMode(self, hv_en_mode):
-        """Set HV enable mode (0=AUTO, 1=ON, 2=OFF)."""
-        if hv_en_mode < 0 or hv_en_mode > 2:
+        """Set HV enable mode (0=AUTO, 1=ON, 2=OFF, 3=WHILE_RUNNING)."""
+        if hv_en_mode not in HV_EN_MODES:
             logger.warning(f"Invalid HV enable mode: {hv_en_mode}")
             return
-            
+
         # Prevent changing HV mode while running
         if self._state == RUNNING:
             logger.warning("Cannot change HV enable mode while running")
             return
-            
+
         # Prevent setting "ON" mode when HV is not connected
         if hv_en_mode == HV_EN_ON and not self._hvConnected:  # ON mode
             logger.warning("Cannot set HV to ON mode: HV device not connected")
             return
-            
+
         old_mode = self._hv_enable_mode
         self._hv_enable_mode = hv_en_mode
         self.hvEnableModeChanged.emit(hv_en_mode)
         logger.info(f"HV enable mode changed: {HV_EN_MODES.get(old_mode, 'Unknown')} -> {HV_EN_MODES.get(hv_en_mode, 'Unknown')}")
-        
-        # Handle immediate HV changes for ON/OFF modes
+
+        # Handle immediate HV changes for ON/OFF/AUTO/WHILE_RUNNING modes.
+        # AUTO turns the rail on as soon as the device is configured (READY),
+        # otherwise it stays off. WHILE_RUNNING never asserts here (waits for
+        # start_sonication).
         if self._hvConnected:
             try:
-                if hv_en_mode == HV_EN_ON:  # ON
+                if hv_en_mode == HV_EN_ON:
                     self.interface.hvcontroller.turn_hv_on()
                     logger.info("HV turned on (ON mode)")
-                elif hv_en_mode == HV_EN_OFF:  # OFF
+                elif hv_en_mode == HV_EN_OFF:
                     self.interface.hvcontroller.turn_hv_off()
                     logger.info("HV turned off (OFF mode)")
-                elif hv_en_mode == HV_EN_AUTO and old_mode == HV_EN_ON and not self._state == RUNNING:  # AUTO and was previously ON
-                    self.interface.hvcontroller.turn_hv_off()
-                    logger.info("HV turned off (AUTO mode)")
+                elif hv_en_mode == HV_EN_AUTO:
+                    if self._state >= READY:
+                        self.interface.hvcontroller.turn_hv_on()
+                        logger.info("HV turned on (AUTO mode, configured)")
+                    else:
+                        self.interface.hvcontroller.turn_hv_off()
+                        logger.info("HV turned off (AUTO mode, not configured)")
+                elif hv_en_mode == HV_EN_WHILE_RUNNING:
+                    # Drop the rail unless we're already mid-run; only
+                    # start_sonication should energize in this mode.
+                    if self._state != RUNNING:
+                        self.interface.hvcontroller.turn_hv_off()
+                        logger.info("HV turned off (WHILE_RUNNING mode, not running)")
             except LIFUError as e:
                 self._handle_lifu_error("HV Enable Mode", e,
                                         context=f"Failed to apply mode '{HV_EN_MODES.get(hv_en_mode, 'Unknown')}'")
@@ -1371,21 +1434,25 @@ class LIFUConnector(QObject):
 
             # Refresh the QML side immediately so the HV LED reacts without
             # waiting for the next telemetry poll.
-            if hv_en_mode in (HV_EN_ON, HV_EN_OFF):
-                try:
-                    hv_state = self.interface.hvcontroller.get_hv_status()
-                    v12_state = self.interface.hvcontroller.get_12v_status()
-                    self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
-                except Exception as e:
-                    logger.warning(f"Could not refresh power status after HV mode change: {e}")
+            try:
+                hv_state = self.interface.hvcontroller.get_hv_status()
+                v12_state = self.interface.hvcontroller.get_12v_status()
+                self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+            except Exception as e:
+                logger.warning(f"Could not refresh power status after HV mode change: {e}")
 
         # Update state after mode change (important for OFF->ON transitions)
         self.update_state()
     
     @pyqtSlot(result='QStringList')
     def getHvEnableModes(self):
-        """Return the list of HV enable mode options."""
-        return ["AUTO", "ON", "OFF"]
+        """Return the list of HV enable mode options.
+
+        Index order matches the HV_EN_* integer constants and is the
+        contract used by QML ComboBoxes (Demo, Vet) for index-based
+        selection. Append-only.
+        """
+        return ["AUTO", "ON", "OFF", "WHILE_RUNNING"]
         
     @pyqtSlot(result=bool)
     def canSetHvOn(self):

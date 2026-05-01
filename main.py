@@ -36,7 +36,56 @@ def parse_arguments():
         action="store_true",
         help="Enable HV test mode for LIFUConnector",
     )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--mode",
+        choices=["default", "vet", "all"],
+        default="default",
+        help="UI mode: 'default' (engineering), 'vet' (veterinary, simplified), 'all' (every tab).",
+    )
+    mode_group.add_argument(
+        "--vet",
+        dest="mode",
+        action="store_const",
+        const="vet",
+        help="Shortcut for --mode vet.",
+    )
+    mode_group.add_argument(
+        "--all",
+        dest="mode",
+        action="store_const",
+        const="all",
+        help="Shortcut for --mode all.",
+    )
     return parser.parse_args()
+
+
+# Tab id -> visible label, icon glyph, and QML page path. Consumed by
+# SidebarMenu.qml via the appTabs context property.
+TAB_DEFINITIONS = {
+    "vet":          {"label": "Veterinary",  "icon": "\ueb2e", "page": "pages/Vet.qml"},
+    "demo":         {"label": "Demo",        "icon": "\ueb34", "page": "pages/Demo.qml"},
+    "transmitter":  {"label": "Transmitter", "icon": "\ueab9", "page": "pages/Transmitter.qml"},
+    "console":      {"label": "Console",     "icon": "\ueaae", "page": "pages/Console.qml"},
+    "testing":      {"label": "Verification","icon": "\ueb2f", "page": "pages/Testing.qml"},
+    "settings":     {"label": "Settings",    "icon": "\ueabf", "page": "pages/Settings.qml"},
+}
+
+MODE_TAB_LISTS = {
+    "default": ["demo", "transmitter", "console", "testing", "settings"],
+    "vet":     ["vet", "settings"],
+    "all":     ["vet", "demo", "transmitter", "console", "testing", "settings"],
+}
+
+
+def build_app_tabs(mode: str):
+    """Return a list of tab dicts for the given mode, suitable for QML."""
+    tab_ids = MODE_TAB_LISTS.get(mode, MODE_TAB_LISTS["default"])
+    return [
+        {"id": tid, **TAB_DEFINITIONS[tid]}
+        for tid in tab_ids
+        if tid in TAB_DEFINITIONS
+    ]
 
 def main():
     args = parse_arguments()
@@ -96,6 +145,8 @@ def main():
     # Expose to QML
     engine.rootContext().setContextProperty("LIFUConnector", lifu_connector)
     engine.rootContext().setContextProperty("appVersion", APP_VERSION)
+    engine.rootContext().setContextProperty("appMode", args.mode)
+    engine.rootContext().setContextProperty("appTabs", build_app_tabs(args.mode))
     app.setProperty("appVersion", APP_VERSION)
 
     engine.load(resource_path("main.qml"))
