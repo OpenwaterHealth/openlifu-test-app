@@ -247,10 +247,6 @@ ROW_FW_VER = 'B.5'
 ROW_VOLTAGE = 'E.1'
 
 logger = logging.getLogger(__name__)
-ch = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
 
 def read_test_report(filename: str) -> pd.DataFrame:
     sections = [{"name": "info", "start_row": "A"},

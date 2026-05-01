@@ -1,6 +1,7 @@
 import QtQuick 6.0
 import QtQuick.Controls 6.0
 import QtQuick.Layouts 6.0
+import QtQuick.Window 6.0
 
 Rectangle {
     id: windowMenu
@@ -16,13 +17,25 @@ Rectangle {
     property string sdkVerText: "v0.0.0" // Default
 
     // Drag functionality
+    //
+    // Use Window.startSystemMove() instead of manually adjusting window.x/y in
+    // onPositionChanged. The manual approach feeds back on itself: as the
+    // window is repositioned, this MouseArea (anchored inside the window)
+    // moves with it, so the next mouse event reports new local coordinates
+    // and the computed delta no longer reflects actual cursor motion. The
+    // window then runs away across the screen until Windows clamps the
+    // geometry at INT16_MIN (-32768), producing the
+    //   "QWindowsWindow::setGeometry: Unable to set geometry ..."
+    // warnings. startSystemMove() hands the drag to the OS, which tracks
+    // the cursor in screen coordinates and avoids the feedback loop.
     MouseArea {
         id: headerMouseArea
         anchors.fill: parent
         cursorShape: Qt.SizeAllCursor
+
         onPressed: function(mouse) {
-            if (mouse.button === Qt.LeftButton) {
-                window.startSystemMove(); // Allow window dragging
+            if (mouse.button === Qt.LeftButton && window.visibility !== Window.Maximized) {
+                window.startSystemMove()
             }
         }
     }
