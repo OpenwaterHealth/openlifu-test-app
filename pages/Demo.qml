@@ -328,7 +328,10 @@ Rectangle {
         if (LIFUConnector.state === 3) {
             return "#269cf6"  // blue: sonication running
         }
-        return "#1f963d"  // green: connected
+        if (LIFUConnector.state < 2) {
+            return "#0f5d24"  // dark green: connected, not yet configured
+        }
+        return "#1f963d"  // green: configured / ready
     }
 
     function getHVIndicatorColor() {
@@ -337,6 +340,9 @@ Rectangle {
         }
         if (hvOn) {
             return "#269cf6"  // blue: HV rail energized
+        }
+        if (LIFUConnector.state < 2) {
+            return "#0f5d24"  // dark green: connected, not yet configured
         }
         return "#1f963d"  // green: connected, rail off
     }
@@ -1967,6 +1973,12 @@ Rectangle {
                 everConfigured = true
             } else {
                 everConfigured = false
+                // Dropping below CONFIGURED (e.g. after Reset) stops the
+                // backend telemetry polling, so blank the cached readings
+                // rather than leaving stale values on screen.
+                if (previousConnectorState >= 2) {
+                    clearStatusTelemetry();
+                }
             }
             if (crossedConfiguredBoundary) {
                 clearAllDirty()
