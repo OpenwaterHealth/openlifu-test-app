@@ -1675,7 +1675,7 @@ Rectangle {
                             // device is not actively transmitting. Re-clicking
                             // re-pushes the current field values as the active
                             // solution.
-                            enabled: LIFUConnector.txConnected && LIFUConnector.state !== 3 && !visualPressed
+                            enabled: LIFUConnector.txConnected && LIFUConnector.state <2 && !visualPressed
                             background: Rectangle {
                                 color: (configureButton.down || configureButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
