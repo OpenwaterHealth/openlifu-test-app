@@ -196,16 +196,23 @@ class _TelemetryPollThread(QThread):
                 if conn._txConnected:
                     if conn._num_modules_connected <= 0:
                         conn.queryNumModules()
-                    # While sonicating, the firmware pushes unsolicited STATUS
-                    # frames with temperature; polling the same endpoint races
-                    # those frames and causes UART timeouts, so skip RUNNING.
-                    if conn._state != RUNNING:
-                        conn.queryTxTemperature()
+                # Temperature and HV-rail voltage telemetry is only meaningful
+                # once a solution has been configured on the device. Prior to
+                # configuration -- and after a Reset returns the system to
+                # CONNECTED -- skip these queries to avoid unnecessary UART
+                # traffic and stale readings in the UI. While sonicating, the
+                # firmware pushes unsolicited STATUS frames with temperature;
+                # polling the same endpoint races those frames and causes UART
+                # timeouts, so skip RUNNING for temperature.
+                configured = conn._state in (READY, RUNNING)
+                if conn._txConnected and configured and conn._state != RUNNING:
+                    conn.queryTxTemperature()
                 if conn._hvConnected:
                     # Re-check power status every cycle so AUTO-settle events
                     # are reflected in the UI promptly.
                     conn.queryPowerStatus()
-                    conn.getMonitorVoltages()
+                    if configured:
+                        conn.getMonitorVoltages()
             except Exception as e:
                 logger.warning(f"Telemetry poll loop error: {e}")
 
