@@ -57,7 +57,11 @@ def main():
     os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
     app = QGuiApplication(sys.argv)
-    app.setWindowIcon(QIcon(resource_path("assets/images/favicon.png")))
+    # Use the multi-size .ico on Windows so the taskbar/alt-tab/title-bar
+    # each pick an appropriately sized image. A single large .png often
+    # fails to render in the 16x16 taskbar slot.
+    app_icon = QIcon(resource_path("assets/images/favicon.ico"))
+    app.setWindowIcon(app_icon)
 
     engine = QQmlApplicationEngine()
 
@@ -74,6 +78,14 @@ def main():
     if not engine.rootObjects():
         print("Error: Failed to load QML file")
         sys.exit(-1)
+
+    # Frameless QQuickWindows on Windows don't always inherit the
+    # QGuiApplication window icon for the taskbar. Push it explicitly.
+    for obj in engine.rootObjects():
+        try:
+            obj.setIcon(app_icon)
+        except AttributeError:
+            pass
 
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
