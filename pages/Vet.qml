@@ -203,7 +203,7 @@ Rectangle {
             Layout.fillHeight: true
             spacing: 14
 
-            // ---------- Column 1: Treatment Settings ----------
+            // ---------- Column 1: Sonication Settings ----------
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -220,7 +220,7 @@ Rectangle {
                     spacing: 14
 
                     Text {
-                        text: "Treatment Settings"
+                        text: "Sonication Settings"
                         color: "white"
                         font.pixelSize: 16
                         font.weight: Font.Bold
@@ -343,7 +343,7 @@ Rectangle {
                     spacing: 10
 
                     Text {
-                        text: "Solution Parameters"
+                        text: "Output Parameters"
                         color: "white"
                         font.pixelSize: 16
                         font.weight: Font.Bold
@@ -381,23 +381,17 @@ Rectangle {
                         Text { text: "Frequency:";        color: "#BDC3C7"; font.pixelSize: 13 }
                         Text { text: fixedFrequencyKHz + " kHz"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
 
-                        Text { text: "Trigger Mode:";     color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: fixedTriggerMode;    color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                        Text { text: "Focus (X, Y, Z):";  color: "#BDC3C7"; font.pixelSize: 13 }
+                        Text { text: "(" + fixedX + ", " + fixedY + ", " + selectedDepthMm() + ") mm"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
 
-                        Text { text: "Pulse Interval:";   color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: fixedPulseIntervalMs + " ms"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
-
-                        Text { text: "Pulse Count:";      color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: fixedPulseCount;     color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
-
-                        Text { text: "Pulse Duration:";   color: "#BDC3C7"; font.pixelSize: 13 }
+                        Text { text: "Pulse Length:";   color: "#BDC3C7"; font.pixelSize: 13 }
                         Text { text: (pulseDurationUs() / 1000.0).toFixed(1) + " ms"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+
+                        Text { text: "Pulse Repetition Interval:";   color: "#BDC3C7"; font.pixelSize: 13 }
+                        Text { text: fixedPulseIntervalMs + " ms"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
 
                         Text { text: "Pulse Trains:";     color: "#BDC3C7"; font.pixelSize: 13 }
                         Text { text: pulseTrainCount();   color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
-
-                        Text { text: "Focus (X, Y, Z):";  color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: "(" + fixedX + ", " + fixedY + ", " + selectedDepthMm() + ") mm"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
                     }
 
                     Item { Layout.fillHeight: true }
