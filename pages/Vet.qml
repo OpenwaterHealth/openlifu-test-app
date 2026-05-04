@@ -204,7 +204,7 @@ Rectangle {
     // HEADER
     Text {
         id: headerText
-        text: "Veterinary Mode"
+        text: "Device Control"
         font.pixelSize: 18
         font.weight: Font.Bold
         color: "white"
