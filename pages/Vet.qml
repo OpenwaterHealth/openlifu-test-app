@@ -83,11 +83,38 @@ Rectangle {
         return Math.max(0, Math.min(1, progressCurrent / progressTotal))
     }
 
+    function formatDurationSeconds(totalSeconds) {
+        var s = Math.max(0, Math.round(totalSeconds))
+        if (s >= 60) {
+            var m = Math.floor(s / 60)
+            var rem = s % 60
+            return m + "m" + (rem < 10 ? "0" : "") + rem + "s"
+        }
+        return s + "s"
+    }
+
     function getProgressText() {
         if (progressState === "idle") return ""
-        if (progressState === "stopped") return "STOPPED"
-        var prefix = progressState === "finished" ? "FINISHED" : "RUNNING"
-        return prefix + " " + progressCurrent + "/" + progressTotal
+        if (progressState === "finished") {
+            var totalPulses = progressTotal * parseInt(fixedPulseCount)
+            return "Finished " + totalPulses + " pulses in "
+                 + formatDurationSeconds(selectedDurationSeconds())
+        }
+        if (progressState === "stopped") {
+            var stoppedPulses = progressCurrent * parseInt(fixedPulseCount)
+            var stoppedFrac = progressTotal > 0
+                ? Math.max(0, Math.min(1, progressCurrent / progressTotal)) : 0
+            var stoppedSec = selectedDurationSeconds() * stoppedFrac
+            return "Stopped after " + stoppedPulses + " pulses in "
+                 + formatDurationSeconds(stoppedSec)
+        }
+        if (progressTotal <= 0) return "RUNNING"
+        var frac = Math.max(0, Math.min(1, progressCurrent / progressTotal))
+        var percent = Math.floor(frac * 100)
+        var totalSec = selectedDurationSeconds()
+        var remainingSec = totalSec * (1 - frac)
+        return "Running [" + percent + "%] ("
+             + formatDurationSeconds(remainingSec) + " remaining)"
     }
 
     function getProgressColor() {
