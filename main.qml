@@ -76,6 +76,7 @@ Window {
                         : activeMenu === 1 ? "pages/Transmitter.qml"
                         : activeMenu === 2 ? "pages/Console.qml"
                         : activeMenu === 3 ? "pages/Testing.qml"
+                        : activeMenu === 4 ? "pages/Service.qml"
                         : "pages/Settings.qml"
 
                 }
