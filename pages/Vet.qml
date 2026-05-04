@@ -560,30 +560,34 @@ Rectangle {
                     }
                 }
 
-                // Big control buttons row (Configure | Start | Stop | Reset)
+                // Big control buttons row.
+                // Before configuration: a single big "Program Device" button.
+                // After configuration: Start + Stop become visible (Reset
+                // happens automatically when the user navigates to Settings).
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     spacing: 14
 
                     Button {
-                        id: vetConfigureButton
-                        text: "Configure"
+                        id: vetProgramButton
+                        text: "Program Device"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        font.pixelSize: 20
+                        font.pixelSize: 22
                         font.weight: Font.Bold
+                        visible: LIFUConnector.state < 2
                         enabled: LIFUConnector.txConnected && LIFUConnector.state < 2
                         background: Rectangle {
-                            color: vetConfigureButton.down ? "#2F333D" : "#3A3F4B"
+                            color: vetProgramButton.down ? "#2F333D" : "#3A3F4B"
                             radius: 6
                             border.color: "#BDC3C7"
                             border.width: 2
                         }
                         contentItem: Text {
-                            text: vetConfigureButton.text
-                            color: vetConfigureButton.enabled ? "white" : "#888"
-                            font: vetConfigureButton.font
+                            text: vetProgramButton.text
+                            color: vetProgramButton.enabled ? "white" : "#888"
+                            font: vetProgramButton.font
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
@@ -597,6 +601,7 @@ Rectangle {
                         Layout.fillHeight: true
                         font.pixelSize: 22
                         font.weight: Font.Bold
+                        visible: LIFUConnector.state >= 2
                         enabled: LIFUConnector.state === 2
                                  && LIFUConnector.hvConnected
                                  && LIFUConnector.hvEnableMode !== 2
@@ -628,6 +633,7 @@ Rectangle {
                         Layout.fillHeight: true
                         font.pixelSize: 22
                         font.weight: Font.Bold
+                        visible: LIFUConnector.state >= 2
                         enabled: LIFUConnector.state === 3
                         background: Rectangle {
                             color: !vetStopButton.enabled ? "#3A2424"
@@ -648,39 +654,6 @@ Rectangle {
                             if (progressState === "running") progressState = "stopped"
                             clearStatusTelemetry()
                             LIFUConnector.stop_sonication()
-                        }
-                    }
-
-                    Button {
-                        id: vetResetButton
-                        text: "Reset"
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        font.pixelSize: 20
-                        font.weight: Font.Bold
-                        enabled: LIFUConnector.state >= 2 && LIFUConnector.state !== 3
-                        background: Rectangle {
-                            color: vetResetButton.down ? "#2F333D" : "#3A3F4B"
-                            radius: 6
-                            border.color: "#BDC3C7"
-                            border.width: 2
-                        }
-                        contentItem: Text {
-                            text: vetResetButton.text
-                            color: vetResetButton.enabled ? "white" : "#888"
-                            font: vetResetButton.font
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                        onClicked: {
-                            resetProgressIdle()
-                            // If HV is pinned ON, drop it to OFF on reset
-                            // (mirrors Demo's reset behavior).
-                            if (LIFUConnector.hvEnableMode === 1) {
-                                LIFUConnector.setHvEnableMode(2)
-                            }
-                            LIFUConnector.reset_configuration()
-                            vetPlotImage.source = "../assets/images/empty_graph.png"
                         }
                     }
                 }
@@ -742,6 +715,11 @@ Rectangle {
                 everConfigured = false
                 if (previousConnectorState >= 2) {
                     clearStatusTelemetry()
+                    // State dropped below READY (e.g. reset triggered by
+                    // navigating to Settings). Clear the progress UI so the
+                    // user must re-program before restarting.
+                    resetProgressIdle()
+                    vetPlotImage.source = "../assets/images/empty_graph.png"
                 }
             }
             previousConnectorState = state

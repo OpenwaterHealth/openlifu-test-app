@@ -57,6 +57,11 @@ Window {
                 Layout.fillHeight: true
                 color: "#1C1C1E" // Dark sidebar background
 
+                // Keep highlighted tab in sync with whichever tab is
+                // actually showing (so blocked navigations don't visually
+                // jump the highlight ahead of the page).
+                activeButtonIndex: window.activeMenu
+
                 // Explicitly pass the signal parameter to the function
                 onButtonClicked: {
                     handleSidebarClick(arguments[0]);
@@ -69,13 +74,24 @@ Window {
                 Layout.fillHeight: true
                 spacing: 20
 
-                Loader {
+                // StackLayout (instead of a single dynamic Loader) so each
+                // tab's page is instantiated once and its state survives
+                // tab switches. This makes the sonication progress UI on
+                // Demo persist when the user pops over to Transmitter or
+                // Console and returns.
+                StackLayout {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    source: (appTabs && activeMenu >= 0 && activeMenu < appTabs.length)
-                            ? appTabs[activeMenu].page
-                            : "pages/Demo.qml"
+                    currentIndex: activeMenu
 
+                    Repeater {
+                        model: (typeof appTabs !== "undefined" && appTabs) ? appTabs : []
+
+                        Loader {
+                            active: true
+                            source: modelData.page
+                        }
+                    }
                 }
             }
         }
@@ -83,8 +99,34 @@ Window {
 
     // JavaScript function to handle sidebar button clicks
     function handleSidebarClick(index) {
-        activeMenu = index; // Update the activeMenu property
-        console.log("Button clicked with index:", index);
+        if (!appTabs || index < 0 || index >= appTabs.length) return
+        var targetId = appTabs[index].id
+        var currentId = (activeMenu >= 0 && activeMenu < appTabs.length)
+                        ? appTabs[activeMenu].id : ""
+
+        // Block switching to Settings while sonication is running. The
+        // user must Stop first.
+        if (targetId === "settings" && LIFUConnector.state === 3) {
+            console.log("Cannot switch to Settings while sonication is running.")
+            return
+        }
+
+        // Switching from a sonication page (Vet/Demo) to Settings while
+        // configured (or having been stopped/finished): force a Reset so
+        // the user has to re-Program/Configure before the next run, and
+        // make sure HV is dropped.
+        if (targetId === "settings"
+            && (currentId === "vet" || currentId === "demo")
+            && LIFUConnector.state >= 2
+            && LIFUConnector.state !== 3) {
+            if (LIFUConnector.hvEnableMode === 1) {
+                LIFUConnector.setHvEnableMode(2)
+            }
+            LIFUConnector.reset_configuration()
+        }
+
+        activeMenu = index
+        console.log("Tab selected:", targetId, "(index", index + ")")
     }
 
     // Global device-error popup.  Shown whenever LIFUConnector.deviceError is

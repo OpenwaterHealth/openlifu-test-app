@@ -9,7 +9,10 @@ Rectangle {
     radius: 0
     color: "#2C3E50" // Dark sidebar background
 
-    // Current active button index
+    // Current active button index. The parent owns this value (binds it
+    // from its own active-tab state); we just emit buttonClicked and let
+    // the parent decide whether to honor the click. Don't reassign this
+    // property internally or the binding will break.
     property int activeButtonIndex: 0
 
     // Signal to handle button clicks
@@ -17,7 +20,6 @@ Rectangle {
 
     // Reusable function for button handling
     function handleButtonClick(index) {
-        activeButtonIndex = index;
         buttonClicked(index);
     }
 
