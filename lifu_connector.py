@@ -38,6 +38,9 @@ from openlifu_sdk.io.exceptions import (
     LIFUSonicationError,
 )
 
+# Shim: re-export support connector so callers can import from either module.
+from lifu_support import LIFUSupportConnector  # noqa: F401
+
 # import verification-tests
 from verification.prodreqs_base_class import *
 from verification.prodreqs_tx_long_verification_test import TransmitterHeatingPlaceholder, parse_arguments
