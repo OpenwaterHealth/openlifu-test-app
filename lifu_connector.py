@@ -198,7 +198,12 @@ class _TelemetryPollThread(QThread):
             try:
                 if conn._txConnected:
                     if conn._num_modules_connected <= 0:
-                        conn.queryNumModules()
+                        # Guard: don't poll until TX firmware has had time to
+                        # finish module enumeration (~2.5 s).  Querying too
+                        # early races the init sequence and causes a timeout.
+                        elapsed = time.monotonic() - (conn._tx_connect_time or 0.0)
+                        if elapsed >= 3.0:
+                            conn.queryNumModules()
                     # While sonicating, the firmware pushes unsolicited STATUS
                     # frames with temperature; polling the same endpoint races
                     # those frames and causes UART timeouts, so skip RUNNING.
@@ -305,6 +310,7 @@ class LIFUConnector(QObject):
         self._txconfigured_state = False  # Internal state to track trigger status
         self._num_modules_connected = 0
         self._manual_num_modules = 1  # fallback when TX not connected
+        self._tx_connect_time: float | None = None  # monotonic timestamp of last TX connect
         
         # Solution loading state
         self._solution_loaded = False
@@ -566,6 +572,7 @@ class LIFUConnector(QObject):
         """Handle device connection."""
         if descriptor == "TX":
             self._txConnected = True
+            self._tx_connect_time = time.monotonic()
         elif descriptor == "HV":
             self._hvConnected = True
         self.signalConnected.emit(descriptor, port)
@@ -577,6 +584,7 @@ class LIFUConnector(QObject):
         """Handle device disconnection."""
         if descriptor == "TX":
             self._txConnected = False
+            self._tx_connect_time = None
             # The unsolicited STATUS stream is gone with the TX port; clear
             # our tracker so a future reconnect doesn't think it's still on.
             self._async_mode_enabled = False

@@ -8,7 +8,10 @@ lifu_connector.py re-exports this class as a thin shim so that QML
 context registration in main.py stays in one place.
 """
 
+import json
 import logging
+import platform
+import sys
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, pyqtProperty
 
@@ -51,15 +54,16 @@ class LIFUSupportConnector(QObject):
 
     @pyqtSlot(result=str)
     def collectDiagnostics(self) -> str:
-        """Gather basic diagnostic info and return it as a JSON string.
+        """Gather diagnostic info and return it as a formatted JSON string.
 
-        Also emits ``diagnosticsReady`` so QML can react asynchronously.
+        Includes Python/platform versions, SDK version, and (where available)
+        connected device firmware/ID information.  Also emits
+        ``diagnosticsReady`` so QML can react asynchronously.
         """
-        import json
-        import sys
-
         info: dict = {
             "python_version": sys.version,
+            "platform": platform.platform(),
+            "machine": platform.machine(),
         }
 
         if self._interface is not None:
@@ -67,6 +71,38 @@ class LIFUSupportConnector(QObject):
                 info["sdk_version"] = self._interface.get_sdk_version()
             except Exception as exc:
                 info["sdk_version_error"] = str(exc)
+
+            # Console / HV device
+            hv_info: dict = {}
+            try:
+                hv_info["firmware_version"] = self._interface.hvcontroller.get_version()
+            except Exception as exc:
+                hv_info["firmware_version_error"] = str(exc)
+            try:
+                hv_info["hardware_id"] = self._interface.hvcontroller.get_hardware_id(raw_hex=True)
+            except Exception as exc:
+                hv_info["hardware_id_error"] = str(exc)
+            if hv_info:
+                info["console"] = hv_info
+
+            # TX modules
+            try:
+                module_count = self._interface.txdevice.get_module_count()
+                modules = []
+                for i in range(module_count):
+                    m: dict = {"module": i}
+                    try:
+                        m["firmware_version"] = self._interface.txdevice.get_version(module=i)
+                    except Exception as exc:
+                        m["firmware_version_error"] = str(exc)
+                    try:
+                        m["hardware_id"] = self._interface.txdevice.get_hardware_id(module=i, raw_hex=True)
+                    except Exception as exc:
+                        m["hardware_id_error"] = str(exc)
+                    modules.append(m)
+                info["transmitter"] = {"module_count": module_count, "modules": modules}
+            except Exception as exc:
+                info["transmitter_error"] = str(exc)
 
         result = json.dumps(info, indent=2)
         self.diagnosticsReady.emit(result)
@@ -81,3 +117,4 @@ class LIFUSupportConnector(QObject):
         logger.info("sendSupportLog called with destination=%s", destination)
         self.supportActionResult.emit(True, f"Log sent to {destination}")
         return True
+
