@@ -135,16 +135,16 @@ Rectangle {
 
     function getTXIndicatorColor() {
         if (!LIFUConnector.txConnected)   return "#C0392B"  // red: disconnected
-        if (LIFUConnector.state === 3)    return "#269cf6"  // blue: sonication running
+        if (LIFUConnector.state === 3)    return "#5db9ff"  // blue: sonication running
         if (LIFUConnector.state < 2)      return "#0f5d24"  // dark green: connected, not configured
-        return "#1f963d"                                     // green: configured / ready
+        return "#269cf6"                                     // green: configured / ready
     }
 
     function getHVIndicatorColor() {
         if (!LIFUConnector.hvConnected)   return "#C0392B"  // red: disconnected
-        if (hvOn)                          return "#269cf6"  // blue: HV rail energized
+        if (hvOn)                          return '#5db9ff'  // blue: HV rail energized
         if (LIFUConnector.state < 2)      return "#0f5d24"  // dark green: connected, rail off
-        return "#1f963d"                                     // green: connected, rail off
+        return "#269cf6"                                     // green: connected, rail off
     }
 
     function getHvRailText() {
