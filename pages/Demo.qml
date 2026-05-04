@@ -1978,6 +1978,10 @@ Rectangle {
                 // rather than leaving stale values on screen.
                 if (previousConnectorState >= 2) {
                     clearStatusTelemetry();
+                    // Also clear the progress UI so a navigation-triggered
+                    // reset (e.g. switching to Settings) doesn't leave a
+                    // stale "stopped" / "finished" banner behind.
+                    resetProgressIdle()
                 }
             }
             if (crossedConfiguredBoundary) {
