@@ -63,7 +63,7 @@ def parse_arguments():
 # Tab id -> visible label, icon glyph, and QML page path. Consumed by
 # SidebarMenu.qml via the appTabs context property.
 TAB_DEFINITIONS = {
-    "vet":          {"label": "Device Control (Veterinary)",  "icon": "\ueb2e", "page": "pages/Vet.qml"},
+    "vet":          {"label": "Run\n(Veterinary)",  "icon": "\ueb2e", "page": "pages/Vet.qml"},
     "demo":         {"label": "Demo",        "icon": "\ueb34", "page": "pages/Demo.qml"},
     "transmitter":  {"label": "Transmitter", "icon": "\ueab9", "page": "pages/Transmitter.qml"},
     "console":      {"label": "Console",     "icon": "\ueaae", "page": "pages/Console.qml"},
