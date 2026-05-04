@@ -249,18 +249,18 @@ Rectangle {
             // ── Row 1: System Info ────────────────────────────────────
             RowLayout {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
                 spacing: 16
 
                 // ── System Info Card ───────────────────────────────
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    implicitHeight: sysInfoCol.implicitHeight + 32
                     color: "#1E1E20"; radius: 10
                     border.color: "#3E4E6F"; border.width: 2
                     clip: true
 
                     ColumnLayout {
+                        id: sysInfoCol
                         anchors { top: parent.top; left: parent.left; right: parent.right; margins: 16 }
                         spacing: 10
 
@@ -273,30 +273,49 @@ Rectangle {
 
                         Rectangle { Layout.fillWidth: true; height: 1; color: "#3E4E6F" }
 
-                        Text { text: "Software"; font.pixelSize: 13; font.weight: Font.Bold; color: "#BDC3C7" }
-                        InfoRow { label: "App Version"; value: appVersion;                      valueColor: "#4A90E2" }
-                        InfoRow { label: "SDK Version"; value: LIFUConnector.sdkVersion;        valueColor: "#4A90E2" }
-                        InfoRow { label: "App State";   value: supportPage.stateLabel(LIFUConnector.state); valueColor: "#BDC3C7" }
+                        // ── Software (left) | Devices (right) ──────────
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 24
 
-                        Rectangle { Layout.fillWidth: true; height: 1; color: "#3E4E6F" }
+                            // Left: Software
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
 
-                        Text { text: "Devices"; font.pixelSize: 13; font.weight: Font.Bold; color: "#BDC3C7" }
-                        InfoRow {
-                            label: "Console"
-                            value: LIFUConnector.hvConnected ? "Connected" : "Not Connected"
-                            valueColor: LIFUConnector.hvConnected ? "#2ECC71" : "#E74C3C"
-                        }
-                        InfoRow {
-                            label: "Transmitter"
-                            value: LIFUConnector.txConnected
-                                   ? supportPage.txModules.length + " module" + (supportPage.txModules.length !== 1 ? "s" : "")
-                                   : "Not Connected"
-                            valueColor: LIFUConnector.txConnected ? "#2ECC71" : "#E74C3C"
-                        }
-                        InfoRow {
-                            label: "HV Enable Mode"
-                            value: ["AUTO", "ON", "OFF"][LIFUConnector.hvEnableMode] ?? "—"
-                            valueColor: "#BDC3C7"
+                                Text { text: "Software"; font.pixelSize: 13; font.weight: Font.Bold; color: "#BDC3C7" }
+                                InfoRow { label: "App Version"; value: appVersion;                      valueColor: "#4A90E2" }
+                                InfoRow { label: "SDK Version"; value: LIFUConnector.sdkVersion;        valueColor: "#4A90E2" }
+                                InfoRow { label: "App State";   value: supportPage.stateLabel(LIFUConnector.state); valueColor: "#BDC3C7" }
+                            }
+
+                            // Vertical divider
+                            Rectangle { width: 1; Layout.fillHeight: true; color: "#3E4E6F" }
+
+                            // Right: Devices
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+
+                                Text { text: "Devices"; font.pixelSize: 13; font.weight: Font.Bold; color: "#BDC3C7" }
+                                InfoRow {
+                                    label: "Console"
+                                    value: LIFUConnector.hvConnected ? "Connected" : "Not Connected"
+                                    valueColor: LIFUConnector.hvConnected ? "#2ECC71" : "#E74C3C"
+                                }
+                                InfoRow {
+                                    label: "Transmitter"
+                                    value: LIFUConnector.txConnected
+                                           ? supportPage.txModules.length + " module" + (supportPage.txModules.length !== 1 ? "s" : "")
+                                           : "Not Connected"
+                                    valueColor: LIFUConnector.txConnected ? "#2ECC71" : "#E74C3C"
+                                }
+                                InfoRow {
+                                    label: "HV Enable Mode"
+                                    value: ["AUTO", "ON", "OFF"][LIFUConnector.hvEnableMode] ?? "—"
+                                    valueColor: "#BDC3C7"
+                                }
+                            }
                         }
 
                         Item { height: 8 }
