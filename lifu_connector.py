@@ -1564,11 +1564,14 @@ class LIFUConnector(QObject):
                 is_running = self.interface.is_running()
                 logger.debug(f"Running state during temperature update: {is_running}")
                 if not is_running and self.interface.status == LIFUInterfaceStatus.STATUS_RUNNING:
-                    # The sequence has completed on the hardware but we haven't updated our state yet. Update now to reflect the new state and ensure HV is turned off if in AUTO mode.
-                    turn_hv_off = (self._hv_enable_mode == HV_EN_AUTO)
+                    # The sequence has completed on the hardware but we
+                    # haven't updated our state yet. Mirror stop_sonication's
+                    # HV policy: AUTO holds the rail on while still configured;
+                    # only WHILE_RUNNING drops it at sonication end.
+                    turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
                     self.interface.stop_sonication(turn_hv_off=turn_hv_off)
                     self._state = READY
-                    self.stateChanged.emit(self._state)                
+                    self.stateChanged.emit(self._state)
             except LIFUError as e:
                 logger.warning(f"Failed to query running state during temperature update: {e}")                            
         except Exception as e:
