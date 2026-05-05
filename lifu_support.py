@@ -649,10 +649,16 @@ class LIFUSupportConnector(QObject):
     testProgressUpdated = pyqtSignal(int, int)   # steps_done, total_steps
     pdfSaved            = pyqtSignal(bool, str)  # success, path-or-error
 
+    # Internal signal used to marshal PDF rendering back to the GUI thread.
+    # Qt delivers this via a QueuedConnection so _do_render_pdf always runs
+    # in the main (GUI) thread even when emitted from a worker thread.
+    _renderPdf = pyqtSignal(str, str)  # html, file_path
+
     def __init__(self, interface=None, parent=None):
         super().__init__(parent)
         self._interface = interface
         self._diag_thread: _DiagnosticThread | None = None
+        self._renderPdf.connect(self._do_render_pdf)
 
     # ------------------------------------------------------------------ #
     # Properties                                                           #
@@ -772,17 +778,19 @@ class LIFUSupportConnector(QObject):
 
         Uses only stdlib + PyQt6 (QPrinter / QTextDocument) so no extra
         dependency is needed.
+
+        HTML generation is done in a background thread to keep the UI
+        responsive.  The actual QPrinter / QTextDocument work is marshalled
+        back to the GUI thread via ``_renderPdf`` (a queued signal) so that
+        Qt print classes are always used from the main thread.
         """
-        # Run on a background thread so the UI stays responsive during render.
-        t = threading.Thread(target=self._render_pdf,
+        t = threading.Thread(target=self._build_and_queue_pdf,
                              args=(results_json, file_path), daemon=True)
         t.start()
 
-    def _render_pdf(self, results_json: str, file_path: str):
+    def _build_and_queue_pdf(self, results_json: str, file_path: str):
+        """Build report HTML in the worker thread, then hand off to GUI thread."""
         try:
-            from PyQt6.QtGui import QPageSize, QTextDocument
-            from PyQt6.QtPrintSupport import QPrinter
-
             try:
                 data = json.loads(results_json)
             except Exception:
@@ -793,6 +801,20 @@ class LIFUSupportConnector(QObject):
             system_info = data.get("system_info", {})
 
             html = self._build_report_html(ts, results, system_info)
+        except Exception as exc:
+            logger.error("PDF report generation failed: %s", exc)
+            self.pdfSaved.emit(False, str(exc))
+            return
+
+        # Emit via queued connection so _do_render_pdf runs on the GUI thread.
+        self._renderPdf.emit(html, file_path)
+
+    @pyqtSlot(str, str)
+    def _do_render_pdf(self, html: str, file_path: str):
+        """Render HTML to PDF using Qt classes.  Must run on the GUI thread."""
+        try:
+            from PyQt6.QtGui import QPageSize, QTextDocument
+            from PyQt6.QtPrintSupport import QPrinter
 
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
@@ -805,7 +827,7 @@ class LIFUSupportConnector(QObject):
 
             self.pdfSaved.emit(True, file_path)
         except Exception as exc:
-            logger.error("PDF save failed: %s", exc)
+            logger.error("PDF render failed: %s", exc)
             self.pdfSaved.emit(False, str(exc))
 
     @staticmethod
