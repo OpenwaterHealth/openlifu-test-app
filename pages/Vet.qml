@@ -244,7 +244,7 @@ Rectangle {
         if (progressState === "idle") return ""
         if (progressState === "finished") {
             var totalPulses = progressTotal * selectedPulseCount()
-            return "Finished " + totalPulses + " pulses in "
+            return "Finished successfully after " + totalPulses + " pulses in "
                  + formatDurationSeconds(selectedDurationSeconds())
         }
         if (progressState === "stopped") {
@@ -252,7 +252,7 @@ Rectangle {
             var stoppedFrac = progressTotal > 0
                 ? Math.max(0, Math.min(1, progressCurrent / progressTotal)) : 0
             var stoppedSec = selectedDurationSeconds() * stoppedFrac
-            return "Stopped after " + stoppedPulses + " pulses in "
+            return "Aborted early after " + stoppedPulses + " pulses in "
                  + formatDurationSeconds(stoppedSec)
         }
         if (progressTotal <= 0) return "RUNNING"
