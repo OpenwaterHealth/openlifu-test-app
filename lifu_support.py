@@ -724,12 +724,21 @@ class LIFUSupportConnector(QObject):
 
     @pyqtSlot()
     def runAllTests(self):
-        """Run all available diagnostic test groups."""
-        self._start_tests(["console", "tx", "voltages"])
+        """Run all implemented diagnostic test groups."""
+        self._start_tests(["console", "tx"])
 
     @pyqtSlot(str)
     def runTestGroup(self, group: str):
-        """Run a single diagnostic group: 'console', 'tx', or 'voltages'."""
+        """Run a single diagnostic group: 'console' or 'tx'."""
+        supported_groups = {"console", "tx"}
+        if group not in supported_groups:
+            logger.warning("Unsupported diagnostic group requested: %s", group)
+            self.testRunFinished.emit(json.dumps({
+                "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+                "error": f"Unsupported diagnostic group: {group}",
+                "results": {},
+            }))
+            return
         self._start_tests([group])
 
     def _start_tests(self, groups: list[str]):
