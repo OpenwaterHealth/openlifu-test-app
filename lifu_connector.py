@@ -181,6 +181,12 @@ HV_EN_MODES = {
     HV_EN_WHILE_RUNNING: "WHILE_RUNNING",
 }
 
+# Thermal-management thresholds for the TX. Values in degrees C, applied
+# to the *hottest* module's reported temperature. Centralizing here keeps
+# the QML layer free of safety policy.
+THERMAL_COOLING_THRESHOLD_C = 50.0
+THERMAL_SHUTDOWN_THRESHOLD_C = 75.0
+
 #
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
@@ -299,6 +305,20 @@ class LIFUConnector(QObject):
     # prefix for LIFUError subclasses.
     deviceError = pyqtSignal(str, str)  # (title, message)
 
+    # Thermal-management signals.
+    # ``coolingStateChanged`` flips when the TX crosses the cool threshold
+    # in either direction. ``thermalShutdownEvent`` is emitted exactly
+    # once per shutdown trigger so QML can pop a notification.
+    coolingStateChanged = pyqtSignal(bool)
+    thermalShutdownEvent = pyqtSignal(float, float, float)  # (observedTempC, shutdownThresholdC, coolingThresholdC)
+
+    # Run-progress signals (drive the Vet-mode progress bar). The state
+    # is one of: "idle", "running", "paused", "finished", "aborted".
+    runStateChanged = pyqtSignal(str)
+    # Generic notify that any of the run-progress derived properties may
+    # have changed (delivered trains, block count, elapsed, etc.).
+    runProgressChanged = pyqtSignal()
+
     def __init__(self, hv_test_mode=False):
         super().__init__()
         self.interface = LIFUInterface(HV_test_mode=hv_test_mode,
@@ -337,6 +357,46 @@ class LIFUConnector(QObject):
         # UART timeouts during configuration.
         self._async_mode_enabled = False
 
+        # ------- Thermal management (TX) -------
+        # Page-level UI used to own this state machine; centralizing here
+        # keeps the QML layer thin and means we don't re-evaluate
+        # heuristics on every QML binding tick. ``_cooling_down`` is True
+        # whenever the hottest known TX module is above
+        # ``THERMAL_COOLING_THRESHOLD_C``. Crossing
+        # ``THERMAL_SHUTDOWN_THRESHOLD_C`` triggers a one-shot hard abort
+        # (re-armed when the device cools back below the cool threshold).
+        self._cooling_down = False
+        self._thermal_shutdown_active = False
+        # Latest per-module TX temperatures (mirrors what we emit so the
+        # thermal evaluator and QML can both consult a single source).
+        # Index is the module number; missing modules are NaN.
+        self._tx_temperatures = []
+        # HV enable mode at the moment we forced HV off for cooldown.
+        # -1 means "nothing to restore". Restored on cooldown exit.
+        self._pre_cooldown_hv_mode = -1
+
+        # ------- Run-progress / pause-resume state -------
+        # ``_run_state`` is a UI-friendly state machine that wraps the
+        # device's RUNNING/READY transitions with awareness of pause/
+        # resume "blocks". On a fresh Start we snapshot the original
+        # sequence params here so that pause-shortened reconfigures (via
+        # set_trigger only) don't lose the user's overall total. On Abort
+        # / natural completion we restore the original train count.
+        self._run_state = "idle"
+        self._run_original_train_total = 0
+        self._run_original_duration_s = 0.0
+        self._run_original_pulse_count = 0
+        self._run_trains_delivered_before_block = 0
+        self._run_in_block_total = 0   # current block's trainCount on the device
+        self._run_in_block_current = 0  # latest pt_curr reported for current block
+        self._run_block_count = 0
+        self._run_start_time_ms = 0.0
+        self._run_elapsed_ms = 0.0
+        # Snapshot of the most recent configure_transmitter args so we
+        # can rebuild trigger settings via set_trigger (cheap) instead of
+        # set_solution (slow) for pause/resume/abort transitions.
+        self._last_configure_args = None
+
         self._interface_mutex = QRecursiveMutex()
 
         self._ensure_preset_solutions_seeded()
@@ -359,6 +419,14 @@ class LIFUConnector(QObject):
         self._bridge.sig_disconnected.connect(self.on_disconnected)
         self._bridge.sig_data.connect(self.on_data_received)
         self._bridge.sig_error.connect(self.on_error)
+
+        # Internal handlers: drive thermal + run-progress state machines
+        # off the same signals we expose to QML so the policy lives in
+        # one place and QML doesn't have to re-derive it on every binding
+        # tick.
+        self.temperatureTxUpdated.connect(self._on_tx_temperature_for_thermal)
+        self.sonicationProgressUpdated.connect(self._on_progress_for_run_state)
+        self.stateChanged.connect(self._on_state_changed_for_run_state)
 
         # Background telemetry polling thread (temperature + HV voltages).
         # QThread is used (not threading.Thread) so Qt's queued-connection
@@ -1215,6 +1283,23 @@ class LIFUConnector(QObject):
         try:
             self.interface.set_solution(solution, trigger_mode=mode)
             self._configured = True
+            # Snapshot the args used so pause/resume can rebuild the
+            # trigger via set_trigger only (cheap) instead of redoing the
+            # full set_solution write. Stored as a dict of strings to
+            # match the QML-facing slot signature.
+            self._last_configure_args = {
+                "x": str(xInput), "y": str(yInput), "z": str(zInput),
+                "freq": str(freq), "voltage": str(voltage),
+                "pulseInterval": str(pulseInterval),
+                "pulseCount": str(pulseCount),
+                "trainInterval": str(trainInterval),
+                "trainCount": str(trainCount),
+                "durationUs": str(durationS),
+                "mode": str(mode),
+            }
+            # Reset run-progress bookkeeping -- a fresh Configure
+            # invalidates any in-progress run state.
+            self._reset_run_state()
             self.update_state()
             self._apply_auto_hv_for_state()
             logger.info("Transmitter configured")
@@ -1252,6 +1337,9 @@ class LIFUConnector(QObject):
             self._solution_name = ""
             self.solutionStateChanged.emit()
             logger.info(f"Released loaded solution '{released}' on reset")
+        # Drop any cached configure args + run-progress state.
+        self._last_configure_args = None
+        self._reset_run_state()
         self.update_state()
         self._apply_auto_hv_for_state()
         logger.info("Configuration reset")
@@ -1334,6 +1422,469 @@ class LIFUConnector(QObject):
         finally:
             self._interface_mutex.unlock()
 
+    # =====================================================================
+    # Thermal management (TX)
+    # =====================================================================
+
+    def _max_tx_temperature(self):
+        """Return the hottest known TX module temperature, or NaN if none."""
+        max_t = float('nan')
+        for t in self._tx_temperatures:
+            if isinstance(t, (int, float)) and not (t != t):  # not NaN
+                if max_t != max_t or t > max_t:  # NaN-safe
+                    max_t = float(t)
+        return max_t
+
+    def _on_tx_temperature_for_thermal(self, module, tx_temp, amb_temp):
+        """Latch latest temperature and run the cooldown/shutdown state
+        machine. Called for every emission of ``temperatureTxUpdated``
+        (both polled queries and STATUS-frame parses)."""
+        # Latch latest per-module reading.
+        if isinstance(tx_temp, (int, float)) and not (tx_temp != tx_temp):
+            while len(self._tx_temperatures) <= module:
+                self._tx_temperatures.append(float('nan'))
+            self._tx_temperatures[module] = float(tx_temp)
+        self._evaluate_thermal_state()
+
+    def _evaluate_thermal_state(self):
+        """Cooldown/shutdown state machine. Mirrors what Vet.qml used to
+        do, but applied centrally so policy lives next to the device
+        controls rather than in the page."""
+        t = self._max_tx_temperature()
+        if t != t:  # NaN -- no telemetry yet, don't latch cooling
+            if self._cooling_down:
+                self._cooling_down = False
+                self.coolingStateChanged.emit(False)
+            return
+
+        # While running, only the >=75C hard-shutdown path may act.
+        # Crossing 50C mid-run must NOT flip into cooldown (which would
+        # try to toggle HV enable mode -- something setHvEnableMode
+        # rejects with a "cannot change while running" warning).
+        if self._state == RUNNING:
+            if t >= THERMAL_SHUTDOWN_THRESHOLD_C:
+                self._trigger_thermal_shutdown(t)
+            return
+
+        was_cooling = self._cooling_down
+        now_cooling = (t > THERMAL_COOLING_THRESHOLD_C)
+
+        if t >= THERMAL_SHUTDOWN_THRESHOLD_C:
+            self._trigger_thermal_shutdown(t)
+            now_cooling = True
+
+        if now_cooling and not was_cooling:
+            # Entering cooldown: force HV off, stash previous mode so
+            # we can restore it once the device cools.
+            if self._hv_enable_mode != HV_EN_OFF and self._pre_cooldown_hv_mode < 0:
+                self._pre_cooldown_hv_mode = self._hv_enable_mode
+            if self._hv_enable_mode != HV_EN_OFF:
+                self.setHvEnableMode(HV_EN_OFF)
+
+        if (not now_cooling) and was_cooling:
+            # Just dropped below cool threshold. Re-arm the shutdown
+            # one-shot and restore the previous HV mode so Start is
+            # available again immediately.
+            self._thermal_shutdown_active = False
+            if self._pre_cooldown_hv_mode >= 0 and self._pre_cooldown_hv_mode != HV_EN_OFF:
+                self.setHvEnableMode(self._pre_cooldown_hv_mode)
+            self._pre_cooldown_hv_mode = -1
+
+        if now_cooling != was_cooling:
+            self._cooling_down = now_cooling
+            self.coolingStateChanged.emit(now_cooling)
+
+    def _trigger_thermal_shutdown(self, observed_temp):
+        """One-shot hard abort on >=shutdown threshold. Idempotent until
+        the device cools back below the cool threshold."""
+        if self._thermal_shutdown_active:
+            return
+        self._thermal_shutdown_active = True
+        # If we were running or paused, mark the run aborted (and stop
+        # the trigger if it's still going). Skip the paused intermediate
+        # state -- thermal shutdown is a hard abort.
+        if self._run_state in ("running", "paused"):
+            self._abort_run_internal(emit_state=True)
+        if self._state == RUNNING:
+            try:
+                # Mirror stop_sonication's HV policy.
+                turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
+                self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+            except Exception as e:
+                logger.warning(f"Thermal shutdown stop_sonication failed: {e}")
+            self._async_mode_enabled = False
+            self._state = READY
+            self.stateChanged.emit(self._state)
+        # Force HV off regardless of current enable mode. Stash previous
+        # mode (if not already stashed) so cooldown-exit can restore it.
+        if self._hv_enable_mode != HV_EN_OFF and self._pre_cooldown_hv_mode < 0:
+            self._pre_cooldown_hv_mode = self._hv_enable_mode
+        if self._hv_enable_mode != HV_EN_OFF:
+            self.setHvEnableMode(HV_EN_OFF)
+        logger.warning(f"Thermal shutdown: TX {observed_temp:.1f} C >= "
+                       f"{THERMAL_SHUTDOWN_THRESHOLD_C:.1f} C")
+        self.thermalShutdownEvent.emit(float(observed_temp),
+                                       float(THERMAL_SHUTDOWN_THRESHOLD_C),
+                                       float(THERMAL_COOLING_THRESHOLD_C))
+
+    # =====================================================================
+    # Run-progress / pause-resume state machine
+    # =====================================================================
+
+    def _set_run_state(self, new_state):
+        if new_state == self._run_state:
+            return
+        self._run_state = new_state
+        self.runStateChanged.emit(new_state)
+        self.runProgressChanged.emit()
+
+    def _reset_run_state(self):
+        """Clear all run-progress bookkeeping back to idle."""
+        self._run_original_train_total = 0
+        self._run_original_duration_s = 0.0
+        self._run_original_pulse_count = 0
+        self._run_trains_delivered_before_block = 0
+        self._run_in_block_total = 0
+        self._run_in_block_current = 0
+        self._run_block_count = 0
+        self._run_start_time_ms = 0.0
+        self._run_elapsed_ms = 0.0
+        self._set_run_state("idle")
+
+    def _snapshot_original_sequence(self):
+        """Capture original sequence parameters from the last
+        configure_transmitter args. Called on a fresh Start so pause/
+        resume can shorten the device-side trainCount while the UI
+        keeps reporting against the original total."""
+        a = self._last_configure_args
+        if not a:
+            return
+        try:
+            train_count = int(float(a.get("trainCount", 0)))
+        except (ValueError, TypeError):
+            train_count = 0
+        try:
+            pulse_count = int(float(a.get("pulseCount", 0)))
+        except (ValueError, TypeError):
+            pulse_count = 0
+        # Derive original duration from train_count * train_period (as the
+        # firmware sees it).
+        try:
+            pulse_interval_s = float(a.get("pulseInterval", 0)) * 1e-3
+            train_interval_s = float(a.get("trainInterval", 0))
+        except (ValueError, TypeError):
+            pulse_interval_s = 0.0
+            train_interval_s = 0.0
+        if train_interval_s <= 0:
+            train_interval_s = max(0.0, pulse_count * pulse_interval_s)
+        self._run_original_train_total = max(0, train_count)
+        self._run_original_pulse_count = max(0, pulse_count)
+        self._run_original_duration_s = max(0.0, train_count * train_interval_s)
+
+    def _apply_train_count(self, train_count):
+        """Push a new pulse_train_count to the device via set_trigger
+        only (cheap), reusing the rest of the sequence parameters from
+        the last configure_transmitter snapshot. Returns True on
+        success."""
+        a = self._last_configure_args
+        if not a:
+            return False
+        try:
+            pulse_interval_s = float(a.get("pulseInterval", 0)) * 1e-3
+            pulse_count = int(float(a.get("pulseCount", 0)))
+            train_interval_s = float(a.get("trainInterval", 0))
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Cannot apply train count -- bad cached args: {e}")
+            return False
+        if train_interval_s == 0:
+            train_interval_s = pulse_count * pulse_interval_s
+        trigger_mode = str(a.get("mode", "Sequence")).lower()
+        prev_async = self._async_mode_enabled
+        self._interface_mutex.lock()
+        self._set_async_mode(False, reason="apply_train_count")
+        try:
+            result = self.interface.txdevice.set_trigger(
+                pulse_interval=pulse_interval_s,
+                pulse_count=pulse_count,
+                pulse_train_interval=train_interval_s,
+                pulse_train_count=int(train_count),
+                trigger_mode=trigger_mode,
+            )
+            self._update_trigger_state(result)
+            return True
+        except LIFUError as e:
+            self._handle_lifu_error("Update Trigger", e)
+            return False
+        except Exception as e:
+            self._handle_lifu_error("Update Trigger", e, context="Unexpected error")
+            return False
+        finally:
+            if prev_async and self._state == RUNNING:
+                self._set_async_mode(True, reason="apply_train_count-restore")
+            self._interface_mutex.unlock()
+
+    def _on_progress_for_run_state(self, pt_curr, pt_total, p_curr, p_total):
+        """Drive ``_run_state`` from STATUS-frame progress."""
+        if self._run_state != "running":
+            return
+        if pt_total > 0 and pt_curr >= pt_total:
+            # Current block finished. Roll into running total.
+            delivered = self._run_in_block_total if self._run_in_block_total > 0 else pt_curr
+            self._run_trains_delivered_before_block += delivered
+            self._run_in_block_current = 0
+            self._run_in_block_total = 0
+            if self._run_trains_delivered_before_block >= self._run_original_train_total:
+                # Natural completion of the full sequence.
+                self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+                self._set_run_state("finished")
+                # Restore original train count for the next run; safe to
+                # do now since the device is finishing on its own.
+                self._restore_original_trigger_async()
+            else:
+                # Block ended mid-sequence (shouldn't normally happen
+                # outside a pause). Just refresh the UI.
+                self.runProgressChanged.emit()
+            return
+        # Mid-block tick.
+        self._run_in_block_current = pt_curr + 1
+        if (self._run_in_block_total > 0
+                and self._run_in_block_current > self._run_in_block_total):
+            self._run_in_block_current = self._run_in_block_total
+        self.runProgressChanged.emit()
+
+    def _on_state_changed_for_run_state(self, state):
+        """When the device naturally finishes, the SDK transitions
+        RUNNING -> READY (via stop_sonication in queryTxTemperature).
+        We've already finalized in ``_on_progress_for_run_state``; this
+        handler just makes sure terminal states clean up if the progress
+        signal didn't catch the boundary (e.g. firmware quirks).
+
+        IMPORTANT: ``stateChanged`` is emitted synchronously from
+        ``stop_sonication`` (and our own pause/abort paths). Pause/abort
+        therefore flip ``_run_state`` to a non-"running" sentinel BEFORE
+        invoking stop_sonication so this handler sees the new state and
+        won't mis-mark the run as finished. Only the natural-completion
+        path (firmware ran out of trains by itself, the SDK silently
+        flips to READY in queryTxTemperature) reaches the body of this
+        handler with ``_run_state == "running"``.
+        """
+        if state != RUNNING and self._run_state == "running":
+            # Natural completion: only mark finished if the firmware
+            # actually advanced the in-block counter to its full block
+            # total. This avoids spurious "finished" transitions when
+            # the device drops to READY for some other reason and the
+            # block delivered count happens to coincide with the
+            # original total.
+            inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
+            block_complete = (self._run_in_block_total > 0
+                              and inblock >= self._run_in_block_total)
+            total_delivered = self._run_trains_delivered_before_block + inblock
+            if (block_complete
+                    and total_delivered >= self._run_original_train_total > 0):
+                self._run_trains_delivered_before_block = self._run_original_train_total
+                self._run_in_block_current = 0
+                self._run_in_block_total = 0
+                self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+                self._set_run_state("finished")
+                self._restore_original_trigger_async()
+
+    def _restore_original_trigger_async(self):
+        """Reapply the originally-programmed trainCount via set_trigger.
+        Safe to call any time the device is not actively running."""
+        if self._state == RUNNING:
+            return
+        if not self._last_configure_args:
+            return
+        try:
+            orig_count = int(float(self._last_configure_args.get("trainCount", 0)))
+        except (ValueError, TypeError):
+            return
+        if orig_count <= 0:
+            return
+        self._apply_train_count(orig_count)
+
+    def _abort_run_internal(self, emit_state=True):
+        """Finalize the run as aborted using whatever has been delivered
+        so far. Caller is responsible for stopping the trigger and any
+        HV cleanup; this just updates the run-progress bookkeeping."""
+        if self._run_state == "running":
+            inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
+            self._run_trains_delivered_before_block += inblock
+        self._run_in_block_current = 0
+        self._run_in_block_total = 0
+        if self._run_start_time_ms > 0 and self._run_elapsed_ms <= 0:
+            self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+        if emit_state:
+            self._set_run_state("aborted")
+        else:
+            self._run_state = "aborted"
+        # Restoring the original trigger after an abort happens via the
+        # caller (after stop_sonication has settled) since set_trigger
+        # cannot run while RUNNING.
+
+    @pyqtSlot()
+    def pause_sonication(self):
+        """Pause an active sonication. Stops the trigger and
+        immediately reprograms the device with a shorter trainCount
+        covering only the *remaining* portion of the original sequence,
+        so that ``resume_sonication()`` can simply call
+        ``start_sonication()`` (no further set_trigger / set_solution
+        needed)."""
+        if self._state != RUNNING or self._run_state != "running":
+            logger.warning("pause_sonication called while not running")
+            return
+        # 1. Snapshot delivered count from the current block. Be
+        #    defensive about the in-block counter potentially over-
+        #    running its block total (it is set to ``pt_curr+1`` on each
+        #    STATUS frame, which can briefly exceed the block total
+        #    around the natural-completion boundary).
+        inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
+        if self._run_in_block_total > 0 and inblock > self._run_in_block_total:
+            inblock = self._run_in_block_total
+        delivered_so_far = min(self._run_trains_delivered_before_block + inblock,
+                               self._run_original_train_total)
+        remaining = max(0, self._run_original_train_total - delivered_so_far)
+
+        # 2. Flip our run-state to "paused" *before* invoking
+        #    stop_sonication. stop_sonication emits stateChanged
+        #    synchronously, which would otherwise re-enter
+        #    ``_on_state_changed_for_run_state`` while ``_run_state`` is
+        #    still "running" and double-count ``_run_in_block_current``
+        #    against ``_run_trains_delivered_before_block`` -- causing
+        #    the bar to jump to 100% and the run to be marked finished.
+        #    Same hazard exists for any late STATUS-frame progress
+        #    emission still in flight.
+        self._run_trains_delivered_before_block = delivered_so_far
+        self._run_in_block_current = 0
+        self._run_in_block_total = remaining
+        self._run_state = "paused"  # raw assignment; signal at end
+
+        # 3. Stop the trigger.
+        self._interface_mutex.lock()
+        try:
+            turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
+            self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+            self._async_mode_enabled = False
+            self._state = READY
+            self.stateChanged.emit(self._state)
+        except LIFUError as e:
+            self._handle_lifu_error("Pause Sonication", e)
+        except Exception as e:
+            self._handle_lifu_error("Pause Sonication", e, context="Unexpected error")
+        finally:
+            self._interface_mutex.unlock()
+
+        # 4. If anything remains, push the shortened trainCount so
+        #    Resume only has to call start_sonication. If the user hit
+        #    Pause exactly at sequence completion (remaining == 0)
+        #    promote to "finished" instead of leaving a degenerate
+        #    paused state with nothing to resume.
+        if remaining > 0:
+            self._apply_train_count(remaining)
+            self.runStateChanged.emit("paused")
+            self.runProgressChanged.emit()
+            logger.info(f"Sonication paused at "
+                        f"{delivered_so_far}/{self._run_original_train_total} trains, "
+                        f"{remaining} remaining")
+        else:
+            self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+            self._run_state = "finished"
+            self.runStateChanged.emit("finished")
+            self.runProgressChanged.emit()
+            self._restore_original_trigger_async()
+            logger.info("Pause arrived at sequence completion; marking finished")
+
+    @pyqtSlot()
+    def resume_sonication(self):
+        """Resume a previously-paused sonication. Assumes
+        ``pause_sonication`` already pushed the shortened trigger
+        settings, so this is just a start_sonication."""
+        if self._run_state != "paused":
+            logger.warning("resume_sonication called while not paused")
+            return
+        if self._run_in_block_total <= 0:
+            # Defensive: paused with nothing left to do. Promote to
+            # finished and restore the original trigger for the next run.
+            if self._run_elapsed_ms <= 0 and self._run_start_time_ms > 0:
+                self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+            self._set_run_state("finished")
+            self._restore_original_trigger_async()
+            return
+        self._run_block_count += 1
+        self._run_in_block_current = 0
+        self._set_run_state("running")
+        self.start_sonication()
+
+    @pyqtSlot()
+    def abort_sonication(self):
+        """Hard-stop a running or paused sonication. If running, stops
+        the trigger first. Restores the originally-programmed trainCount
+        (via set_trigger) so the next Start replays the user's full
+        selection."""
+        if self._run_state not in ("running", "paused"):
+            return
+        # Snapshot delivered count and flip run-state to "aborted"
+        # BEFORE stop_sonication. Same race rationale as pause: the
+        # synchronous stateChanged emission must not see _run_state ==
+        # "running" or it can mis-mark as finished.
+        if self._run_state == "running":
+            inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
+            if self._run_in_block_total > 0 and inblock > self._run_in_block_total:
+                inblock = self._run_in_block_total
+            self._run_trains_delivered_before_block = min(
+                self._run_trains_delivered_before_block + inblock,
+                self._run_original_train_total
+            )
+        self._run_in_block_current = 0
+        self._run_in_block_total = 0
+        if self._run_start_time_ms > 0 and self._run_elapsed_ms <= 0:
+            self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+        self._run_state = "aborted"  # raw assignment; signal after stop
+
+        if self._state == RUNNING:
+            self._interface_mutex.lock()
+            try:
+                turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
+                self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+                self._async_mode_enabled = False
+                self._state = READY
+                self.stateChanged.emit(self._state)
+            except LIFUError as e:
+                self._handle_lifu_error("Abort Sonication", e)
+            except Exception as e:
+                self._handle_lifu_error("Abort Sonication", e, context="Unexpected error")
+            finally:
+                self._interface_mutex.unlock()
+        self.runStateChanged.emit("aborted")
+        self.runProgressChanged.emit()
+        self._restore_original_trigger_async()
+
+    @pyqtSlot()
+    def begin_run_progress(self):
+        """Start the run-progress state machine on a fresh Start. Should
+        be called by the UI immediately before ``start_sonication()`` so
+        the run-state transitions to ``"running"`` synchronously."""
+        if self._run_state in ("running", "paused"):
+            return
+        self._snapshot_original_sequence()
+        self._run_trains_delivered_before_block = 0
+        self._run_in_block_total = self._run_original_train_total
+        self._run_in_block_current = 0
+        self._run_block_count = 1
+        self._run_start_time_ms = time.monotonic() * 1000.0
+        self._run_elapsed_ms = 0.0
+        self._set_run_state("running")
+
+    @pyqtSlot()
+    def clear_run_progress(self):
+        """Reset the run-progress state machine back to idle. Used by
+        the UI when the user mutates parameters that invalidate the
+        previous run's status (e.g. switching presets or changing the
+        total duration via directSetSequence)."""
+        if self._run_state in ("running", "paused"):
+            return
+        self._reset_run_state()
+
     @pyqtProperty(bool, notify=connectionStatusChanged)
     def txConnected(self):
         """Expose TX connection status to QML."""
@@ -1378,6 +1929,71 @@ class LIFUConnector(QObject):
     def hvEnableMode(self):
         """Expose HV enable mode to QML."""
         return self._hv_enable_mode
+
+    # ---- Thermal / cooldown properties (read-only to QML) ----
+    @pyqtProperty(bool, notify=coolingStateChanged)
+    def coolingDown(self):
+        """True while the hottest TX module is above the cool threshold."""
+        return self._cooling_down
+
+    @pyqtProperty(float, constant=True)
+    def coolingThresholdC(self):
+        return float(THERMAL_COOLING_THRESHOLD_C)
+
+    @pyqtProperty(float, constant=True)
+    def shutdownThresholdC(self):
+        return float(THERMAL_SHUTDOWN_THRESHOLD_C)
+
+    # ---- Run-progress properties (read-only to QML) ----
+    @pyqtProperty(str, notify=runStateChanged)
+    def runState(self):
+        """One of "idle", "running", "paused", "finished", "aborted"."""
+        return self._run_state
+
+    @pyqtProperty(int, notify=runProgressChanged)
+    def runOriginalTrainTotal(self):
+        return int(self._run_original_train_total)
+
+    @pyqtProperty(float, notify=runProgressChanged)
+    def runOriginalDurationS(self):
+        return float(self._run_original_duration_s)
+
+    @pyqtProperty(int, notify=runProgressChanged)
+    def runOriginalPulseCount(self):
+        return int(self._run_original_pulse_count)
+
+    @pyqtProperty(int, notify=runProgressChanged)
+    def runOverallDeliveredTrains(self):
+        if self._run_state == "finished":
+            return int(self._run_original_train_total)
+        inblock = max(0, min(self._run_in_block_current,
+                             self._run_in_block_total))
+        return int(min(self._run_original_train_total,
+                       self._run_trains_delivered_before_block + inblock))
+
+    @pyqtProperty(float, notify=runProgressChanged)
+    def runOverallFraction(self):
+        if self._run_state == "idle":
+            return 0.0
+        if self._run_state == "finished":
+            return 1.0
+        if self._run_original_train_total <= 0:
+            return 0.0
+        return max(0.0, min(1.0,
+                            float(self.runOverallDeliveredTrains)
+                            / float(self._run_original_train_total)))
+
+    @pyqtProperty(int, notify=runProgressChanged)
+    def runBlockCount(self):
+        return int(self._run_block_count)
+
+    @pyqtProperty(float, notify=runProgressChanged)
+    def runElapsedSeconds(self):
+        if self._run_elapsed_ms > 0:
+            return float(self._run_elapsed_ms) / 1000.0
+        if self._run_start_time_ms > 0 and self._run_state in ("running", "paused"):
+            return ((time.monotonic() * 1000.0) - self._run_start_time_ms) / 1000.0
+        return 0.0
     
     @pyqtSlot(int)
     def setHvEnableMode(self, hv_en_mode):
