@@ -8,6 +8,7 @@ from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
 from lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
+from lifu_support import LIFUSupportConnector
 from pathlib import Path
 
 from version import get_version
@@ -92,9 +93,11 @@ def main():
 
     # Initialize LIFUConnector with hv_test_mode from command-line argument
     lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
-    
+    lifu_support_connector = LIFUSupportConnector(interface=lifu_connector.interface)
+
     # Expose to QML
     engine.rootContext().setContextProperty("LIFUConnector", lifu_connector)
+    engine.rootContext().setContextProperty("LIFUSupportConnector", lifu_support_connector)
     engine.rootContext().setContextProperty("appVersion", APP_VERSION)
     app.setProperty("appVersion", APP_VERSION)
 
