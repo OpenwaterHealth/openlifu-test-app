@@ -211,8 +211,8 @@ class _TelemetryPollThread(QThread):
                                 conn.queryNumModules()
                         # While sonicating, the firmware pushes unsolicited STATUS
                         # frames with temperature; polling the same endpoint races
-                        # those frames and causes UART timeouts, so skip RUNNING.
-                        # if conn._state != RUNNING:
+                        # those frames and causes UART timeouts, so the outer
+                        # conn._state != RUNNING guard skips this poll.
                         conn.queryTxTemperature()
                         if conn._tx_poll_failures >= _TX_FAIL_LIMIT:
                             logger.warning("TX: %d consecutive poll failures – closing interface and triggering disconnect", _TX_FAIL_LIMIT)
