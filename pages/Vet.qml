@@ -101,6 +101,25 @@ Rectangle {
     property int progressCurrent: 0
     property int progressTotal: 0
 
+    // ----- Multi-block (pause/resume) tracking -----
+    // The original (pre-pause) sonication parameters are snapshotted at
+    // each fresh Start so that on Pause we can reconfigure the device
+    // with a shorter trainCount covering only the *remaining* portion,
+    // while the UI keeps reporting progress against the original total.
+    // On Abort or natural completion we restore the originally-loaded
+    // solution so the next run starts from the user's selections again.
+    property int originalTrainTotal: 0
+    property real originalDurationS: 0
+    property int originalPulseCount: 0
+    property int trainsDeliveredBeforeBlock: 0
+    property int blockCount: 0
+    property real runStartTimeMs: 0
+    property real runElapsedMs: 0
+    // null when no run has been started yet, otherwise the exact arg
+    // tuple last passed to configure_transmitter for the user's selected
+    // sequence (used to restore after pause-shortened reconfigures).
+    property var originalConfigArgs: null
+
     // ----- Thermal management -----
     // While the TX temperature is above ``coolingThreshold`` the page
     // surfaces a "Cooling Down" status and inhibits Start. At or above
@@ -195,7 +214,11 @@ Rectangle {
     function triggerThermalShutdown(observedTemp) {
         if (thermalShutdownTriggered) return
         thermalShutdownTriggered = true
-        if (progressState === "running") progressState = "stopped"
+        // Skip the paused intermediate state -- thermal shutdown is a
+        // hard abort regardless of whether we were running or paused.
+        if (progressState === "running" || progressState === "paused") {
+            abortRun()
+        }
         if (LIFUConnector.state === 3) {
             LIFUConnector.stop_sonication()
         }
@@ -215,19 +238,118 @@ Rectangle {
         progressState = "idle"
         progressCurrent = 0
         progressTotal = 0
+        originalTrainTotal = 0
+        originalDurationS = 0
+        originalPulseCount = 0
+        trainsDeliveredBeforeBlock = 0
+        blockCount = 0
+        runStartTimeMs = 0
+        runElapsedMs = 0
     }
 
     function startProgressFromUi() {
-        progressTotal = pulseTrainCount()
+        // Snapshot the user's selections so progress / final-message
+        // arithmetic uses the *original* sequence even after a Pause/
+        // Resume reconfigures the device with a shorter trainCount.
+        originalTrainTotal = pulseTrainCount()
+        originalDurationS = selectedDurationSeconds()
+        originalPulseCount = selectedPulseCount()
+        trainsDeliveredBeforeBlock = 0
+        blockCount = 1
+        runStartTimeMs = Date.now()
+        runElapsedMs = 0
+        progressTotal = originalTrainTotal
         progressCurrent = 1
         progressState = "running"
     }
 
-    function getProgressFillFraction() {
+    function pauseRun() {
+        // Move whatever the current block has delivered into the
+        // running-total counter so overall % keeps advancing across
+        // blocks. progressCurrent gets re-seeded to 0 so the next
+        // block starts cleanly.
+        var deliveredThisBlock = Math.max(0, Math.min(progressCurrent, progressTotal))
+        trainsDeliveredBeforeBlock += deliveredThisBlock
+        progressCurrent = 0
+        progressTotal = 0
+        progressState = "paused"
+        LIFUConnector.stop_sonication()
+    }
+
+    function resumeRun() {
+        var remaining = originalTrainTotal - trainsDeliveredBeforeBlock
+        if (remaining <= 0) {
+            // Nothing left to do -- treat as natural completion.
+            progressState = "finished"
+            runElapsedMs = Date.now() - runStartTimeMs
+            restoreOriginalConfig()
+            return
+        }
+        // Reconfigure the device with a shortened trainCount covering
+        // just the remaining portion. originalConfigArgs is the args
+        // tuple that was loaded for the full sequence.
+        if (originalConfigArgs) {
+            var a = originalConfigArgs
+            LIFUConnector.configure_transmitter(
+                a.x, a.y, a.z, a.freq, a.voltage,
+                a.pulseInterval, a.pulseCount, a.trainInterval,
+                remaining.toString(), a.durationUs, a.mode
+            )
+        }
+        progressTotal = remaining
+        progressCurrent = 0
+        blockCount += 1
+        progressState = "running"
+        LIFUConnector.start_sonication()
+    }
+
+    function abortRun() {
+        // Settles the abort message based on whatever has been
+        // delivered (across all blocks) and restores the original
+        // sequence for the next run. Safe to call from either the
+        // running or paused state.
+        if (progressState === "running") {
+            var deliveredThisBlock = Math.max(0, Math.min(progressCurrent, progressTotal))
+            trainsDeliveredBeforeBlock += deliveredThisBlock
+            if (LIFUConnector.state === 3) LIFUConnector.stop_sonication()
+        }
+        progressCurrent = 0
+        progressTotal = 0
+        if (runStartTimeMs > 0 && runElapsedMs <= 0) {
+            runElapsedMs = Date.now() - runStartTimeMs
+        }
+        progressState = "aborted"
+        clearStatusTelemetry()
+        restoreOriginalConfig()
+    }
+
+    function restoreOriginalConfig() {
+        if (!originalConfigArgs) return
+        if (LIFUConnector.state === 3) return  // wait until READY
+        var a = originalConfigArgs
+        LIFUConnector.configure_transmitter(
+            a.x, a.y, a.z, a.freq, a.voltage,
+            a.pulseInterval, a.pulseCount, a.trainInterval,
+            a.trainCount, a.durationUs, a.mode
+        )
+    }
+
+    function overallDeliveredTrains() {
+        if (progressState === "finished") return originalTrainTotal
+        var inBlock = Math.max(0, Math.min(progressCurrent, progressTotal))
+        return Math.max(0, Math.min(originalTrainTotal,
+                                    trainsDeliveredBeforeBlock + inBlock))
+    }
+
+    function overallFraction() {
         if (progressState === "idle") return 0
         if (progressState === "finished") return 1
-        if (progressTotal <= 0) return 0
-        return Math.max(0, Math.min(1, progressCurrent / progressTotal))
+        if (originalTrainTotal <= 0) return 0
+        return Math.max(0, Math.min(1, overallDeliveredTrains() / originalTrainTotal))
+    }
+
+    function getProgressFillFraction() {
+        return overallFraction()
     }
 
     function formatDurationSeconds(totalSeconds) {
@@ -240,33 +362,52 @@ Rectangle {
         return s + "s"
     }
 
+    function blocksClause() {
+        if (blockCount <= 1) return "."
+        var elapsedS = (runElapsedMs > 0 ? runElapsedMs
+                                         : (runStartTimeMs > 0 ? Date.now() - runStartTimeMs : 0))
+                       / 1000.0
+        return ", applied in " + blockCount + " blocks over "
+             + formatDurationSeconds(elapsedS) + "."
+    }
+
     function getProgressText() {
         if (progressState === "idle") return ""
         if (progressState === "finished") {
-            var totalPulses = progressTotal * selectedPulseCount()
-            return "Finished successfully after " + totalPulses + " pulses in "
-                 + formatDurationSeconds(selectedDurationSeconds())
+            var totalPulses = originalTrainTotal * originalPulseCount
+            return "Finished successfully after " + totalPulses + " pulses ("
+                 + formatDurationSeconds(originalDurationS) + ")"
+                 + blocksClause()
         }
-        if (progressState === "stopped") {
-            var stoppedPulses = progressCurrent * selectedPulseCount()
-            var stoppedFrac = progressTotal > 0
-                ? Math.max(0, Math.min(1, progressCurrent / progressTotal)) : 0
-            var stoppedSec = selectedDurationSeconds() * stoppedFrac
-            return "Aborted early after " + stoppedPulses + " pulses in "
-                 + formatDurationSeconds(stoppedSec)
+        if (progressState === "aborted") {
+            var deliveredTrains = overallDeliveredTrains()
+            var deliveredPulses = deliveredTrains * originalPulseCount
+            var deliveredFrac = originalTrainTotal > 0
+                ? deliveredTrains / originalTrainTotal : 0
+            var deliveredSec = originalDurationS * deliveredFrac
+            return "Aborted early after " + deliveredPulses + " pulses ("
+                 + formatDurationSeconds(deliveredSec) + ")"
+                 + blocksClause()
         }
-        if (progressTotal <= 0) return "RUNNING"
-        var frac = Math.max(0, Math.min(1, progressCurrent / progressTotal))
+        if (progressState === "paused") {
+            var pausedFrac = overallFraction()
+            var pausedPercent = Math.floor(pausedFrac * 100)
+            var pausedRem = originalDurationS * (1 - pausedFrac)
+            return "Paused, " + pausedPercent + "% Complete. "
+                 + formatDurationSeconds(pausedRem) + " remaining"
+        }
+        if (originalTrainTotal <= 0) return "RUNNING"
+        var frac = overallFraction()
         var percent = Math.floor(frac * 100)
-        var totalSec = selectedDurationSeconds()
-        var remainingSec = totalSec * (1 - frac)
+        var remainingSec = originalDurationS * (1 - frac)
         return "Running [" + percent + "%] ("
              + formatDurationSeconds(remainingSec) + " remaining)"
     }
 
     function getProgressColor() {
         if (progressState === "finished") return "#1f963d"
-        if (progressState === "stopped")  return "#E67E22"
+        if (progressState === "aborted")  return "#E67E22"
+        if (progressState === "paused")   return "#F1C40F"
         if (progressState === "running")  return "#269cf6"
         return "#3A3F4B"
     }
@@ -332,14 +473,30 @@ Rectangle {
 
     function configureNow() {
         // Programming the device clears any leftover "Finished" /
-        // "Stopped" status from the previous run.
+        // "Aborted" status from the previous run.
         resetProgressIdle()
+        // Snapshot the args so that mid-run pause/resume reconfigures
+        // (which use a shorter trainCount) can later restore the full
+        // sequence on Abort or natural completion.
+        originalConfigArgs = {
+            x: fixedX,
+            y: fixedY,
+            z: selectedDepthMm().toString(),
+            freq: selectedFrequencyKHz().toString(),
+            voltage: selectedVoltage().toString(),
+            pulseInterval: selectedPulseIntervalMs().toString(),
+            pulseCount: selectedPulseCount().toString(),
+            trainInterval: selectedTrainIntervalS().toString(),
+            trainCount: pulseTrainCount().toString(),
+            durationUs: pulseDurationUs().toString(),
+            mode: fixedTriggerMode
+        }
         LIFUConnector.configure_transmitter(
-            fixedX, fixedY, selectedDepthMm().toString(),
-            selectedFrequencyKHz().toString(), selectedVoltage().toString(),
-            selectedPulseIntervalMs().toString(), selectedPulseCount().toString(),
-            selectedTrainIntervalS().toString(), pulseTrainCount().toString(),
-            pulseDurationUs().toString(), fixedTriggerMode
+            originalConfigArgs.x, originalConfigArgs.y, originalConfigArgs.z,
+            originalConfigArgs.freq, originalConfigArgs.voltage,
+            originalConfigArgs.pulseInterval, originalConfigArgs.pulseCount,
+            originalConfigArgs.trainInterval, originalConfigArgs.trainCount,
+            originalConfigArgs.durationUs, originalConfigArgs.mode
         )
         if (LIFUConnector.state >= 2) {
             everConfigured = true
@@ -700,7 +857,7 @@ Rectangle {
 
                     Button {
                         id: vetStartButton
-                        text: "Start"
+                        text: progressState === "paused" ? "Resume" : "Start"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         font.pixelSize: 22
@@ -726,20 +883,24 @@ Rectangle {
                             verticalAlignment: Text.AlignVCenter
                         }
                         onClicked: {
-                            startProgressFromUi()
-                            LIFUConnector.start_sonication()
+                            if (progressState === "paused") {
+                                resumeRun()
+                            } else {
+                                startProgressFromUi()
+                                LIFUConnector.start_sonication()
+                            }
                         }
                     }
 
                     Button {
                         id: vetStopButton
-                        text: "Stop"
+                        text: progressState === "paused" ? "Abort" : "Stop"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         font.pixelSize: 22
                         font.weight: Font.Bold
                         visible: LIFUConnector.state >= 2
-                        enabled: LIFUConnector.state === 3
+                        enabled: LIFUConnector.state === 3 || progressState === "paused"
                         background: Rectangle {
                             color: !vetStopButton.enabled ? "#3A2424"
                                  : vetStopButton.down    ? "#8E1F1F"
@@ -756,9 +917,11 @@ Rectangle {
                             verticalAlignment: Text.AlignVCenter
                         }
                         onClicked: {
-                            if (progressState === "running") progressState = "stopped"
-                            clearStatusTelemetry()
-                            LIFUConnector.stop_sonication()
+                            if (progressState === "paused") {
+                                abortRun()
+                            } else if (progressState === "running") {
+                                pauseRun()
+                            }
                         }
                     }
                 }
@@ -834,8 +997,20 @@ Rectangle {
         function onSonicationProgressUpdated(pt_curr, pt_total, p_curr, p_total) {
             if (progressState !== "running") return
             if (pt_total > 0 && pt_curr >= pt_total) {
-                progressCurrent = progressTotal > 0 ? progressTotal : pt_curr
-                progressState = "finished"
+                // Current block finished. Roll its delivered count into
+                // the running total. If that completes the original
+                // sequence, mark finished and restore config; otherwise
+                // (shouldn't normally happen unless the device finishes
+                // a block we didn't ask to be a final block) stay
+                // running and let the next block take over.
+                trainsDeliveredBeforeBlock += (progressTotal > 0 ? progressTotal : pt_curr)
+                progressCurrent = 0
+                progressTotal = 0
+                if (trainsDeliveredBeforeBlock >= originalTrainTotal) {
+                    progressState = "finished"
+                    runElapsedMs = Date.now() - runStartTimeMs
+                    restoreOriginalConfig()
+                }
                 return
             }
             var next = pt_curr + 1
@@ -865,6 +1040,15 @@ Rectangle {
                 // the status flips out of "Cooling Down" once the next
                 // STATUS frame arrives (and not before).
                 coolingDown = false
+                // If we just naturally finished (or aborted) the run,
+                // the device may still be configured with the shorter
+                // resumed-block solution. Now that it has dropped out
+                // of RUNNING we can safely restore the originally-
+                // programmed sequence so the next Start replays the
+                // user's full selection.
+                if (progressState === "finished" || progressState === "aborted") {
+                    restoreOriginalConfig()
+                }
             }
             if (state >= 2) {
                 if (configuredModuleCount <= 0) {
