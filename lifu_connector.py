@@ -38,6 +38,9 @@ from openlifu_sdk.io.exceptions import (
     LIFUSonicationError,
 )
 
+# Shim: re-export support connector so callers can import from either module.
+from lifu_support import LIFUSupportConnector  # noqa: F401
+
 # import verification-tests
 from openlifu_verification.prodreqs_base_class import *
 from openlifu_verification.prodreqs_tx_long_verification_test import TransmitterHeatingPlaceholder, parse_arguments
@@ -191,20 +194,56 @@ class _TelemetryPollThread(QThread):
 
     def run(self):
         conn = self._connector
+        _HV_FAIL_LIMIT = 3
+        _TX_FAIL_LIMIT = 3
         while not self._stop_event.wait(timeout=1.0):
+            if conn._monitoring_paused:
+                continue
             try:
                 if conn._state != RUNNING:
                     if conn._txConnected:
                         if conn._num_modules_connected <= 0:
-                            conn.queryNumModules()
+                            # Guard: don't poll until TX firmware has had time to
+                            # finish module enumeration (~2.5 s).  Querying too
+                            # early races the init sequence and causes a timeout.
+                            elapsed = time.monotonic() - (conn._tx_connect_time or 0.0)
+                            if elapsed >= 3.0:
+                                conn.queryNumModules()
                         # While sonicating, the firmware pushes unsolicited STATUS
                         # frames with temperature; polling the same endpoint races
                         # those frames and causes UART timeouts, so skip RUNNING.
+                        # if conn._state != RUNNING:
                         conn.queryTxTemperature()
+                        if conn._tx_poll_failures >= _TX_FAIL_LIMIT:
+                            logger.warning("TX: %d consecutive poll failures – closing interface and triggering disconnect", _TX_FAIL_LIMIT)
+                            conn._tx_poll_failures = 0
+                            # Close the underlying TX port so the SDK actually
+                            # drops the connection; on_disconnected only
+                            # updates flags/signals and would leave the SDK in
+                            # a still-connected (but failing) state otherwise.
+                            try:
+                                conn.interface.txdevice.close()
+                            except Exception as close_exc:
+                                logger.debug("TX close during failure recovery: %s", close_exc)
+                            conn.on_disconnected("TX", "")
+                            continue
                     if conn._hvConnected:
                         # Re-check power status every cycle so AUTO-settle events
                         # are reflected in the UI promptly.
                         conn.queryPowerStatus()
+                        if conn._hv_poll_failures >= _HV_FAIL_LIMIT:
+                            logger.warning("HV: %d consecutive poll failures – closing interface and triggering disconnect", _HV_FAIL_LIMIT)
+                            conn._hv_poll_failures = 0
+                            # Close the underlying HV port so the SDK actually
+                            # drops the connection; on_disconnected only
+                            # updates flags/signals and would leave the SDK in
+                            # a still-connected (but failing) state otherwise.
+                            try:
+                                conn.interface.hvcontroller.close()
+                            except Exception as close_exc:
+                                logger.debug("HV close during failure recovery: %s", close_exc)
+                            conn.on_disconnected("HV", "")
+                            continue
                         conn.getMonitorVoltages()
             except Exception as e:
                 logger.warning(f"Telemetry poll loop error: {e}")
@@ -302,6 +341,10 @@ class LIFUConnector(QObject):
         self._txconfigured_state = False  # Internal state to track trigger status
         self._num_modules_connected = 0
         self._manual_num_modules = 1  # fallback when TX not connected
+        self._tx_connect_time: float | None = None  # monotonic timestamp of last TX connect
+        self._hv_poll_failures = 0   # consecutive HV telemetry failures
+        self._tx_poll_failures = 0   # consecutive TX telemetry failures
+        self._monitoring_paused = False  # set True while diagnostics tab is active
         
         # Solution loading state
         self._solution_loaded = False
@@ -563,6 +606,7 @@ class LIFUConnector(QObject):
         """Handle device connection."""
         if descriptor == "TX":
             self._txConnected = True
+            self._tx_connect_time = time.monotonic()
         elif descriptor == "HV":
             self._hvConnected = True
         self.signalConnected.emit(descriptor, port)
@@ -574,11 +618,14 @@ class LIFUConnector(QObject):
         """Handle device disconnection."""
         if descriptor == "TX":
             self._txConnected = False
+            self._tx_connect_time = None
+            self._tx_poll_failures = 0
             # The unsolicited STATUS stream is gone with the TX port; clear
             # our tracker so a future reconnect doesn't think it's still on.
             self._async_mode_enabled = False
         elif descriptor == "HV":
             self._hvConnected = False
+            self._hv_poll_failures = 0
             # If HV was set to "ON" mode, automatically switch to "OFF" when disconnected
             if self._hv_enable_mode == HV_EN_ON:  # ON mode
                 self._hv_enable_mode = HV_EN_OFF  # Switch to OFF
@@ -1486,6 +1533,7 @@ class LIFUConnector(QObject):
                     continue
                 self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
                 logger.debug(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
+            self._tx_poll_failures = 0  # at least one module succeeded; reset counter
             try:
                 is_running = self.interface.is_running()
                 logger.debug(f"Running state during temperature update: {is_running}")
@@ -1496,7 +1544,12 @@ class LIFUConnector(QObject):
                     self._state = READY
                     self.stateChanged.emit(self._state)                
             except LIFUError as e:
-                logger.warning(f"Failed to query running state during temperature update: {e}")                            
+                logger.warning(f"Failed to query running state during temperature update: {e}")
+                # LIFU-1001 = device not connected; count as a poll failure so
+                # the poll loop can trigger an auto-disconnect.
+                if "LIFU-1001" in str(e):
+                    self._tx_poll_failures += 1
+                    return  # skip further TX work this cycle
         except Exception as e:
             logger.error(f"Error querying Module temperature data: {e}")
         finally:
@@ -1566,8 +1619,12 @@ class LIFUConnector(QObject):
             v12_state = self.interface.hvcontroller.get_12v_status()
             logger.debug(f"HV State: {hv_state} - 12V State: {v12_state}")
             self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
+            self._hv_poll_failures = 0  # reset on success
         except LIFUError as e:
-            self._handle_lifu_error("Power Status", e)
+            # Don't emit a popup on poll failures – log only and let the
+            # poll loop detect consecutive failures and trigger disconnect.
+            self._hv_poll_failures += 1
+            logger.warning(f"Power Status poll failure ({self._hv_poll_failures}): {e}")
         except Exception as e:
             self._handle_lifu_error("Power Status", e, context="Unexpected error")
         finally:
@@ -1619,6 +1676,18 @@ class LIFUConnector(QObject):
             return False
         finally:
             self._interface_mutex.unlock()
+
+    @pyqtSlot(bool)
+    def pauseMonitoring(self, pause: bool):
+        """Pause or resume background telemetry polling.
+
+        Call with ``True`` while the diagnostics tab is active so that the
+        poll thread does not race hardware calls made by the diagnostic tests.
+        Call with ``False`` when leaving the diagnostics tab to resume normal
+        telemetry.
+        """
+        self._monitoring_paused = pause
+        logger.info("Telemetry polling %s", "PAUSED" if pause else "RESUMED")
 
     @pyqtSlot(bool)
     def setAsyncMode(self, enable: bool):
