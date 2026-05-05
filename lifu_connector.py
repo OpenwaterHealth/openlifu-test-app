@@ -214,8 +214,16 @@ class _TelemetryPollThread(QThread):
                     if conn._state != RUNNING:
                         conn.queryTxTemperature()
                         if conn._tx_poll_failures >= _TX_FAIL_LIMIT:
-                            logger.warning("TX: %d consecutive poll failures – triggering disconnect", _TX_FAIL_LIMIT)
+                            logger.warning("TX: %d consecutive poll failures – closing interface and triggering disconnect", _TX_FAIL_LIMIT)
                             conn._tx_poll_failures = 0
+                            # Close the underlying TX port so the SDK actually
+                            # drops the connection; on_disconnected only
+                            # updates flags/signals and would leave the SDK in
+                            # a still-connected (but failing) state otherwise.
+                            try:
+                                conn.interface.txdevice.close()
+                            except Exception as close_exc:
+                                logger.debug("TX close during failure recovery: %s", close_exc)
                             conn.on_disconnected("TX", "")
                             continue
                 if conn._hvConnected:
@@ -223,8 +231,16 @@ class _TelemetryPollThread(QThread):
                     # are reflected in the UI promptly.
                     conn.queryPowerStatus()
                     if conn._hv_poll_failures >= _HV_FAIL_LIMIT:
-                        logger.warning("HV: %d consecutive poll failures – triggering disconnect", _HV_FAIL_LIMIT)
+                        logger.warning("HV: %d consecutive poll failures – closing interface and triggering disconnect", _HV_FAIL_LIMIT)
                         conn._hv_poll_failures = 0
+                        # Close the underlying HV port so the SDK actually
+                        # drops the connection; on_disconnected only
+                        # updates flags/signals and would leave the SDK in
+                        # a still-connected (but failing) state otherwise.
+                        try:
+                            conn.interface.hvcontroller.close()
+                        except Exception as close_exc:
+                            logger.debug("HV close during failure recovery: %s", close_exc)
                         conn.on_disconnected("HV", "")
                         continue
                     conn.getMonitorVoltages()

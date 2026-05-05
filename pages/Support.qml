@@ -171,7 +171,7 @@ Rectangle {
         }
         function onHvConnectedChanged() {
             if (LIFUConnector.hvConnected) {
-                hvQueryTimer.restart()   // debounced — fires 500 ms after connect settles
+                hvQueryTimer.restart()   // debounced — fires 2 s after connect settles
             } else {
                 hvQueryTimer.stop()
                 supportPage.hvFwVersion = "—"
@@ -186,7 +186,7 @@ Rectangle {
         }
         function onTxConnectedChanged() {
             if (LIFUConnector.txConnected) {
-                txQueryTimer.restart()   // debounced — fires 500 ms after connect settles
+                txQueryTimer.restart()   // debounced — fires 3 s after connect settles
             } else {
                 txQueryTimer.stop()
                 supportPage.txModules    = []
