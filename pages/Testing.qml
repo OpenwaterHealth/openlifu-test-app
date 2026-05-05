@@ -360,7 +360,7 @@ Rectangle {
                                 Button {
                                     text: "Stop"
                                     Layout.fillWidth: true
-                                    enabled: LIFUConnector.state === 4
+                                    enabled: LIFUConnector.state === 3
                                     onClicked: LIFUConnector.stopVerificationTest()
                                 }
                             }
