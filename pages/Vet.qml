@@ -13,42 +13,79 @@ Rectangle {
     // ----- Fixed parameters (per Vet spec) -----
     readonly property string fixedX: "0"
     readonly property string fixedY: "0"
-    readonly property string fixedFrequencyKHz: "400"
-    readonly property string fixedPulseIntervalMs: "100"
-    readonly property string fixedPulseCount: "1"
-    readonly property string fixedTrainIntervalS: "0"
     readonly property string fixedTriggerMode: "Sequence"
 
-    // ----- Dropdown choices -----
-    readonly property var voltageOptions: [10, 20, 30, 40, 50]
-    readonly property var dutyOptions: [5, 10, 15, 20, 25]
+    // ----- Preset definitions -----
+    // Each preset carries the *full* sonication parameter dictionary so
+    // tweaking one preset later (e.g. raising voltage for Hip) doesn't
+    // require touching the rest of the page. All times are in their UI-
+    // facing units: voltage [V], frequency [kHz], pulse length [us],
+    // pulse interval [ms], pulse train interval [s], depth [mm].
+    readonly property var presetOptions: [
+        {
+            label: "Knee",
+            voltage: 20,
+            frequency_khz: 400,
+            pulse_length_us: 20000,    // 20 ms
+            pulse_interval_ms: 100,
+            pulse_count: 1,
+            pulse_train_interval_s: 0, // 0 -> SDK derives from pulse_count*pulse_interval
+            depth_mm: 30
+        },
+        {
+            label: "Hip",
+            voltage: 20,
+            frequency_khz: 400,
+            pulse_length_us: 20000,
+            pulse_interval_ms: 100,
+            pulse_count: 1,
+            pulse_train_interval_s: 0,
+            depth_mm: 40
+        },
+        {
+            label: "Spine",
+            voltage: 20,
+            frequency_khz: 400,
+            pulse_length_us: 20000,
+            pulse_interval_ms: 100,
+            pulse_count: 1,
+            pulse_train_interval_s: 0,
+            depth_mm: 40
+        }
+    ]
+
     readonly property var durationOptions: [
         { label: "30 sec", seconds: 30 },
         { label: "1 min",  seconds: 60 },
         { label: "2 min",  seconds: 120 },
         { label: "5 min",  seconds: 300 }
     ]
-    readonly property var depthOptions: [
-        { label: "3 cm", mm: 30 },
-        { label: "4 cm", mm: 40 },
-        { label: "5 cm", mm: 50 }
-    ]
 
     // ----- Selection-derived values -----
-    function selectedVoltage()         { return voltageOptions[voltageCombo.currentIndex] }
-    function selectedDutyPercent()     { return dutyOptions[dutyCombo.currentIndex] }
+    function selectedPreset()          { return presetOptions[presetCombo.currentIndex] }
+    function selectedPresetLabel()     { return selectedPreset().label }
+    function selectedVoltage()         { return selectedPreset().voltage }
+    function selectedFrequencyKHz()    { return selectedPreset().frequency_khz }
+    function selectedPulseLengthUs()   { return selectedPreset().pulse_length_us }
+    function selectedPulseIntervalMs() { return selectedPreset().pulse_interval_ms }
+    function selectedPulseCount()      { return selectedPreset().pulse_count }
+    function selectedTrainIntervalS()  { return selectedPreset().pulse_train_interval_s }
+    function selectedDepthMm()         { return selectedPreset().depth_mm }
+    function selectedDepthLabel()      { return selectedDepthMm() + " mm" }
     function selectedDurationSeconds() { return durationOptions[durationCombo.currentIndex].seconds }
     function selectedDurationLabel()   { return durationOptions[durationCombo.currentIndex].label }
-    function selectedDepthMm()         { return depthOptions[depthCombo.currentIndex].mm }
-    function selectedDepthLabel()      { return depthOptions[depthCombo.currentIndex].label }
 
-    // pulse_interval=100 ms, pulse_count=1, pulse_train_interval=0
-    //  -> SDK sets train_interval = 0.1 s, duty = pulse_duration / pulse_interval.
-    function pulseDurationUs() {
-        return (selectedDutyPercent() / 100.0) * 100.0 /* ms */ * 1000.0
-    }
+    function pulseDurationUs() { return selectedPulseLengthUs() }
     function pulseTrainCount() {
-        return Math.max(1, Math.round(selectedDurationSeconds() * 10))
+        // Train period (when pulse_train_interval_s = 0 the SDK uses
+        // pulse_count * pulse_interval). Number of trains is duration
+        // divided by that period.
+        var trainPeriodS = selectedTrainIntervalS()
+        if (trainPeriodS <= 0) {
+            trainPeriodS = selectedPulseCount() * selectedPulseIntervalMs() / 1000.0
+        }
+        if (trainPeriodS <= 0) return 1
+        return Math.max(1, Math.round(selectedDurationSeconds() / trainPeriodS))
     }
 
     // ----- State (mirrors Demo.qml's progress/status state machine) -----
@@ -96,12 +133,12 @@ Rectangle {
     function getProgressText() {
         if (progressState === "idle") return ""
         if (progressState === "finished") {
-            var totalPulses = progressTotal * parseInt(fixedPulseCount)
+            var totalPulses = progressTotal * selectedPulseCount()
             return "Finished " + totalPulses + " pulses in "
                  + formatDurationSeconds(selectedDurationSeconds())
         }
         if (progressState === "stopped") {
-            var stoppedPulses = progressCurrent * parseInt(fixedPulseCount)
+            var stoppedPulses = progressCurrent * selectedPulseCount()
             var stoppedFrac = progressTotal > 0
                 ? Math.max(0, Math.min(1, progressCurrent / progressTotal)) : 0
             var stoppedSec = selectedDurationSeconds() * stoppedFrac
@@ -168,9 +205,9 @@ Rectangle {
     function refreshPlot() {
         LIFUConnector.generate_plot(
             fixedX, fixedY, selectedDepthMm().toString(),
-            fixedFrequencyKHz, selectedVoltage().toString(),
-            fixedPulseIntervalMs, fixedPulseCount,
-            fixedTrainIntervalS, pulseTrainCount().toString(),
+            selectedFrequencyKHz().toString(), selectedVoltage().toString(),
+            selectedPulseIntervalMs().toString(), selectedPulseCount().toString(),
+            selectedTrainIntervalS().toString(), pulseTrainCount().toString(),
             pulseDurationUs().toString(), "buffer"
         )
     }
@@ -179,9 +216,9 @@ Rectangle {
         resetProgressIdle()
         LIFUConnector.configure_transmitter(
             fixedX, fixedY, selectedDepthMm().toString(),
-            fixedFrequencyKHz, selectedVoltage().toString(),
-            fixedPulseIntervalMs, fixedPulseCount,
-            fixedTrainIntervalS, pulseTrainCount().toString(),
+            selectedFrequencyKHz().toString(), selectedVoltage().toString(),
+            selectedPulseIntervalMs().toString(), selectedPulseCount().toString(),
+            selectedTrainIntervalS().toString(), pulseTrainCount().toString(),
             pulseDurationUs().toString(), fixedTriggerMode
         )
         if (LIFUConnector.state >= 2) {
@@ -230,12 +267,13 @@ Rectangle {
             Layout.fillHeight: true
             spacing: 14
 
-            // ---------- Column 1: Sonication Settings ----------
+            // ---------- Column 1: Sonication Settings (presets) +
+            // collapsible Output Parameters readout ----------
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredWidth: 100   // ratio anchor
-                Layout.minimumWidth: 240
+                Layout.minimumWidth: 260
                 color: "#1E1E20"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -260,45 +298,31 @@ Rectangle {
                         rowSpacing: 12
                         Layout.fillWidth: true
 
-                        Text { text: "Voltage:";       color: "white"; font.pixelSize: 14; Layout.preferredWidth: 110 }
+                        Text { text: "Preset:";        color: "white"; font.pixelSize: 14; Layout.preferredWidth: 110 }
                         ComboBox {
-                            id: voltageCombo
+                            id: presetCombo
                             Layout.fillWidth: true
                             Layout.preferredHeight: 36
-                            model: voltageOptions.map(function(v) { return v + " V" })
+                            model: presetOptions.map(function(p) { return p.label })
                             currentIndex: 0
                             enabled: LIFUConnector.state !== 3
                             background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
                             onActivated: {
                                 resetProgressIdle()
                                 if (everConfigured) {
+                                    // Preset switch changes voltage, depth,
+                                    // and pulse parameters, so push the
+                                    // full pulse update + voltage to HV.
                                     LIFUConnector.directSetVoltage(selectedVoltage().toString())
-                                    refreshPlot()
-                                }
-                            }
-                        }
-
-                        Text { text: "Duty Cycle:";    color: "white"; font.pixelSize: 14; Layout.preferredWidth: 110 }
-                        ComboBox {
-                            id: dutyCombo
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 36
-                            model: dutyOptions.map(function(v) { return v + " %" })
-                            currentIndex: 0
-                            enabled: LIFUConnector.state !== 3
-                            background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
-                            onActivated: {
-                                resetProgressIdle()
-                                if (everConfigured) {
                                     LIFUConnector.directSetPulse(
                                         fixedX, fixedY, selectedDepthMm().toString(),
-                                        fixedFrequencyKHz, selectedVoltage().toString(),
-                                        fixedPulseIntervalMs, fixedPulseCount,
-                                        fixedTrainIntervalS, pulseTrainCount().toString(),
+                                        selectedFrequencyKHz().toString(), selectedVoltage().toString(),
+                                        selectedPulseIntervalMs().toString(), selectedPulseCount().toString(),
+                                        selectedTrainIntervalS().toString(), pulseTrainCount().toString(),
                                         pulseDurationUs().toString(), fixedTriggerMode
                                     )
-                                    refreshPlot()
                                 }
+                                refreshPlot()
                             }
                         }
 
@@ -315,117 +339,122 @@ Rectangle {
                                 resetProgressIdle()
                                 if (everConfigured) {
                                     LIFUConnector.directSetSequence(
-                                        fixedPulseIntervalMs, fixedPulseCount,
-                                        fixedTrainIntervalS, pulseTrainCount().toString(),
+                                        selectedPulseIntervalMs().toString(),
+                                        selectedPulseCount().toString(),
+                                        selectedTrainIntervalS().toString(),
+                                        pulseTrainCount().toString(),
                                         fixedTriggerMode
                                     )
                                     refreshPlot()
                                 }
                             }
                         }
-
-                        Text { text: "Depth:";         color: "white"; font.pixelSize: 14; Layout.preferredWidth: 110 }
-                        ComboBox {
-                            id: depthCombo
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 36
-                            model: depthOptions.map(function(o) { return o.label })
-                            currentIndex: 0
-                            enabled: LIFUConnector.state !== 3
-                            background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
-                            onActivated: {
-                                resetProgressIdle()
-                                if (everConfigured) {
-                                    LIFUConnector.directSetPulse(
-                                        fixedX, fixedY, selectedDepthMm().toString(),
-                                        fixedFrequencyKHz, selectedVoltage().toString(),
-                                        fixedPulseIntervalMs, fixedPulseCount,
-                                        fixedTrainIntervalS, pulseTrainCount().toString(),
-                                        pulseDurationUs().toString(), fixedTriggerMode
-                                    )
-                                }
-                                refreshPlot()
-                            }
-                        }
                     }
 
-                    Item { Layout.fillHeight: true }
-                }
-            }
-
-            // ---------- Column 2: Read-only solution readouts ----------
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.preferredWidth: 100   // ratio anchor
-                Layout.minimumWidth: 240
-                color: "#1E1E20"
-                radius: 10
-                border.color: "#3E4E6F"
-                border.width: 2
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 10
-
-                    Text {
-                        text: "Output Parameters"
-                        color: "white"
-                        font.pixelSize: 16
-                        font.weight: Font.Bold
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-
-                    GridLayout {
-                        columns: 2
-                        columnSpacing: 12
-                        rowSpacing: 8
+                    // Collapsible Output Parameters section.
+                    Item {
+                        id: outputParamsSection
+                        property bool expanded: false
                         Layout.fillWidth: true
-
-                        // Helper rows: label + read-only value text
-                        Text { text: "Voltage:";          color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: selectedVoltage() + " V"; color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
-
-                        Text { text: "Duty Cycle:";       color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: selectedDutyPercent() + " %"; color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
-
-                        Text { text: "Total Duration:";   color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: selectedDurationLabel(); color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
-
-                        Text { text: "Depth:";            color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: selectedDepthLabel(); color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
+                        Layout.preferredHeight: outputParamsHeader.height
+                                              + (expanded ? outputParamsBody.implicitHeight + 6 : 0)
+                        Behavior on Layout.preferredHeight { NumberAnimation { duration: 150 } }
+                        clip: true
 
                         Rectangle {
-                            Layout.columnSpan: 2
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 1
-                            Layout.topMargin: 4
-                            Layout.bottomMargin: 4
-                            color: "#3E4E6F"
+                            id: outputParamsHeader
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            height: 30
+                            color: outputParamsMA.containsMouse ? "#2A2F3A" : "#222732"
+                            radius: 4
+                            border.color: "#3E4E6F"
+                            border.width: 1
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 8
+                                spacing: 6
+
+                                Text {
+                                    text: outputParamsSection.expanded ? "\u25BC" : "\u25B6"
+                                    color: "#9FB3C8"
+                                    font.pixelSize: 11
+                                }
+                                Text {
+                                    text: "Output Parameters"
+                                    color: "white"
+                                    font.pixelSize: 13
+                                    font.weight: Font.Bold
+                                    Layout.fillWidth: true
+                                }
+                            }
+
+                            MouseArea {
+                                id: outputParamsMA
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: outputParamsSection.expanded = !outputParamsSection.expanded
+                            }
                         }
 
-                        Text { text: "Frequency:";        color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: fixedFrequencyKHz + " kHz"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                        GridLayout {
+                            id: outputParamsBody
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: outputParamsHeader.bottom
+                            anchors.topMargin: 6
+                            columns: 2
+                            columnSpacing: 12
+                            rowSpacing: 6
+                            visible: outputParamsSection.expanded
 
-                        Text { text: "Focus (X, Y, Z):";  color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: "(" + fixedX + ", " + fixedY + ", " + selectedDepthMm() + ") mm"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "Voltage:";          color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: selectedVoltage() + " V"; color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
 
-                        Text { text: "Pulse Length:";   color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: (pulseDurationUs() / 1000.0).toFixed(1) + " ms"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "Pulse Length:";     color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: (selectedPulseLengthUs() / 1000.0).toFixed(1) + " ms"; color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
 
-                        Text { text: "Pulse Repetition Interval:";   color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: fixedPulseIntervalMs + " ms"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "Total Duration:";   color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: selectedDurationLabel(); color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
 
-                        Text { text: "Pulse Trains:";     color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: pulseTrainCount();   color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "Depth:";            color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: selectedDepthLabel(); color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
+
+                            Rectangle {
+                                Layout.columnSpan: 2
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 1
+                                Layout.topMargin: 4
+                                Layout.bottomMargin: 4
+                                color: "#3E4E6F"
+                            }
+
+                            Text { text: "Frequency:";        color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: selectedFrequencyKHz() + " kHz"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+
+                            Text { text: "Focus (X, Y, Z):";  color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: "(" + fixedX + ", " + fixedY + ", " + selectedDepthMm() + ") mm"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+
+                            Text { text: "Pulse Repetition Interval:"; color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: selectedPulseIntervalMs() + " ms"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+
+                            Text { text: "Pulse Count / Train:"; color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: selectedPulseCount();   color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+
+                            Text { text: "Pulse Trains:";        color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: pulseTrainCount();      color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                        }
                     }
 
                     Item { Layout.fillHeight: true }
                 }
             }
 
-            // ---------- Column 3: Plot (2x wide) ----------
+            // ---------- Column 2: Plot (2x wide) ----------
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
