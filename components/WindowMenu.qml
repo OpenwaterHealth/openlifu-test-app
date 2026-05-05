@@ -20,9 +20,20 @@ Rectangle {
         id: headerMouseArea
         anchors.fill: parent
         cursorShape: Qt.SizeAllCursor
+
+        property point clickPos
+
         onPressed: function(mouse) {
             if (mouse.button === Qt.LeftButton) {
-                window.startSystemMove(); // Allow window dragging
+                clickPos = Qt.point(mouse.x, mouse.y)
+            }
+        }
+
+        onPositionChanged: function(mouse) {
+            if (pressed) {
+                var delta = Qt.point(mouse.x - clickPos.x, mouse.y - clickPos.y)
+                window.x += delta.x
+                window.y += delta.y
             }
         }
     }

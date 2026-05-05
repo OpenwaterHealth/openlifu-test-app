@@ -89,4 +89,74 @@ Window {
         console.log("Button clicked with index:", index);
     }
 
+    // Global device-error popup.  Shown whenever LIFUConnector.deviceError is
+    // emitted, e.g. when an SDK call times out or otherwise returns a sentinel
+    // failure value instead of raising an exception.
+    Dialog {
+        id: deviceErrorDialog
+        modal: true
+        focus: true
+        title: "Device Error"
+        width: 480
+        x: (window.width - width) / 2
+        y: (window.height - height) / 2
+
+        property string errorTitle: ""
+        property string errorMessage: ""
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#7A2E2E"
+            border.width: 2
+            radius: 8
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            Text {
+                text: deviceErrorDialog.errorTitle
+                color: "#F5B5B5"
+                font.pixelSize: 15
+                font.bold: true
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+
+            Text {
+                text: deviceErrorDialog.errorMessage
+                color: "#FFD3D3"
+                font.pixelSize: 13
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 10
+
+            Item { Layout.fillWidth: true }
+
+            Button {
+                text: "OK"
+                onClicked: deviceErrorDialog.close()
+            }
+
+            Item { Layout.preferredWidth: 10 }
+        }
+    }
+
+    Connections {
+        target: LIFUConnector
+
+        function onDeviceError(title, message) {
+            console.error("Device error [" + title + "]: " + message)
+            deviceErrorDialog.errorTitle = title
+            deviceErrorDialog.errorMessage = message
+            if (!deviceErrorDialog.visible) {
+                deviceErrorDialog.open()
+            }
+        }
+    }
+
 }
