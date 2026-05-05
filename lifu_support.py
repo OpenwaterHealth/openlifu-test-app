@@ -13,6 +13,7 @@ import datetime
 import json
 import logging
 import platform
+import random
 import sys
 import threading
 import time
@@ -69,7 +70,7 @@ class _DiagnosticThread(QThread):
         if "console" in self._groups:
             try:
                 hv = self._interface.hvcontroller
-                total += 27 if hv.is_connected() else 1
+                total += 28 if hv.is_connected() else 1
             except Exception:
                 total += 1
         if "tx" in self._groups:
@@ -80,7 +81,11 @@ class _DiagnosticThread(QThread):
                         n = tx.get_tx_module_count()
                     except Exception:
                         n = 1
-                    total += 2 + 12 * max(n, 0)
+                    try:
+                        chip_count = tx.enum_tx7332_devices()
+                    except Exception:
+                        chip_count = max(n, 1)
+                    total += 2 + 12 * max(n, 0) + 4 + max(chip_count, 0)
                 else:
                     total += 1
             except Exception:
@@ -307,6 +312,15 @@ class _DiagnosticThread(QThread):
                                    _hvm_on_check,
                                    detail_fn=lambda v: f"{v:.3f} V"))
 
+        # 10. Turn HV OFF before fan tests
+        def _hv_turn_off_final():
+            hv.turn_hv_off()
+            time.sleep(2)
+            if hv.get_hv_status():
+                raise ValueError("HV still ON after turn_hv_off()")
+            return "HV OFF confirmed"
+        tests.append(self._do("console", "HV Turn OFF", _hv_turn_off_final))
+
         # ── Fan tests – set 50 %, verify, return to 0 % ────────────────
         for _fan_id, _fan_name in [(0, "Fan 0 (Bottom)"), (1, "Fan 1 (Top)")]:
             def _fan_50(fid=_fan_id, fname=_fan_name):
@@ -488,6 +502,91 @@ class _DiagnosticThread(QThread):
                     raise ValueError("Restored config does not match original")
                 return f"restored seq={verify.header.seq}"
             tests.append(self._do("tx", f"Module {m} UC Restore", _ucfg_restore))
+
+        # ── Trigger cycle 1: set random freq, read back and verify ────────
+        _TRIG_BASE = {
+            "TriggerPulseCount":         1,
+            "TriggerPulseWidthUsec":     100,
+            "TriggerPulseTrainInterval": 0,
+            "TriggerPulseTrainCount":    1,
+            "TriggerMode":               1,   # Continuous
+            "ProfileIndex":              0,
+            "ProfileIncrement":          0,
+        }
+
+        def _trig_set_and_get_freq(freq_cell):
+            """Set trigger with freq_cell[0] Hz; return the actual freq sent."""
+            freq = freq_cell[0]
+            payload = dict(_TRIG_BASE)
+            payload["TriggerFrequencyHz"] = freq
+            result = tx.set_trigger_json(data=payload)
+            if isinstance(result, str):
+                result = json.loads(result)
+            if result is None:
+                raise ValueError("set_trigger_json returned None")
+            return freq
+
+        def _trig_read_verify(freq_cell):
+            """Read trigger back and verify TriggerFrequencyHz == freq_cell[0]."""
+            data = tx.get_trigger_json()
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"get_trigger_json returned unexpected type {type(data).__name__}"
+                )
+            got = data.get("TriggerFrequencyHz")
+            if got != freq_cell[0]:
+                raise ValueError(
+                    f"Expected {freq_cell[0]} Hz, got {got} Hz"
+                )
+            return f"{got} Hz ✓"
+
+        _freq1 = [random.randint(20, 60)]
+        tests.append(self._do("tx", "Trigger Set #1 (Random Freq)",
+                               lambda: _trig_set_and_get_freq(_freq1),
+                               detail_fn=lambda v: f"freq={v} Hz set"))
+        tests.append(self._do("tx", "Trigger Read-Back #1",
+                               lambda: _trig_read_verify(_freq1)))
+
+        # ── Trigger cycle 2: new random freq, set, read back and verify ──────
+        _freq2 = [random.randint(20, 60)]
+        # Ensure the second frequency is different from the first so the
+        # read-back is a meaningful check.
+        while _freq2[0] == _freq1[0]:
+            _freq2[0] = random.randint(20, 60)
+
+        tests.append(self._do("tx", "Trigger Set #2 (Random Freq)",
+                               lambda: _trig_set_and_get_freq(_freq2),
+                               detail_fn=lambda v: f"freq={v} Hz set"))
+        tests.append(self._do("tx", "Trigger Read-Back #2",
+                               lambda: _trig_read_verify(_freq2)))
+
+        # ── Per-chip TX7332 register write/read (addr 0x0020) ────────────
+        # For every enumerated TX7332 chip: write a random 32-bit value,
+        # read it back, and verify the round-trip.
+        try:
+            chip_count = tx.enum_tx7332_devices()
+        except Exception:
+            chip_count = module_count   # fallback
+
+        _REG_ADDR = 0x0020
+        for chip_id in range(chip_count):
+            def _chip_reg_rw(cid=chip_id):
+                val = random.randint(0, 0xFFFF_FFFF)
+                tx.write_block(cid, _REG_ADDR, [val])
+                readback = tx.read_block(cid, _REG_ADDR, 1)
+                got = readback[0] if readback else None
+                if got != val:
+                    got_str = f"0x{got:08X}" if got is not None else "empty"
+                    raise ValueError(
+                        f"Chip {cid} addr 0x{_REG_ADDR:04X}: "
+                        f"wrote 0x{val:08X}, read back {got_str}"
+                    )
+                return f"0x{val:08X} \u2713"
+            tests.append(self._do(
+                "tx", f"TX7332 Chip {chip_id} Reg 0x{_REG_ADDR:04X} RW",
+                _chip_reg_rw))
 
         return tests
 
