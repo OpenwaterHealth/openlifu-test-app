@@ -110,6 +110,16 @@ Rectangle {
     readonly property real shutdownThreshold: 75.0
     property bool coolingDown: false
     property bool thermalShutdownTriggered: false
+    // Stashed HV enable mode at the moment we forced HV off for cooldown,
+    // so we can restore it once the device is back below the cool
+    // threshold. -1 means "nothing to restore".
+    property int preCooldownHvMode: -1
+    // Set true while we drive the cooldown-end reset_configuration() so
+    // onStateChanged knows to keep the progress bar / plot intact.
+    property bool suppressNextProgressClear: false
+    // Briefly latched after a cooldown-end reset so the status row can
+    // show "Cooldown complete" until the user re-Programs the device.
+    property bool cooldownJustCompleted: false
 
     function maxTxTemperature() {
         var maxT = NaN
@@ -146,20 +156,31 @@ Rectangle {
             // Just entered cooldown -- whether from a successful run
             // ending hot, or from a >75C abort. Force HV off so the rail
             // doesn't sit energized while the operator waits (or walks
-            // away). Skip if a thermal shutdown already nuked HV mode.
+            // away). Stash the previous mode so we can restore it once
+            // the device cools back down.
             if (LIFUConnector.hvEnableMode !== 2) {
+                preCooldownHvMode = LIFUConnector.hvEnableMode
                 LIFUConnector.setHvEnableMode(2)
             }
+            cooldownJustCompleted = false
         }
 
         if (!nowCooling && wasCooling) {
             // Just dropped below the cool threshold. Re-arm the
-            // shutdown one-shot, and force the device back to
-            // unconfigured so the user has to explicitly Program Device
-            // again before another sonication can start. (Safer if the
-            // operator walked away mid-cooldown.)
+            // shutdown one-shot, restore the HV mode that was active
+            // before we forced it off, and drop the connector back to
+            // CONNECTED so the user has to Program Device again before
+            // the next sonication. We deliberately keep the progress
+            // bar's last "Finished"/"Stopped" message visible until the
+            // next Program Device click clears it.
             thermalShutdownTriggered = false
+            if (preCooldownHvMode >= 0 && preCooldownHvMode !== 2) {
+                LIFUConnector.setHvEnableMode(preCooldownHvMode)
+            }
+            preCooldownHvMode = -1
             if (LIFUConnector.state >= 2 && LIFUConnector.state !== 3) {
+                suppressNextProgressClear = true
+                cooldownJustCompleted = true
                 LIFUConnector.reset_configuration()
             }
         }
@@ -244,7 +265,10 @@ Rectangle {
         if (LIFUConnector.state === 3) return "Running"
         if (LIFUConnector.state === 2) return coolingDown ? "Cooling Down" : "Ready"
         if (LIFUConnector.state === 0) return "Disconnected"
-        if (LIFUConnector.state === 1) return "Connected"
+        if (LIFUConnector.state === 1) {
+            if (cooldownJustCompleted) return "Cooldown Complete"
+            return "Connected"
+        }
         if (LIFUConnector.state === 4) return "Test Script Ready"
         return "Disconnected"
     }
@@ -253,6 +277,7 @@ Rectangle {
         if (!LIFUConnector.txConnected) return "#C0392B"
         if (LIFUConnector.state === 3)   return "#5db9ff"  // running
         if (LIFUConnector.state === 2 && coolingDown) return "#3498DB"  // cooling
+        if (LIFUConnector.state === 1 && cooldownJustCompleted) return "#2ECC71"  // cooldown done
         if (LIFUConnector.state < 2)     return "#0f5d24"
         return "#269cf6"
     }
@@ -300,6 +325,9 @@ Rectangle {
     }
 
     function configureNow() {
+        // Programming the device clears any leftover "Finished" /
+        // "Stopped" / "Cooldown Complete" status from the previous run.
+        cooldownJustCompleted = false
         resetProgressIdle()
         LIFUConnector.configure_transmitter(
             fixedX, fixedY, selectedDepthMm().toString(),
@@ -842,11 +870,19 @@ Rectangle {
                 everConfigured = false
                 if (previousConnectorState >= 2) {
                     clearStatusTelemetry()
-                    // State dropped below READY (e.g. reset triggered by
-                    // navigating to Settings). Clear the progress UI so the
-                    // user must re-program before restarting.
-                    resetProgressIdle()
-                    vetPlotImage.source = "../assets/images/empty_graph.png"
+                    if (suppressNextProgressClear) {
+                        // Cooldown-end reset: keep the progress bar /
+                        // plot intact so the operator can still see the
+                        // last run's outcome until they Program Device.
+                        suppressNextProgressClear = false
+                    } else {
+                        // State dropped below READY (e.g. reset triggered
+                        // by navigating to Settings). Clear the progress
+                        // UI so the user must re-program before
+                        // restarting.
+                        resetProgressIdle()
+                        vetPlotImage.source = "../assets/images/empty_graph.png"
+                    }
                 }
             }
             previousConnectorState = state
