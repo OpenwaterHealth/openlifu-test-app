@@ -21,6 +21,11 @@ from PyQt6.QtCore import QObject, QStandardPaths, QThread, pyqtSignal, pyqtSlot,
 
 logger = logging.getLogger(__name__)
 
+# Scratch key used by the user-config diagnostic tests. Written to the device
+# during the test then removed and the original config is restored, so no
+# real configuration is permanently modified.
+_UC_SCRATCH_KEY = "__lifu_sdk_test_scratch__"
+
 # ---------------------------------------------------------------------------
 # Result dataclass (plain dict for JSON serialisability)
 # ---------------------------------------------------------------------------
@@ -75,7 +80,7 @@ class _DiagnosticThread(QThread):
                         n = tx.get_tx_module_count()
                     except Exception:
                         n = 1
-                    total += 2 + 6 * max(n, 0)
+                    total += 2 + 12 * max(n, 0)
                 else:
                     total += 1
             except Exception:
@@ -399,6 +404,90 @@ class _DiagnosticThread(QThread):
             tests.append(self._do_threshold("tx", f"Module {m} Ambient Temp",
                                              lambda mi=m: tx.get_ambient_temperature(module=mi),
                                              lo=-10, hi=85, unit="°C"))
+
+            # ── User config — full safe test suite ────────────────────────
+            # Mirrors UserConfigInteractiveTests.run_all_safe() from the SDK
+            # unit-test suite. A scratch key is added, modified, removed, and
+            # round-tripped; the original config is always restored at the end.
+            _snap = [None]  # mutable snapshot holder, unique per module
+
+            # 1. Read & snapshot
+            def _ucfg_read(mi=m, snap=_snap):
+                cfg = tx.read_config(module=mi)
+                snap[0] = cfg  # save for restore
+                js = cfg.get_json_str()
+                if not js:
+                    raise ValueError("Empty config returned")
+                return f"seq={cfg.header.seq} len={cfg.header.json_len}B"
+            tests.append(self._do("tx", f"Module {m} UC Read", _ucfg_read))
+
+            # 2. Add scratch key
+            def _ucfg_add(mi=m):
+                cfg = tx.read_config(module=mi)
+                cfg.set(_UC_SCRATCH_KEY, {"iter": 0, "module": mi})
+                tx.write_config(cfg, module=mi)
+                verify = tx.read_config(module=mi)
+                if _UC_SCRATCH_KEY not in verify.json_data:
+                    raise ValueError("Scratch key not present after write")
+                return "key added+verified"
+            tests.append(self._do("tx", f"Module {m} UC Add Scratch", _ucfg_add))
+
+            # 3. Update scratch key
+            def _ucfg_update(mi=m):
+                cfg = tx.read_config(module=mi)
+                existing = cfg.get(_UC_SCRATCH_KEY) or {"iter": 0}
+                existing["iter"] = existing.get("iter", 0) + 1
+                cfg.set(_UC_SCRATCH_KEY, existing)
+                tx.write_config(cfg, module=mi)
+                verify = tx.read_config(module=mi)
+                actual = (verify.get(_UC_SCRATCH_KEY) or {}).get("iter", -1)
+                if actual != existing["iter"]:
+                    raise ValueError(
+                        f"iter mismatch: expected {existing['iter']}, got {actual}"
+                    )
+                return f"iter={actual}"
+            tests.append(self._do("tx", f"Module {m} UC Update Scratch", _ucfg_update))
+
+            # 4. Remove scratch key
+            def _ucfg_remove(mi=m):
+                cfg = tx.read_config(module=mi)
+                if _UC_SCRATCH_KEY in cfg.json_data:
+                    del cfg.json_data[_UC_SCRATCH_KEY]
+                tx.write_config(cfg, module=mi)
+                verify = tx.read_config(module=mi)
+                if _UC_SCRATCH_KEY in verify.json_data:
+                    raise ValueError("Scratch key still present after remove")
+                return "key removed+verified"
+            tests.append(self._do("tx", f"Module {m} UC Remove Scratch", _ucfg_remove))
+
+            # 5. Round-trip (add → verify → remove → verify)
+            def _ucfg_roundtrip(mi=m):
+                cfg = tx.read_config(module=mi)
+                cfg.set(_UC_SCRATCH_KEY, {"roundtrip": True})
+                tx.write_config(cfg, module=mi)
+                verify = tx.read_config(module=mi)
+                if _UC_SCRATCH_KEY not in verify.json_data:
+                    raise ValueError("Scratch key absent after add")
+                cfg = tx.read_config(module=mi)
+                del cfg.json_data[_UC_SCRATCH_KEY]
+                tx.write_config(cfg, module=mi)
+                verify = tx.read_config(module=mi)
+                if _UC_SCRATCH_KEY in verify.json_data:
+                    raise ValueError("Scratch key present after remove")
+                return "add→remove OK"
+            tests.append(self._do("tx", f"Module {m} UC Round-Trip", _ucfg_roundtrip))
+
+            # 6. Restore original config
+            def _ucfg_restore(mi=m, snap=_snap):
+                orig = snap[0]
+                if orig is None:
+                    raise ValueError("No snapshot — Read step must have failed")
+                tx.write_config_json(orig.get_json_str(), module=mi)
+                verify = tx.read_config(module=mi)
+                if verify.json_data != orig.json_data:
+                    raise ValueError("Restored config does not match original")
+                return f"restored seq={verify.header.seq}"
+            tests.append(self._do("tx", f"Module {m} UC Restore", _ucfg_restore))
 
         return tests
 
