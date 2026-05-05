@@ -193,19 +193,19 @@ class _TelemetryPollThread(QThread):
         conn = self._connector
         while not self._stop_event.wait(timeout=1.0):
             try:
-                if conn._txConnected:
-                    if conn._num_modules_connected <= 0:
-                        conn.queryNumModules()
-                    # While sonicating, the firmware pushes unsolicited STATUS
-                    # frames with temperature; polling the same endpoint races
-                    # those frames and causes UART timeouts, so skip RUNNING.
-                    if conn._state != RUNNING:
+                if conn._state != RUNNING:
+                    if conn._txConnected:
+                        if conn._num_modules_connected <= 0:
+                            conn.queryNumModules()
+                        # While sonicating, the firmware pushes unsolicited STATUS
+                        # frames with temperature; polling the same endpoint races
+                        # those frames and causes UART timeouts, so skip RUNNING.
                         conn.queryTxTemperature()
-                if conn._hvConnected:
-                    # Re-check power status every cycle so AUTO-settle events
-                    # are reflected in the UI promptly.
-                    conn.queryPowerStatus()
-                    conn.getMonitorVoltages()
+                    if conn._hvConnected:
+                        # Re-check power status every cycle so AUTO-settle events
+                        # are reflected in the UI promptly.
+                        conn.queryPowerStatus()
+                        conn.getMonitorVoltages()
             except Exception as e:
                 logger.warning(f"Telemetry poll loop error: {e}")
 
