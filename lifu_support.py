@@ -15,6 +15,7 @@ import logging
 import platform
 import sys
 import threading
+import time
 
 from PyQt6.QtCore import QObject, QStandardPaths, QThread, pyqtSignal, pyqtSlot, pyqtProperty
 
@@ -61,14 +62,57 @@ class _DiagnosticThread(QThread):
             results["console"] = self._run_console_tests()
         if "tx" in self._groups:
             results["tx"] = self._run_tx_tests()
-        if "voltages" in self._groups:
-            results["voltages"] = self._run_voltage_tests()
 
         payload = json.dumps({
             "timestamp": ts,
+            "system_info": self._collect_system_info(),
             "results": results,
         }, indent=2)
         self.runFinished.emit(payload)
+
+    def _collect_system_info(self) -> dict:
+        info: dict = {
+            "python_version": sys.version,
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+        }
+        iface = self._interface
+        if iface is None:
+            return info
+        try:
+            info["sdk_version"] = iface.get_sdk_version()
+        except Exception:
+            pass
+        hv_info: dict = {}
+        try:
+            hv = iface.hvcontroller
+            hv_info["firmware_version"] = hv.get_version()
+        except Exception:
+            pass
+        try:
+            hv_info["hardware_id"] = iface.hvcontroller.get_hardware_id(raw_hex=True)
+        except Exception:
+            pass
+        if hv_info:
+            info["console"] = hv_info
+        try:
+            module_count = iface.txdevice.get_tx_module_count()
+            modules = []
+            for i in range(module_count):
+                m: dict = {"module": i}
+                try:
+                    m["firmware_version"] = iface.txdevice.get_version(module=i)
+                except Exception:
+                    pass
+                try:
+                    m["hardware_id"] = iface.txdevice.get_hardware_id(module=i, raw_hex=True)
+                except Exception:
+                    pass
+                modules.append(m)
+            info["transmitter"] = {"module_count": module_count, "modules": modules}
+        except Exception:
+            pass
+        return info
 
     # ------------------------------------------------------------------ #
     # Console / HV tests                                                   #
@@ -88,56 +132,165 @@ class _DiagnosticThread(QThread):
 
         tests = []
 
-        # Ping
+        # ── Ping, firmware, hardware ID, temperatures ──────────────────
         tests.append(self._do("console", "Console Ping", hv.ping))
 
-        # Firmware version
         tests.append(self._do("console", "Console Firmware Version",
                                hv.get_version, expect_truthy=True))
 
-        # Hardware ID
         tests.append(self._do("console", "Console Hardware ID",
                                lambda: hv.get_hardware_id(raw_hex=True),
                                expect_truthy=True))
 
-        # Temperature 1
         tests.append(self._do_threshold("console", "Console Temp 1",
                                          hv.get_temperature1, lo=-10, hi=85,
                                          unit="°C"))
 
-        # Temperature 2
         tests.append(self._do_threshold("console", "Console Temp 2",
                                          hv.get_temperature2, lo=-10, hi=85,
                                          unit="°C"))
 
-        # 12V rail status
-        tests.append(self._do("console", "12V Rail Status",
-                               hv.get_12v_status,
-                               detail_fn=lambda v: "12V is ON" if v else "12V is OFF"))
+        # ── RGB LED – set each state then read back to verify ──────────
+        # Hardware mapping (from connector): 0=OFF, 1=RED, 2=GREEN, 3=BLUE
+        _RGB_LABEL = {0: "OFF", 1: "RED", 2: "GREEN", 3: "BLUE"}
+        for _state, _label in [(0, "OFF"), (1, "RED"), (3, "BLUE"), (2, "GREEN")]:
+            def _rgb_cycle(s=_state, lbl=_label):
+                hv.set_rgb_led(s)
+                actual = hv.get_rgb_led()
+                if actual != s:
+                    raise ValueError(
+                        f"Expected {lbl} ({s}), "
+                        f"read back {_RGB_LABEL.get(actual, actual)} ({actual})"
+                    )
+                return _RGB_LABEL.get(actual, actual)
+            tests.append(self._do("console", f"RGB LED Set {_label}", _rgb_cycle))
 
-        # HV status (read-only, not toggling)
-        tests.append(self._do("console", "HV Rail Status",
-                               hv.get_hv_status,
-                               detail_fn=lambda v: "HV is ON" if v else "HV is OFF"))
+        # ── 12V rail ───────────────────────────────────────────────────
+        # 1. Ensure 12V starts OFF; turn it off if currently on
+        def _12v_ensure_off():
+            if hv.get_12v_status():
+                hv.turn_12v_off()
+                time.sleep(2)
+            if hv.get_12v_status():
+                raise ValueError("12V still ON after turn_12v_off()")
+            return "12V confirmed OFF"
+        tests.append(self._do("console", "12V Ensure OFF", _12v_ensure_off))
 
-        # Voltage monitor
-        tests.append(self._do("console", "Voltage Monitor (VMON)",
-                               hv.get_vmon_values,
-                               detail_fn=lambda ch: ", ".join(
-                                   f"ch{c['channel']}={c['converted_voltage']:.2f}V"
-                                   for c in ch
-                               )))
+        # 2. VMON 12V channel (index 4) must read −1 to +1 V while rail is off
+        def _vmon_12v_off():
+            v = float(hv.get_vmon_values()[4]["converted_voltage"])
+            if not (-1.0 <= v <= 1.0):
+                raise ValueError(f"{v:.3f} V — expected between −1 and +1 V (rail off)")
+            return v
+        tests.append(self._do("console", "12V VMON OFF Check",
+                               _vmon_12v_off,
+                               detail_fn=lambda v: f"{v:.3f} V"))
 
-        # Fan speeds (read only)
-        for fan_id, fan_name in [(0, "Fan 0 (Bottom)"), (1, "Fan 1 (Top)")]:
-            tests.append(self._do("console", f"{fan_name} Speed",
-                                   lambda fid=fan_id: hv.get_fan_speed(fid),
+        # 3. Turn 12V on and verify VMON 12V reads 12 V ± 5 %
+        def _12v_on_and_check():
+            hv.turn_12v_on()
+            time.sleep(2)
+            v = float(hv.get_vmon_values()[4]["converted_voltage"])
+            lo, hi = 12.0 * 0.95, 12.0 * 1.05
+            if not (lo <= v <= hi):
+                raise ValueError(
+                    f"{v:.3f} V out of 12 V ±5% window ({lo:.2f}–{hi:.2f} V)"
+                )
+            return v
+        tests.append(self._do("console", "12V VMON ON Check",
+                               _12v_on_and_check,
+                               detail_fn=lambda v: f"{v:.3f} V"))
+
+        # ── HV rail ────────────────────────────────────────────────────
+        # 4. Ensure HV starts OFF
+        def _hv_ensure_off():
+            if hv.get_hv_status():
+                hv.turn_hv_off()
+                time.sleep(2)
+            if hv.get_hv_status():
+                raise ValueError("HV still ON after turn_hv_off()")
+            return "HV confirmed OFF"
+        tests.append(self._do("console", "HV Ensure OFF", _hv_ensure_off))
+
+        # 5. All four HV VMON channels must read −1 to +1 V while HV is off
+        #    HVP1=idx0, HVP2=idx1 (positive rails)
+        #    HVM2=idx2, HVM1=idx3 (negative rails)
+        for _idx, _ch in [(0, "HVP1"), (1, "HVP2"), (3, "HVM1"), (2, "HVM2")]:
+            def _hv_off_check(idx=_idx, ch=_ch):
+                v = float(hv.get_vmon_values()[idx]["converted_voltage"])
+                if not (-1.0 <= v <= 1.0):
+                    raise ValueError(
+                        f"{v:.3f} V — expected between −1 and +1 V (HV off)"
+                    )
+                return v
+            tests.append(self._do("console", f"{_ch} VMON HV-OFF Check",
+                                   _hv_off_check,
+                                   detail_fn=lambda v: f"{v:.3f} V"))
+
+        # 6. Set HV voltage to 15 V
+        def _hv_set_15v():
+            hv.set_voltage(voltage=15.0)
+            return "voltage set to 15 V"
+        tests.append(self._do("console", "HV Set 15 V", _hv_set_15v))
+
+        # 7. Turn HV on and confirm status
+        def _hv_turn_on():
+            hv.turn_hv_on()
+            time.sleep(2)
+            if not hv.get_hv_status():
+                raise ValueError("HV did not turn ON after turn_hv_on()")
+            return "HV ON confirmed"
+        tests.append(self._do("console", "HV Turn ON", _hv_turn_on))
+
+        # 8. Positive rails: HVP1, HVP2 must read +15 V ± 5 %
+        for _idx, _ch in [(0, "HVP1"), (1, "HVP2")]:
+            def _hvp_on_check(idx=_idx, ch=_ch):
+                v = float(hv.get_vmon_values()[idx]["converted_voltage"])
+                lo, hi = 15.0 * 0.95, 15.0 * 1.05
+                if not (lo <= v <= hi):
+                    raise ValueError(
+                        f"{v:.3f} V out of +15 V ±5% window ({lo:.2f}–{hi:.2f} V)"
+                    )
+                return v
+            tests.append(self._do("console", f"{_ch} VMON HV-ON Check",
+                                   _hvp_on_check,
+                                   detail_fn=lambda v: f"{v:.3f} V"))
+
+        # 9. Negative rails: HVM1, HVM2 must read −15 V ± 5 %
+        for _idx, _ch in [(3, "HVM1"), (2, "HVM2")]:
+            def _hvm_on_check(idx=_idx, ch=_ch):
+                v = float(hv.get_vmon_values()[idx]["converted_voltage"])
+                lo, hi = -15.0 * 1.05, -15.0 * 0.95
+                if not (lo <= v <= hi):
+                    raise ValueError(
+                        f"{v:.3f} V out of −15 V ±5% window ({lo:.2f}–{hi:.2f} V)"
+                    )
+                return v
+            tests.append(self._do("console", f"{_ch} VMON HV-ON Check",
+                                   _hvm_on_check,
+                                   detail_fn=lambda v: f"{v:.3f} V"))
+
+        # ── Fan tests – set 50 %, verify, return to 0 % ────────────────
+        for _fan_id, _fan_name in [(0, "Fan 0 (Bottom)"), (1, "Fan 1 (Top)")]:
+            def _fan_50(fid=_fan_id, fname=_fan_name):
+                result = hv.set_fan_speed(fan_id=fid, fan_speed=50)
+                if result != 50:
+                    raise ValueError(f"Set 50% but fan reported {result}%")
+                time.sleep(2)
+                return result
+            tests.append(self._do("console", f"{_fan_name} Set 50%",
+                                   _fan_50,
                                    detail_fn=lambda v: f"{v}%"))
 
-        # RGB LED state (read only)
-        tests.append(self._do("console", "RGB LED State",
-                               hv.get_rgb_led,
-                               detail_fn=lambda v: {0:"OFF",1:"RED",2:"BLUE",3:"GREEN"}.get(v, f"{v}")))
+            def _fan_0(fid=_fan_id, fname=_fan_name):
+                result = hv.set_fan_speed(fan_id=fid, fan_speed=0)
+                if result != 0:
+                    raise ValueError(f"Set 0% but fan reported {result}%")
+                time.sleep(2)
+                return result
+            tests.append(self._do("console", f"{_fan_name} Set 0%",
+                                   _fan_0,
+                                   detail_fn=lambda v: f"{v}%"))
 
         return tests
 
@@ -159,10 +312,7 @@ class _DiagnosticThread(QThread):
 
         tests = []
 
-        # Ping
-        tests.append(self._do("tx", "TX Ping", tx.ping))
-
-        # Module count
+        # ── 1. Module count ────────────────────────────────────────────
         def _module_count():
             c = tx.get_tx_module_count()
             if c < 1:
@@ -172,13 +322,32 @@ class _DiagnosticThread(QThread):
                                _module_count,
                                detail_fn=lambda v: f"{v} module(s)"))
 
-        # Per-module tests
+        # ── 2. TX7332 chip enumeration (single call, all slaves) ───────
+        tests.append(self._do("tx", "TX7332 Chip Enum",
+                               tx.enum_tx7332_devices,
+                               detail_fn=lambda v: f"{v} chip(s)"))
+
+        # ── 3. Per-module tests ────────────────────────────────────────
         try:
             module_count = tx.get_tx_module_count()
         except Exception:
             module_count = 0
 
+        echo_payload = b"\xDE\xAD\xBE\xEF"
+
         for m in range(module_count):
+            # Ping
+            tests.append(self._do("tx", f"Module {m} Ping",
+                                   lambda mi=m: tx.ping(module=mi)))
+
+            # Echo loopback
+            def _echo(mi=m):
+                data, length = tx.echo(echo_data=bytearray(echo_payload), module=mi)
+                if bytes(data) != echo_payload:
+                    raise ValueError(f"Echo mismatch: got {bytes(data).hex()}")
+                return True
+            tests.append(self._do("tx", f"Module {m} Echo Loopback", _echo))
+
             # Firmware version
             tests.append(self._do("tx", f"Module {m} Firmware Version",
                                    lambda mi=m: tx.get_version(module=mi),
@@ -198,20 +367,6 @@ class _DiagnosticThread(QThread):
             tests.append(self._do_threshold("tx", f"Module {m} Ambient Temp",
                                              lambda mi=m: tx.get_ambient_temperature(module=mi),
                                              lo=-10, hi=85, unit="°C"))
-
-            # TX7332 chip enumeration
-            tests.append(self._do("tx", f"Module {m} TX7332 Enum",
-                                   lambda mi=m: tx.enum_tx7332_devices(),
-                                   detail_fn=lambda v: f"{v} chip(s)"))
-
-        # Echo loopback
-        echo_payload = b"\xDE\xAD\xBE\xEF"
-        def _echo():
-            data, length = tx.echo(echo_data=bytearray(echo_payload))
-            if bytes(data) != echo_payload:
-                raise ValueError(f"Echo mismatch: got {bytes(data).hex()}")
-            return True
-        tests.append(self._do("tx", "TX Echo Loopback", _echo))
 
         return tests
 
@@ -444,7 +599,7 @@ class LIFUSupportConnector(QObject):
 
     def _render_pdf(self, results_json: str, file_path: str):
         try:
-            from PyQt6.QtGui import QTextDocument
+            from PyQt6.QtGui import QPageSize, QTextDocument
             from PyQt6.QtPrintSupport import QPrinter
 
             try:
@@ -454,13 +609,14 @@ class LIFUSupportConnector(QObject):
 
             ts = data.get("timestamp", datetime.datetime.now().isoformat(timespec="seconds"))
             results = data.get("results", {})
+            system_info = data.get("system_info", {})
 
-            html = self._build_report_html(ts, results)
+            html = self._build_report_html(ts, results, system_info)
 
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             printer.setOutputFileName(file_path)
-            printer.setPageSize(QPrinter.PageSize.A4)
+            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
 
             doc = QTextDocument()
             doc.setHtml(html)
@@ -472,9 +628,48 @@ class LIFUSupportConnector(QObject):
             self.pdfSaved.emit(False, str(exc))
 
     @staticmethod
-    def _build_report_html(timestamp: str, results: dict) -> str:
+    def _build_report_html(timestamp: str, results: dict, system_info: dict = None) -> str:
         STATUS_COLOR = {"PASS": "#2ECC71", "FAIL": "#E74C3C", "SKIP": "#F39C12"}
-        GROUP_LABEL  = {"console": "Console (HV Controller)", "tx": "Transmitter (TX)", "voltages": "Voltage Monitor"}
+        GROUP_LABEL  = {"console": "Console (HV Controller)", "tx": "Transmitter (TX)"}
+
+        # ── System information header ──────────────────────────────────
+        sysinfo = system_info or {}
+
+        def _si_row(label, value):
+            return (f'<tr><td style="width:200px;padding:3px 8px;color:#555;font-weight:bold;">{label}</td>'
+                    f'<td style="padding:3px 8px;font-family:monospace;">{value}</td></tr>')
+
+        si_rows = ""
+        if sysinfo.get("python_version"):
+            si_rows += _si_row("Python", sysinfo["python_version"].split()[0])
+        if sysinfo.get("platform"):
+            si_rows += _si_row("Platform", sysinfo["platform"])
+        if sysinfo.get("machine"):
+            si_rows += _si_row("Machine", sysinfo["machine"])
+        if sysinfo.get("sdk_version"):
+            si_rows += _si_row("SDK Version", sysinfo["sdk_version"])
+        console_info = sysinfo.get("console", {})
+        if console_info.get("firmware_version"):
+            si_rows += _si_row("HV Firmware", console_info["firmware_version"])
+        if console_info.get("hardware_id"):
+            si_rows += _si_row("HV Hardware ID", console_info["hardware_id"])
+        tx_info = sysinfo.get("transmitter", {})
+        if tx_info.get("module_count") is not None:
+            si_rows += _si_row("TX Module Count", tx_info["module_count"])
+        for m in tx_info.get("modules", []):
+            idx = m.get("module", "?")
+            if m.get("firmware_version"):
+                si_rows += _si_row(f"TX Module {idx} Firmware", m["firmware_version"])
+            if m.get("hardware_id"):
+                si_rows += _si_row(f"TX Module {idx} HW ID", m["hardware_id"])
+
+        sysinfo_block = ""
+        if si_rows:
+            sysinfo_block = f"""
+        <h2 style="color:#1a3a5c;font-size:12pt;margin-top:16px;">System Information</h2>
+        <table style="border-collapse:collapse;width:100%;margin-bottom:16px;">
+          {si_rows}
+        </table>"""
 
         total = sum(len(v) for v in results.values())
         passed = sum(1 for v in results.values() for r in v if r.get("status") == "PASS")
@@ -510,6 +705,7 @@ class LIFUSupportConnector(QObject):
         </style></head><body>
         <h1>OpenLIFU Hardware Diagnostic Report</h1>
         <p class="meta">Generated: {timestamp}</p>
+        {sysinfo_block}
         <div class="summary">
           <strong>Summary:</strong>&nbsp;
           {total} tests &mdash;

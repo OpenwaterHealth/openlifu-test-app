@@ -644,7 +644,6 @@ Rectangle {
                     model: [
                         { label: "Console",   group: "console"  },
                         { label: "TX",        group: "tx"       },
-                        { label: "Voltages",  group: "voltages" },
                     ]
                     delegate: Rectangle {
                         width: 100; height: 32; radius: 6
