@@ -101,6 +101,85 @@ Rectangle {
     property int progressCurrent: 0
     property int progressTotal: 0
 
+    // ----- Thermal management -----
+    // While the TX temperature is above ``coolingThreshold`` the page
+    // surfaces a "Cooling Down" status and inhibits Start. At or above
+    // ``shutdownThreshold`` we abort sonication, force HV off, and pop up
+    // a thermal-shutdown notice (one-shot, re-armed on cooldown).
+    readonly property real coolingThreshold: 50.0
+    readonly property real shutdownThreshold: 75.0
+    property bool coolingDown: false
+    property bool thermalShutdownTriggered: false
+
+    function maxTxTemperature() {
+        var maxT = NaN
+        for (var i = 0; i < txTemperatures.length; i++) {
+            var t = txTemperatures[i]
+            if (typeof t === "number" && !isNaN(t)) {
+                if (isNaN(maxT) || t > maxT) maxT = t
+            }
+        }
+        return maxT
+    }
+
+    function evaluateThermalState() {
+        var t = maxTxTemperature()
+        if (isNaN(t)) {
+            // No telemetry yet -- don't latch a cooling-down state on
+            // boot or before the first STATUS frame arrives.
+            coolingDown = false
+            return
+        }
+        var wasCooling = coolingDown
+        var nowCooling = (t > coolingThreshold)
+
+        // >=75C is a hard shutdown: aborts sonication, drops HV, pops
+        // dialog. Force cooling true so the transition logic below also
+        // fires (HV-off is already handled inside the shutdown helper,
+        // but keeping the path consistent is clearer).
+        if (t >= shutdownThreshold) {
+            triggerThermalShutdown(t)
+            nowCooling = true
+        }
+
+        if (nowCooling && !wasCooling) {
+            // Just entered cooldown -- whether from a successful run
+            // ending hot, or from a >75C abort. Force HV off so the rail
+            // doesn't sit energized while the operator waits (or walks
+            // away). Skip if a thermal shutdown already nuked HV mode.
+            if (LIFUConnector.hvEnableMode !== 2) {
+                LIFUConnector.setHvEnableMode(2)
+            }
+        }
+
+        if (!nowCooling && wasCooling) {
+            // Just dropped below the cool threshold. Re-arm the
+            // shutdown one-shot, and force the device back to
+            // unconfigured so the user has to explicitly Program Device
+            // again before another sonication can start. (Safer if the
+            // operator walked away mid-cooldown.)
+            thermalShutdownTriggered = false
+            if (LIFUConnector.state >= 2 && LIFUConnector.state !== 3) {
+                LIFUConnector.reset_configuration()
+            }
+        }
+
+        coolingDown = nowCooling
+    }
+
+    function triggerThermalShutdown(observedTemp) {
+        if (thermalShutdownTriggered) return
+        thermalShutdownTriggered = true
+        if (progressState === "running") progressState = "stopped"
+        if (LIFUConnector.state === 3) {
+            LIFUConnector.stop_sonication()
+        }
+        // Force HV off regardless of current enable mode.
+        LIFUConnector.setHvEnableMode(2)
+        thermalShutdownDialog.observedTemp = observedTemp
+        thermalShutdownDialog.open()
+    }
+
     function resetProgressIdle() {
         progressState = "idle"
         progressCurrent = 0
@@ -162,12 +241,20 @@ Rectangle {
     }
 
     function getSystemStateText() {
-        return LIFUConnector.state === 0 ? "Disconnected"
-             : LIFUConnector.state === 1 ? "Connected"
-             : LIFUConnector.state === 2 ? "Ready"
-             : LIFUConnector.state === 3 ? "Running"
-             : LIFUConnector.state === 4 ? "Test Script Ready"
-             : "Disconnected"
+        if (LIFUConnector.state === 3) return "Running"
+        if (LIFUConnector.state === 2) return coolingDown ? "Cooling Down" : "Ready"
+        if (LIFUConnector.state === 0) return "Disconnected"
+        if (LIFUConnector.state === 1) return "Connected"
+        if (LIFUConnector.state === 4) return "Test Script Ready"
+        return "Disconnected"
+    }
+
+    function getSystemStateColor() {
+        if (!LIFUConnector.txConnected) return "#C0392B"
+        if (LIFUConnector.state === 3)   return "#5db9ff"  // running
+        if (LIFUConnector.state === 2 && coolingDown) return "#3498DB"  // cooling
+        if (LIFUConnector.state < 2)     return "#0f5d24"
+        return "#269cf6"
     }
 
     function getTXIndicatorColor() {
@@ -237,22 +324,6 @@ Rectangle {
     }
 
     Component.onCompleted: refreshPlot()
-
-    // HEADER
-    Text {
-        id: headerText
-        text: "Device Control"
-        font.pixelSize: 18
-        font.weight: Font.Bold
-        color: "white"
-        horizontalAlignment: Text.AlignHCenter
-        anchors {
-            top: parent.top
-            left: parent.left
-            right: parent.right
-            topMargin: 10
-        }
-    }
 
     // Master layout: top RowLayout (3 columns) + bottom controls panel.
     ColumnLayout {
@@ -491,24 +562,6 @@ Rectangle {
                         }
                     }
                 }
-
-                Button {
-                    id: vetRefreshButton
-                    text: "\u21bb Refresh"
-                    font.pixelSize: 13
-                    width: 120
-                    height: 44
-                    anchors.bottom: parent.bottom
-                    anchors.right: parent.right
-                    anchors.margins: 8
-                    background: Rectangle {
-                        color: vetRefreshButton.down ? "#2F333D" : "#3A3F4B"
-                        radius: 4
-                        border.color: "#BDC3C7"
-                        opacity: 0.85
-                    }
-                    onClicked: refreshPlot()
-                }
             }
         }
 
@@ -526,33 +579,22 @@ Rectangle {
                 anchors.margins: 12
                 spacing: 10
 
-                // Status row: state text + connection indicators
+                // Status row: state text + temperature + HV rails.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 16
 
                     Text {
                         text: "System State: " + getSystemStateText()
-                        color: getTXIndicatorColor()
+                        color: getSystemStateColor()
                         font.pixelSize: 14
                         Layout.alignment: Qt.AlignVCenter
                     }
 
                     Item { Layout.fillWidth: true }
 
-                    RowLayout {
-                        spacing: 6
-                        Rectangle { width: 18; height: 18; radius: 9; color: getTXIndicatorColor(); border.color: "black"; border.width: 1 }
-                        Text { text: "TX"; color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: getTxTemperatureText(); color: "#9FB3C8"; font.pixelSize: 12 }
-                    }
-
-                    RowLayout {
-                        spacing: 6
-                        Rectangle { width: 18; height: 18; radius: 9; color: getHVIndicatorColor(); border.color: "black"; border.width: 1 }
-                        Text { text: "HV"; color: "#BDC3C7"; font.pixelSize: 13 }
-                        Text { text: getHvRailText(); color: "#9FB3C8"; font.pixelSize: 12 }
-                    }
+                    Text { text: getTxTemperatureText(); color: "#9FB3C8"; font.pixelSize: 12 }
+                    Text { text: getHvRailText();       color: "#9FB3C8"; font.pixelSize: 12 }
                 }
 
                 // Big progress bar
@@ -632,6 +674,7 @@ Rectangle {
                         font.weight: Font.Bold
                         visible: LIFUConnector.state >= 2
                         enabled: LIFUConnector.state === 2
+                                 && !coolingDown
                                  && LIFUConnector.hvConnected
                                  && LIFUConnector.hvEnableMode !== 2
                         background: Rectangle {
@@ -690,6 +733,56 @@ Rectangle {
         }
     }
 
+    // Local thermal-shutdown popup. Distinct from the global device-error
+    // dialog so the message is specific to the Vet page's safety logic.
+    Dialog {
+        id: thermalShutdownDialog
+        modal: true
+        focus: true
+        title: "Thermal Shutdown"
+        width: 480
+        anchors.centerIn: parent
+
+        property real observedTemp: 0
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#7A2E2E"
+            border.width: 2
+            radius: 8
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Text {
+                text: "The transducer has entered thermal shutdown."
+                color: "#F5B5B5"
+                font.pixelSize: 15
+                font.bold: true
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+            Text {
+                text: "Measured TX temperature " + thermalShutdownDialog.observedTemp.toFixed(1)
+                      + " \u00b0C exceeded the " + shutdownThreshold.toFixed(0)
+                      + " \u00b0C limit. Sonication has been stopped and HV turned off. "
+                      + "Wait for the device to cool below " + coolingThreshold.toFixed(0)
+                      + " \u00b0C before resuming."
+                color: "#FFD3D3"
+                font.pixelSize: 13
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 10
+            Item { Layout.fillWidth: true }
+            Button { text: "OK"; onClicked: thermalShutdownDialog.close() }
+            Item { Layout.preferredWidth: 10 }
+        }
+    }
+
     Connections {
         target: LIFUConnector
 
@@ -702,6 +795,7 @@ Rectangle {
             while (arr.length <= module) arr.push(NaN)
             arr[module] = tx_temp
             txTemperatures = arr
+            evaluateThermalState()
         }
 
         function onSonicationProgressUpdated(pt_curr, pt_total, p_curr, p_total) {
@@ -734,6 +828,10 @@ Rectangle {
         function onStateChanged(state) {
             if (previousConnectorState === 3 && state !== 3) {
                 clearStatusTelemetry()
+                // Re-evaluate cooling on the just-cleared telemetry so
+                // the status flips out of "Cooling Down" once the next
+                // STATUS frame arrives (and not before).
+                coolingDown = false
             }
             if (state >= 2) {
                 if (configuredModuleCount <= 0) {
