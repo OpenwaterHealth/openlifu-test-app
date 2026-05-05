@@ -245,7 +245,6 @@ Rectangle {
             everConfigured = true
             configuredModuleCount = LIFUConnector.queryNumModulesConnected
         }
-        refreshPlot()
     }
 
     function clearStatusTelemetry() {
@@ -349,7 +348,6 @@ Rectangle {
                                         pulseTrainCount().toString(),
                                         fixedTriggerMode
                                     )
-                                    refreshPlot()
                                 }
                             }
                         }
