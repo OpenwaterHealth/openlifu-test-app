@@ -197,6 +197,8 @@ class _TelemetryPollThread(QThread):
         _HV_FAIL_LIMIT = 3
         _TX_FAIL_LIMIT = 3
         while not self._stop_event.wait(timeout=1.0):
+            if conn._monitoring_paused:
+                continue
             try:
                 if conn._txConnected:
                     if conn._num_modules_connected <= 0:
@@ -325,6 +327,7 @@ class LIFUConnector(QObject):
         self._tx_connect_time: float | None = None  # monotonic timestamp of last TX connect
         self._hv_poll_failures = 0   # consecutive HV telemetry failures
         self._tx_poll_failures = 0   # consecutive TX telemetry failures
+        self._monitoring_paused = False  # set True while diagnostics tab is active
         
         # Solution loading state
         self._solution_loaded = False
@@ -1656,6 +1659,18 @@ class LIFUConnector(QObject):
             return False
         finally:
             self._interface_mutex.unlock()
+
+    @pyqtSlot(bool)
+    def pauseMonitoring(self, pause: bool):
+        """Pause or resume background telemetry polling.
+
+        Call with ``True`` while the diagnostics tab is active so that the
+        poll thread does not race hardware calls made by the diagnostic tests.
+        Call with ``False`` when leaving the diagnostics tab to resume normal
+        telemetry.
+        """
+        self._monitoring_paused = pause
+        logger.info("Telemetry polling %s", "PAUSED" if pause else "RESUMED")
 
     @pyqtSlot(bool)
     def setAsyncMode(self, enable: bool):

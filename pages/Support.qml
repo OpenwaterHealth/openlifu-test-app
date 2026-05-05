@@ -76,6 +76,8 @@ Rectangle {
     property var    testSummary:   ({passed:0, failed:0, skipped:0})
     property string lastResultsJson: ""
     property int    activeTab:     0    // 0 = Hardware Monitor, 1 = Diagnostics
+    property int    testStepsDone:  0
+    property int    testStepsTotal: 0
 
     // ── Reconnect debounce timers ─────────────────────────────────────
     // Delay queries slightly after connect so the SDK can fully initialise
@@ -215,6 +217,10 @@ Rectangle {
             supportPage.testRunning    = false
             supportPage.lastResultsJson = json
         }
+        function onTestProgressUpdated(done, total) {
+            supportPage.testStepsDone  = done
+            supportPage.testStepsTotal = total
+        }
         function onPdfSaved(success, pathOrError) {
             pdfStatusText.text    = success ? ("Saved: " + pathOrError) : ("Error: " + pathOrError)
             pdfStatusText.color   = success ? "#2ECC71" : "#E74C3C"
@@ -236,6 +242,12 @@ Rectangle {
         if (LIFUConnector.txConnected) txQueryTimer.start()
         if (!LIFUConnector.hvConnected && !LIFUConnector.txConnected)
             supportPage.diagnosticsJson = LIFUSupportConnector.collectDiagnostics()
+    }
+
+    // Pause background telemetry while the Diagnostics tab is active so
+    // the poll thread doesn't race the diagnostic test hardware calls.
+    onActiveTabChanged: {
+        LIFUConnector.pauseMonitoring(activeTab === 1)
     }
 
     // ── Layout ────────────────────────────────────────────────────────
@@ -662,6 +674,8 @@ Rectangle {
                             onClicked: {
                                 supportPage.testResults = []
                                 supportPage.testSummary = {passed:0, failed:0, skipped:0}
+                                supportPage.testStepsDone  = 0
+                                supportPage.testStepsTotal = 0
                                 supportPage.testRunning = true
                                 LIFUSupportConnector.runTestGroup(modelData.group)
                             }
@@ -688,6 +702,8 @@ Rectangle {
                         onClicked: {
                             supportPage.testResults = []
                             supportPage.testSummary = {passed:0, failed:0, skipped:0}
+                            supportPage.testStepsDone  = 0
+                            supportPage.testStepsTotal = 0
                             supportPage.testRunning = true
                             LIFUSupportConnector.runAllTests()
                         }
@@ -721,6 +737,37 @@ Rectangle {
                         }
                     }
                     Behavior on color { ColorAnimation { duration: 120 } }
+                }
+            }
+
+            // ── Diagnostic progress bar ───────────────────────────
+            ProgressBar {
+                id: diagProgressBar
+                Layout.fillWidth: true
+                visible: supportPage.testRunning || supportPage.testStepsDone > 0
+                from: 0
+                to: supportPage.testStepsTotal > 0 ? supportPage.testStepsTotal : 1
+                value: supportPage.testStepsDone
+                indeterminate: supportPage.testRunning && supportPage.testStepsTotal === 0
+
+                background: Rectangle {
+                    implicitHeight: 8
+                    color: "#1A1A1C"
+                    radius: 4
+                    border.color: "#3E4E6F"
+                }
+                contentItem: Item {
+                    implicitHeight: 8
+                    Rectangle {
+                        width: diagProgressBar.indeterminate
+                               ? 0   // handled by the default style animation below
+                               : diagProgressBar.visualPosition * parent.width
+                        height: parent.height
+                        radius: 4
+                        color: supportPage.testRunning ? "#F39C12" : "#2ECC71"
+                        Behavior on width { NumberAnimation { duration: 150 } }
+                        Behavior on color { ColorAnimation { duration: 300 } }
+                    }
                 }
             }
 

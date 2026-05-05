@@ -46,15 +46,47 @@ class _DiagnosticThread(QThread):
     testResult = pyqtSignal(str, str, str, str)
     # Emitted when the full run finishes with the JSON results blob
     runFinished = pyqtSignal(str)
+    # Emitted after every test step: (steps_done, total_steps)
+    stepCompleted = pyqtSignal(int, int)
 
     def __init__(self, interface, groups: list[str], parent=None):
         super().__init__(parent)
         self._interface = interface
         self._groups = groups   # e.g. ["console", "tx", "voltages"]
+        self._steps_done = 0
+        self._total_steps = 0
 
     # ------------------------------------------------------------------ #
 
+    def _count_steps(self) -> int:
+        """Estimate the total number of test steps before running."""
+        total = 0
+        if "console" in self._groups:
+            try:
+                hv = self._interface.hvcontroller
+                total += 27 if hv.is_connected() else 1
+            except Exception:
+                total += 1
+        if "tx" in self._groups:
+            try:
+                tx = self._interface.txdevice
+                if tx.is_connected():
+                    try:
+                        n = tx.get_tx_module_count()
+                    except Exception:
+                        n = 1
+                    total += 2 + 6 * max(n, 0)
+                else:
+                    total += 1
+            except Exception:
+                total += 1
+        return max(total, 1)
+
     def run(self):
+        self._steps_done = 0
+        self._total_steps = self._count_steps()
+        self.stepCompleted.emit(0, self._total_steps)
+
         results = {}
         ts = datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -371,60 +403,6 @@ class _DiagnosticThread(QThread):
         return tests
 
     # ------------------------------------------------------------------ #
-    # Voltage / power-rail tests                                           #
-    # ------------------------------------------------------------------ #
-
-    def _run_voltage_tests(self) -> list:
-        hv = None
-        try:
-            hv = self._interface.hvcontroller
-        except Exception:
-            pass
-
-        if hv is None or not hv.is_connected():
-            r = _skip("Voltage Monitor")
-            self.testResult.emit("voltages", r["name"], r["status"], r["detail"])
-            return [r]
-
-        tests = []
-
-        CHANNEL_NAMES = ["HVP1", "HVP2", "HVM2", "HVM1", "12V", "VCA1", "VCB1", "VCC1"]
-        # Expected ranges (lo, hi) in volts; None = no limit
-        CHANNEL_RANGES = {
-            "HVP1": (0.0, 120.0),
-            "HVP2": (0.0, 120.0),
-            "HVM2": (-120.0, 0.0),
-            "HVM1": (-120.0, 0.0),
-            "12V":  (10.0, 14.0),
-            "VCA1": (0.0, 15.0),
-            "VCB1": (0.0, 15.0),
-            "VCC1": (0.0, 15.0),
-        }
-
-        try:
-            channels = hv.get_vmon_values()
-            for i, ch in enumerate(channels):
-                name = CHANNEL_NAMES[i] if i < len(CHANNEL_NAMES) else f"ch{i}"
-                v = ch.get("converted_voltage", ch.get("voltage", 0.0))
-                lo, hi = CHANNEL_RANGES.get(name, (None, None))
-                detail = f"{v:.3f} V"
-                if lo is not None and hi is not None:
-                    if lo <= v <= hi:
-                        r = _pass(f"VMON {name}", detail)
-                    else:
-                        r = _fail(f"VMON {name}", f"{detail} (expected {lo}–{hi} V)")
-                else:
-                    r = _pass(f"VMON {name}", detail)
-                self.testResult.emit("voltages", r["name"], r["status"], r["detail"])
-                tests.append(r)
-        except Exception as exc:
-            r = _fail("Voltage Monitor", str(exc))
-            self.testResult.emit("voltages", r["name"], r["status"], r["detail"])
-            tests.append(r)
-
-        return tests
-
-    # ------------------------------------------------------------------ #
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
 
@@ -440,6 +418,8 @@ class _DiagnosticThread(QThread):
         except Exception as exc:
             r = _fail(name, str(exc))
         self.testResult.emit(group, r["name"], r["status"], r["detail"])
+        self._steps_done += 1
+        self.stepCompleted.emit(self._steps_done, self._total_steps)
         return r
 
     def _do_threshold(self, group: str, name: str, fn, lo: float, hi: float,
@@ -454,6 +434,8 @@ class _DiagnosticThread(QThread):
         except Exception as exc:
             r = _fail(name, str(exc))
         self.testResult.emit(group, r["name"], r["status"], r["detail"])
+        self._steps_done += 1
+        self.stepCompleted.emit(self._steps_done, self._total_steps)
         return r
 
 
@@ -476,6 +458,7 @@ class LIFUSupportConnector(QObject):
     diagnosticsReady    = pyqtSignal(str)       # JSON system-info blob
     testResultReady     = pyqtSignal(str, str, str, str)   # group, name, status, detail
     testRunFinished     = pyqtSignal(str)        # full JSON results blob
+    testProgressUpdated = pyqtSignal(int, int)   # steps_done, total_steps
     pdfSaved            = pyqtSignal(bool, str)  # success, path-or-error
 
     def __init__(self, interface=None, parent=None):
@@ -576,6 +559,7 @@ class LIFUSupportConnector(QObject):
         self._diag_thread = _DiagnosticThread(self._interface, groups, parent=self)
         self._diag_thread.testResult.connect(self.testResultReady)
         self._diag_thread.runFinished.connect(self.testRunFinished)
+        self._diag_thread.stepCompleted.connect(self.testProgressUpdated)
         self._diag_thread.start()
 
     # ------------------------------------------------------------------ #
