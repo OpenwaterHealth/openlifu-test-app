@@ -140,6 +140,21 @@ Rectangle {
             coolingDown = false
             return
         }
+
+        // While sonication is in progress only the >=75C hard-shutdown
+        // path is allowed to act on temperature. Crossing 50C mid-run
+        // must NOT flip the device into cooldown (which would try to
+        // toggle HV enable mode -- something the connector rejects with
+        // a "cannot change HV enable state while running" warning -- or
+        // otherwise interfere with an active sonication). The cooldown
+        // transition is evaluated normally as soon as the run ends.
+        if (LIFUConnector.state === 3) {
+            if (t >= shutdownThreshold) {
+                triggerThermalShutdown(t)
+            }
+            return
+        }
+
         var wasCooling = coolingDown
         var nowCooling = (t > coolingThreshold)
 
