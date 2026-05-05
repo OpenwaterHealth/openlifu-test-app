@@ -52,7 +52,7 @@ Rectangle {
     property string voltageLogPath: ""
 
     function canStartTest() {
-        return (LIFUConnector.state === 5 || LIFUConnector.state === 1 || LIFUConnector.state === 2 || LIFUConnector.state === 3) && LIFUConnector.state !== 4
+        return (LIFUConnector.state === 4 || LIFUConnector.state === 1 || LIFUConnector.state === 2) && LIFUConnector.state !== 3
     }
 
     function updateSelectedTestKey() {
@@ -360,7 +360,7 @@ Rectangle {
                                 Button {
                                     text: "Stop"
                                     Layout.fillWidth: true
-                                    enabled: LIFUConnector.state === 4
+                                    enabled: LIFUConnector.state === 3
                                     onClicked: LIFUConnector.stopVerificationTest()
                                 }
                             }

@@ -42,11 +42,11 @@ from openlifu_sdk.io.exceptions import (
 from lifu_support import LIFUSupportConnector  # noqa: F401
 
 # import verification-tests
-from verification.prodreqs_base_class import *
-from verification.prodreqs_tx_long_verification_test import TransmitterHeatingPlaceholder, parse_arguments
-from verification.prodreqs_voltage_accuracy_test import VoltageAccuracyTest, TEST_VOLTAGES
-from verification.prodreqs_tx_short_verification_test import TransmitterShortVerificationTest
-from verification.prodreqs_run_indefinitely_test import TransmitterIndefiniteRun
+from openlifu_verification.prodreqs_base_class import *
+from openlifu_verification.prodreqs_tx_long_verification_test import TransmitterHeatingPlaceholder, parse_arguments
+from openlifu_verification.prodreqs_voltage_accuracy_test import VoltageAccuracyTest, TEST_VOLTAGES
+from openlifu_verification.prodreqs_tx_short_verification_test import TransmitterShortVerificationTest
+from openlifu_verification.prodreqs_run_indefinitely_test import TransmitterIndefiniteRun
 
 
 # Set up logging
@@ -200,18 +200,19 @@ class _TelemetryPollThread(QThread):
             if conn._monitoring_paused:
                 continue
             try:
-                if conn._txConnected:
-                    if conn._num_modules_connected <= 0:
-                        # Guard: don't poll until TX firmware has had time to
-                        # finish module enumeration (~2.5 s).  Querying too
-                        # early races the init sequence and causes a timeout.
-                        elapsed = time.monotonic() - (conn._tx_connect_time or 0.0)
-                        if elapsed >= 3.0:
-                            conn.queryNumModules()
-                    # While sonicating, the firmware pushes unsolicited STATUS
-                    # frames with temperature; polling the same endpoint races
-                    # those frames and causes UART timeouts, so skip RUNNING.
-                    if conn._state != RUNNING:
+                if conn._state != RUNNING:
+                    if conn._txConnected:
+                        if conn._num_modules_connected <= 0:
+                            # Guard: don't poll until TX firmware has had time to
+                            # finish module enumeration (~2.5 s).  Querying too
+                            # early races the init sequence and causes a timeout.
+                            elapsed = time.monotonic() - (conn._tx_connect_time or 0.0)
+                            if elapsed >= 3.0:
+                                conn.queryNumModules()
+                        # While sonicating, the firmware pushes unsolicited STATUS
+                        # frames with temperature; polling the same endpoint races
+                        # those frames and causes UART timeouts, so the outer
+                        # conn._state != RUNNING guard skips this poll.
                         conn.queryTxTemperature()
                         if conn._tx_poll_failures >= _TX_FAIL_LIMIT:
                             logger.warning("TX: %d consecutive poll failures – closing interface and triggering disconnect", _TX_FAIL_LIMIT)
@@ -226,24 +227,24 @@ class _TelemetryPollThread(QThread):
                                 logger.debug("TX close during failure recovery: %s", close_exc)
                             conn.on_disconnected("TX", "")
                             continue
-                if conn._hvConnected:
-                    # Re-check power status every cycle so AUTO-settle events
-                    # are reflected in the UI promptly.
-                    conn.queryPowerStatus()
-                    if conn._hv_poll_failures >= _HV_FAIL_LIMIT:
-                        logger.warning("HV: %d consecutive poll failures – closing interface and triggering disconnect", _HV_FAIL_LIMIT)
-                        conn._hv_poll_failures = 0
-                        # Close the underlying HV port so the SDK actually
-                        # drops the connection; on_disconnected only
-                        # updates flags/signals and would leave the SDK in
-                        # a still-connected (but failing) state otherwise.
-                        try:
-                            conn.interface.hvcontroller.close()
-                        except Exception as close_exc:
-                            logger.debug("HV close during failure recovery: %s", close_exc)
-                        conn.on_disconnected("HV", "")
-                        continue
-                    conn.getMonitorVoltages()
+                    if conn._hvConnected:
+                        # Re-check power status every cycle so AUTO-settle events
+                        # are reflected in the UI promptly.
+                        conn.queryPowerStatus()
+                        if conn._hv_poll_failures >= _HV_FAIL_LIMIT:
+                            logger.warning("HV: %d consecutive poll failures – closing interface and triggering disconnect", _HV_FAIL_LIMIT)
+                            conn._hv_poll_failures = 0
+                            # Close the underlying HV port so the SDK actually
+                            # drops the connection; on_disconnected only
+                            # updates flags/signals and would leave the SDK in
+                            # a still-connected (but failing) state otherwise.
+                            try:
+                                conn.interface.hvcontroller.close()
+                            except Exception as close_exc:
+                                logger.debug("HV close during failure recovery: %s", close_exc)
+                            conn.on_disconnected("HV", "")
+                            continue
+                        conn.getMonitorVoltages()
             except Exception as e:
                 logger.warning(f"Telemetry poll loop error: {e}")
 
