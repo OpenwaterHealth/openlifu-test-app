@@ -132,7 +132,8 @@ Rectangle {
             LIFUConnector.queryTxTemperature()
         }
         diagnosticsJson = LIFUSupportConnector.collectDiagnostics()
-        refreshing = false
+        // Clear the flag once all in-flight responses have had time to arrive.
+        refreshTimer.restart()
     }
 
     // ── Signal handlers ───────────────────────────────────────────────
@@ -233,6 +234,15 @@ Rectangle {
         interval: 5000
         repeat: false
         onTriggered: pdfStatusText.text = ""
+    }
+
+    // Clears the refreshing flag once all async query responses have had
+    // time to return (interval matches the slowest query timer, 3000 ms).
+    Timer {
+        id: refreshTimer
+        interval: 3000
+        repeat: false
+        onTriggered: refreshing = false
     }
 
     Component.onCompleted: {

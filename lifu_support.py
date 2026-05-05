@@ -10,6 +10,7 @@ context registration in main.py stays in one place.
 """
 
 import datetime
+import html as html_mod
 import json
 import logging
 import platform
@@ -840,7 +841,7 @@ class LIFUSupportConnector(QObject):
 
         def _si_row(label, value):
             return (f'<tr><td style="width:200px;padding:3px 8px;color:#555;font-weight:bold;">{label}</td>'
-                    f'<td style="padding:3px 8px;font-family:monospace;">{value}</td></tr>')
+                    f'<td style="padding:3px 8px;font-family:monospace;">{html_mod.escape(str(value))}</td></tr>')
 
         si_rows = ""
         if sysinfo.get("python_version"):
@@ -881,7 +882,7 @@ class LIFUSupportConnector(QObject):
 
         rows = ""
         for group, tests in results.items():
-            label = GROUP_LABEL.get(group, group.upper())
+            label = html_mod.escape(GROUP_LABEL.get(group, group.upper()))
             rows += f"""
             <tr><td colspan="3" style="background:#1a3a5c;color:#ffffff;font-weight:bold;
                 padding:6px 8px;">{label}</td></tr>"""
@@ -889,9 +890,9 @@ class LIFUSupportConnector(QObject):
                 color = STATUS_COLOR.get(t.get("status", ""), "#BDC3C7")
                 rows += f"""
             <tr>
-                <td style="padding:4px 8px;">{t.get('name','')}</td>
-                <td style="color:{color};font-weight:bold;padding:4px 8px;">{t.get('status','')}</td>
-                <td style="padding:4px 8px;font-family:monospace;">{t.get('detail','')}</td>
+                <td style="padding:4px 8px;">{html_mod.escape(t.get('name',''))}</td>
+                <td style="color:{color};font-weight:bold;padding:4px 8px;">{html_mod.escape(t.get('status',''))}</td>
+                <td style="padding:4px 8px;font-family:monospace;">{html_mod.escape(t.get('detail',''))}</td>
             </tr>"""
 
         return f"""<!DOCTYPE html><html><head>
@@ -907,7 +908,7 @@ class LIFUSupportConnector(QObject):
           td    {{ border-bottom: 1px solid #ddd; }}
         </style></head><body>
         <h1>OpenLIFU Hardware Diagnostic Report</h1>
-        <p class="meta">Generated: {timestamp}</p>
+        <p class="meta">Generated: {html_mod.escape(timestamp)}</p>
         {sysinfo_block}
         <div class="summary">
           <strong>Summary:</strong>&nbsp;
