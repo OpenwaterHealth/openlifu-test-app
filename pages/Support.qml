@@ -309,8 +309,10 @@ Rectangle {
             Rectangle {
                 visible: supportPage.activeTab === 0
                 width: 140; height: 36; radius: 6
-                color: refreshArea.containsMouse ? "#4A90E2" : "#3A3F4B"
-                border.color: refreshArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+                readonly property bool isEnabled: !supportPage.refreshing && LIFUConnector.hvConnected
+                opacity: isEnabled ? 1.0 : 0.4
+                color: refreshArea.containsMouse && isEnabled ? "#4A90E2" : "#3A3F4B"
+                border.color: refreshArea.containsMouse && isEnabled ? "#FFFFFF" : "#BDC3C7"
                 Text {
                     anchors.centerIn: parent
                     text: supportPage.refreshing ? "Refreshing…" : "Refresh All"
@@ -320,6 +322,7 @@ Rectangle {
                     id: refreshArea
                     anchors.fill: parent
                     hoverEnabled: true
+                    enabled: parent.isEnabled
                     onClicked: supportPage.refreshAll()
                 }
                 Behavior on color { ColorAnimation { duration: 150 } }
@@ -669,7 +672,9 @@ Rectangle {
                     ]
                     delegate: Rectangle {
                         width: 100; height: 32; radius: 6
-                        color: groupBtnArea.containsMouse ? "#3A5A8A" : "#2C3E50"
+                        readonly property bool isEnabled: !supportPage.testRunning && (modelData.group === "console" ? LIFUConnector.hvConnected : LIFUConnector.txConnected)
+                        opacity: isEnabled ? 1.0 : 0.4
+                        color: groupBtnArea.containsMouse && isEnabled ? "#3A5A8A" : "#2C3E50"
                         border.color: "#3E4E6F"
                         Text {
                             anchors.centerIn: parent
@@ -680,7 +685,7 @@ Rectangle {
                             id: groupBtnArea
                             anchors.fill: parent
                             hoverEnabled: true
-                            enabled: !supportPage.testRunning
+                            enabled: isEnabled
                             onClicked: {
                                 supportPage.testResults = []
                                 supportPage.testSummary = {passed:0, failed:0, skipped:0}
@@ -697,8 +702,10 @@ Rectangle {
                 // Run All button
                 Rectangle {
                     width: 110; height: 32; radius: 6
-                    color: runAllArea.containsMouse ? "#4A90E2" : "#1A5276"
-                    border.color: runAllArea.containsMouse ? "#FFFFFF" : "#4A90E2"
+                    readonly property bool isEnabled: !supportPage.testRunning && (LIFUConnector.hvConnected || LIFUConnector.txConnected)
+                    opacity: isEnabled ? 1.0 : 0.4
+                    color: runAllArea.containsMouse && isEnabled ? "#4A90E2" : "#1A5276"
+                    border.color: runAllArea.containsMouse && isEnabled ? "#FFFFFF" : "#4A90E2"
                     Text {
                         anchors.centerIn: parent
                         text: supportPage.testRunning ? "Running…" : "Run All Tests"
@@ -708,7 +715,7 @@ Rectangle {
                         id: runAllArea
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: !supportPage.testRunning
+                        enabled: isEnabled
                         onClicked: {
                             supportPage.testResults = []
                             supportPage.testSummary = {passed:0, failed:0, skipped:0}
