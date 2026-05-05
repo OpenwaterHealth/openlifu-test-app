@@ -199,7 +199,13 @@ Rectangle {
         if (LIFUConnector.state === 3) {
             LIFUConnector.stop_sonication()
         }
-        // Force HV off regardless of current enable mode.
+        // Force HV off regardless of current enable mode. Stash the
+        // previous mode (if we haven't already) so cooldown-exit can
+        // restore it -- otherwise Start stays disabled after the device
+        // cools back down.
+        if (LIFUConnector.hvEnableMode !== 2 && preCooldownHvMode < 0) {
+            preCooldownHvMode = LIFUConnector.hvEnableMode
+        }
         LIFUConnector.setHvEnableMode(2)
         thermalShutdownDialog.observedTemp = observedTemp
         thermalShutdownDialog.open()
