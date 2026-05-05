@@ -73,7 +73,8 @@ TAB_DEFINITIONS = {
 
 MODE_TAB_LISTS = {
     "default": ["demo", "transmitter", "console", "testing", "settings"],
-    "vet":     ["vet", "settings"],
+    # Vet mode is a kiosk-style single-page UX: no sidebar, no Settings.
+    "vet":     ["vet"],
     "all":     ["vet", "demo", "transmitter", "console", "testing", "settings"],
 }
 

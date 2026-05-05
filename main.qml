@@ -51,11 +51,13 @@ Window {
             spacing: 20
             Layout.fillHeight: true
 
-            // Sidebar Menu
+            // Sidebar Menu. Hidden when only one tab is configured (e.g.
+            // vet-mode kiosk UI) so the page can use the full width.
             SidebarMenu {
                 Layout.alignment: Qt.AlignLeft
                 Layout.fillHeight: true
                 color: "#1C1C1E" // Dark sidebar background
+                visible: (typeof appTabs !== "undefined" && appTabs && appTabs.length > 1)
 
                 // Keep highlighted tab in sync with whichever tab is
                 // actually showing (so blocked navigations don't visually
