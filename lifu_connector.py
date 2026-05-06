@@ -2408,7 +2408,6 @@ class LIFUConnector(QObject):
         try:
             hv_state = self.interface.hvcontroller.get_hv_status()
             v12_state = self.interface.hvcontroller.get_12v_status()
-            logger.debug(f"HV State: {hv_state} - 12V State: {v12_state}")
             self.powerStatusReceived.emit(bool(v12_state), bool(hv_state))
             self._hv_poll_failures = 0  # reset on success
         except LIFUError as e:
