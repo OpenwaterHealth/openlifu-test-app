@@ -61,7 +61,8 @@ Rectangle {
                 temperature1 = 0.0
                 temperature2 = 0.0
                 rgbState = "Off" // Reset RGB state
-                voltageState = "Off" // Reset voltage state
+                hvState = "Off"
+                v12State = "Off"
                 pingResult.text = ""
                 echoResult.text = ""
                 toggleLedResult.text = ""
