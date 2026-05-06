@@ -7,7 +7,8 @@ import argparse
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
-from lifu_connector import LIFUConnector
+from lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
+from lifu_support import LIFUSupportConnector
 from pathlib import Path
 
 from version import get_version
@@ -57,15 +58,46 @@ def main():
     os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
     app = QGuiApplication(sys.argv)
-    app.setWindowIcon(QIcon(resource_path("assets/images/favicon.png")))
+
+    # Verify the installed openlifu-sdk meets our minimum required version
+    # before we start touching hardware. Editable installs from GitHub may
+    # report PEP 440 local versions (e.g. "1.0.6.dev3+g1a2b3c4"); the
+    # parser in check_sdk_version handles those.
+    sdk_ok, sdk_version, sdk_message = check_sdk_version(MIN_SDK_VERSION)
+    if sdk_ok:
+        logger.info(sdk_message)
+    else:
+        logger.error(sdk_message)
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            # QGuiApplication doesn't own QWidget; spin up a temporary
+            # QApplication only for the dialog. If QtWidgets isn't
+            # available (slim install) we still have the stderr path.
+            _msg_app = QApplication.instance() or QApplication(sys.argv)
+            QMessageBox.critical(
+                None,
+                "Incompatible openlifu-sdk version",
+                f"{sdk_message}\n\nThe application will now exit.",
+            )
+        except Exception:
+            print(f"ERROR: {sdk_message}", file=sys.stderr)
+        sys.exit(2)
+
+    # Use the multi-size .ico on Windows so the taskbar/alt-tab/title-bar
+    # each pick an appropriately sized image. A single large .png often
+    # fails to render in the 16x16 taskbar slot.
+    app_icon = QIcon(resource_path("assets/images/favicon.ico"))
+    app.setWindowIcon(app_icon)
 
     engine = QQmlApplicationEngine()
 
     # Initialize LIFUConnector with hv_test_mode from command-line argument
     lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
-    
+    lifu_support_connector = LIFUSupportConnector(interface=lifu_connector.interface)
+
     # Expose to QML
     engine.rootContext().setContextProperty("LIFUConnector", lifu_connector)
+    engine.rootContext().setContextProperty("LIFUSupportConnector", lifu_support_connector)
     engine.rootContext().setContextProperty("appVersion", APP_VERSION)
     app.setProperty("appVersion", APP_VERSION)
 
@@ -74,6 +106,14 @@ def main():
     if not engine.rootObjects():
         print("Error: Failed to load QML file")
         sys.exit(-1)
+
+    # Frameless QQuickWindows on Windows don't always inherit the
+    # QGuiApplication window icon for the taskbar. Push it explicitly.
+    for obj in engine.rootObjects():
+        try:
+            obj.setIcon(app_icon)
+        except AttributeError:
+            pass
 
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)

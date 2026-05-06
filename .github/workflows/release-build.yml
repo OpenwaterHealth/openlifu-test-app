@@ -6,7 +6,7 @@ on:
     branches: [main, next]
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
-      - "pre-[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
 permissions:
   contents: write
 
@@ -67,7 +67,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            # Strip leading 'v' only; keep 'pre-' for pre-release versions
+            # Strip leading 'v' only; -rc.x suffix is preserved as-is
             VER="${TAG#v}"
           else
             VER=$(git describe --tags --dirty --always --long 2>/dev/null || echo "dev-${GITHUB_SHA::8}")
@@ -97,7 +97,7 @@ jobs:
           echo "ARTIFACT_ZIP=OpenLifu-TestApp-${TAG}.zip" >> "$GITHUB_OUTPUT"
 
           # pre-release flag
-          if [[ "$TAG" == pre-* ]]; then
+          if [[ "$TAG" == *-rc.* ]]; then
             echo "PRERELEASE=true" >> "$GITHUB_OUTPUT"
           else
             echo "PRERELEASE=false" >> "$GITHUB_OUTPUT"

@@ -14,7 +14,7 @@ authors = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Healthcare Industry",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.12",
@@ -32,6 +32,7 @@ dependencies = [
     "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
     "openlifu-sdk>=1.0.6",
+    "openlifu-verification>=1.1.0",
     "openpyxl"
 ]
 
