@@ -26,7 +26,7 @@ Rectangle {
     property var presetOptions: []
 
     readonly property var durationOptions: [
-        { label: "10 min", secdons: 600 },
+        { label: "10 min", seconds: 600 },
         { label: "5 min",  seconds: 300 },
         { label: "2 min",  seconds: 120 },
         { label: "1 min",  seconds: 60 },
