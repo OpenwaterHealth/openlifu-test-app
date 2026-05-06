@@ -397,6 +397,12 @@ class LIFUConnector(QObject):
         # set_solution (slow) for pause/resume/abort transitions.
         self._last_configure_args = None
 
+        # Active Vet-page preset (delays/apodizations baked from disk).
+        # When set, get_solution() overrides its computed delays /
+        # apodizations with these so the Vet page uses the per-preset
+        # measured values rather than recomputing from element geometry.
+        self._active_vet_preset = None
+
         self._interface_mutex = QRecursiveMutex()
 
         self._ensure_preset_solutions_seeded()
@@ -878,6 +884,22 @@ class LIFUConnector(QObject):
                 "sequence": sequence,
                 "voltage": float(voltage),
                 "transducer": transducer_dummy}
+            # If a Vet preset is active, override the geometrically
+            # computed delays/apodizations with the preset's measured
+            # values (sized to the active element count).
+            preset = self._active_vet_preset
+            if preset is not None:
+                preset_delays = np.array(preset.get("delays", []), dtype=float).reshape(-1)
+                preset_apod = np.array(preset.get("apodizations", []), dtype=float).reshape(-1)
+                if preset_delays.size == numelements and preset_apod.size == numelements:
+                    solution["delays"] = preset_delays
+                    solution["apodizations"] = preset_apod
+                else:
+                    logger.warning(
+                        "Active Vet preset '%s' has %d delays / %d apodizations, "
+                        "expected %d; falling back to computed values.",
+                        preset.get("id", "?"), preset_delays.size, preset_apod.size, numelements,
+                    )
         return solution
 
     def _load_pinmap_data(self, num_modules: int):
@@ -979,6 +1001,89 @@ class LIFUConnector(QObject):
 
     def _get_default_solution_path(self) -> str:
         return os.path.join(self._get_runtime_preset_solutions_path(), "default_solution.json")
+
+    # ------------------------------------------------------------------
+    # Vet-page preset settings (preset_vet_settings/<id>/<id>_settings.json)
+    # ------------------------------------------------------------------
+
+    def _get_preset_vet_settings_path(self) -> str:
+        return os.path.join(_base_path(), "preset_vet_settings")
+
+    def _load_vet_preset_file(self, preset_id: str):
+        """Load and return the parsed JSON for a Vet preset, or None on error."""
+        if not preset_id:
+            return None
+        json_path = os.path.join(
+            self._get_preset_vet_settings_path(), preset_id, f"{preset_id}_settings.json"
+        )
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError) as e:
+            logger.error("Failed to load Vet preset '%s': %s", preset_id, e)
+            return None
+
+    @pyqtSlot(result="QVariantList")
+    def getVetPresets(self):
+        """Return UI-facing metadata for every preset in preset_vet_settings/.
+
+        Each entry contains the parameters needed to drive the Vet page
+        ComboBox plus the per-preset analysis dict and the absolute
+        path to the intensity plot PNG (as a file:// URL for QML Image).
+        Delays/apodizations are intentionally NOT included here -- they
+        are loaded on demand via setActiveVetPreset() to avoid pushing
+        large arrays through the QML/Qt variant layer.
+        """
+        root = self._get_preset_vet_settings_path()
+        presets = []
+        if not os.path.isdir(root):
+            logger.warning("preset_vet_settings folder not found at %s", root)
+            return presets
+        for preset_id in sorted(os.listdir(root)):
+            preset_dir = os.path.join(root, preset_id)
+            if not os.path.isdir(preset_dir):
+                continue
+            data = self._load_vet_preset_file(preset_id)
+            if data is None:
+                continue
+            png_path = os.path.join(preset_dir, f"{preset_id}_intensity_plot.png")
+            png_url = ""
+            if os.path.isfile(png_path):
+                # QML Image accepts a file:// URL.
+                png_url = "file:///" + png_path.replace("\\", "/").lstrip("/")
+            presets.append({
+                "id": preset_id,
+                "label": data.get("label", preset_id),
+                "voltage": float(data.get("voltage", 0.0)),
+                "frequency_khz": float(data.get("frequency_khz", 0.0)),
+                "pulse_length_us": float(data.get("pulse_length_us", 0.0)),
+                "pulse_interval_ms": float(data.get("pulse_interval_ms", 0.0)),
+                "pulse_count": int(data.get("pulse_count", 1)),
+                "pulse_train_interval_s": float(data.get("pulse_train_interval_s", 0)),
+                "depth_mm": float(data.get("depth_mm", 0.0)),
+                "analysis": data.get("analysis", {}) or {},
+                "intensityPlotUrl": png_url,
+            })
+        return presets
+
+    @pyqtSlot(str, result=bool)
+    def setActiveVetPreset(self, preset_id):
+        """Make the named preset's delays/apodizations active for get_solution()."""
+        data = self._load_vet_preset_file(preset_id)
+        if data is None:
+            self._active_vet_preset = None
+            return False
+        self._active_vet_preset = {
+            "id": preset_id,
+            "delays": data.get("delays", []),
+            "apodizations": data.get("apodization", data.get("apodizations", [])),
+        }
+        logger.info("Active Vet preset set to '%s'", preset_id)
+        return True
+
+    @pyqtSlot()
+    def clearActiveVetPreset(self):
+        self._active_vet_preset = None
 
     def _extract_solution_settings(self, data):
         """Extract UI-editable settings from a solution-like dict."""
@@ -1303,7 +1408,6 @@ class LIFUConnector(QObject):
             self.update_state()
             self._apply_auto_hv_for_state()
             logger.info("Transmitter configured")
-
         except LIFUSolutionError as e:
             self._configured = False
             self.update_state()
@@ -1339,6 +1443,7 @@ class LIFUConnector(QObject):
             logger.info(f"Released loaded solution '{released}' on reset")
         # Drop any cached configure args + run-progress state.
         self._last_configure_args = None
+        self._active_vet_preset = None
         self._reset_run_state()
         self.update_state()
         self._apply_auto_hv_for_state()
