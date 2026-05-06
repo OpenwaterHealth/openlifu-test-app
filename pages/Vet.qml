@@ -16,53 +16,44 @@ Rectangle {
     readonly property string fixedTriggerMode: "Sequence"
 
     // ----- Preset definitions -----
-    // Each preset carries the *full* sonication parameter dictionary so
-    // tweaking one preset later (e.g. raising voltage for Hip) doesn't
-    // require touching the rest of the page. All times are in their UI-
-    // facing units: voltage [V], frequency [kHz], pulse length [us],
-    // pulse interval [ms], pulse train interval [s], depth [mm].
-    readonly property var presetOptions: [
-        {
-            label: "Knee",
-            voltage: 20,
-            frequency_khz: 400,
-            pulse_length_us: 20000,    // 20 ms
-            pulse_interval_ms: 100,
-            pulse_count: 1,
-            pulse_train_interval_s: 0, // 0 -> SDK derives from pulse_count*pulse_interval
-            depth_mm: 30
-        },
-        {
-            label: "Hip",
-            voltage: 20,
-            frequency_khz: 400,
-            pulse_length_us: 20000,
-            pulse_interval_ms: 100,
-            pulse_count: 1,
-            pulse_train_interval_s: 0,
-            depth_mm: 40
-        },
-        {
-            label: "Spine",
-            voltage: 20,
-            frequency_khz: 400,
-            pulse_length_us: 20000,
-            pulse_interval_ms: 100,
-            pulse_count: 1,
-            pulse_train_interval_s: 0,
-            depth_mm: 40
-        }
-    ]
+    // Loaded at component-completed time from preset_vet_settings/ via
+    // LIFUConnector.getVetPresets(). Each entry carries the full
+    // sonication parameter dictionary plus the per-preset analysis
+    // (MI/TIS/ISPPA/ISTPA/PNP) and the file URL of the matching
+    // intensity_plot PNG. UI-facing units: voltage [V], frequency [kHz],
+    // pulse length [us], pulse interval [ms], pulse train interval [s],
+    // depth [mm].
+    property var presetOptions: []
 
     readonly property var durationOptions: [
-        { label: "30 sec", seconds: 30 },
-        { label: "1 min",  seconds: 60 },
+        { label: "10 min", secdons: 600 },
+        { label: "5 min",  seconds: 300 },
         { label: "2 min",  seconds: 120 },
-        { label: "5 min",  seconds: 300 }
+        { label: "1 min",  seconds: 60 },
+        { label: "30 sec", seconds: 30 }
     ]
 
     // ----- Selection-derived values -----
-    function selectedPreset()          { return presetOptions[presetCombo.currentIndex] }
+    readonly property var emptyPreset: ({
+        id: "",
+        label: "",
+        voltage: 0,
+        frequency_khz: 0,
+        pulse_length_us: 0,
+        pulse_interval_ms: 0,
+        pulse_count: 1,
+        pulse_train_interval_s: 0,
+        depth_mm: 0,
+        analysis: ({}),
+        intensityPlotUrl: ""
+    })
+    function selectedPreset() {
+        if (!presetOptions || presetOptions.length === 0) return emptyPreset
+        var idx = presetCombo.currentIndex
+        if (idx < 0 || idx >= presetOptions.length) idx = 0
+        return presetOptions[idx]
+    }
+    function selectedPresetId()        { return selectedPreset().id }
     function selectedPresetLabel()     { return selectedPreset().label }
     function selectedVoltage()         { return selectedPreset().voltage }
     function selectedFrequencyKHz()    { return selectedPreset().frequency_khz }
@@ -72,6 +63,13 @@ Rectangle {
     function selectedTrainIntervalS()  { return selectedPreset().pulse_train_interval_s }
     function selectedDepthMm()         { return selectedPreset().depth_mm }
     function selectedDepthLabel()      { return selectedDepthMm() + " mm" }
+    function selectedAnalysis()        { return selectedPreset().analysis || ({}) }
+    function selectedIntensityPlotUrl(){ return selectedPreset().intensityPlotUrl || "" }
+    function formatAnalysis(key, digits) {
+        var v = selectedAnalysis()[key]
+        if (typeof v !== "number" || isNaN(v)) return "--"
+        return v.toFixed(digits)
+    }
     function selectedDurationSeconds() { return durationOptions[durationCombo.currentIndex].seconds }
     function selectedDurationLabel()   { return durationOptions[durationCombo.currentIndex].label }
 
@@ -221,19 +219,26 @@ Rectangle {
     }
 
     function refreshPlot() {
-        LIFUConnector.generate_plot(
-            fixedX, fixedY, selectedDepthMm().toString(),
-            selectedFrequencyKHz().toString(), selectedVoltage().toString(),
-            selectedPulseIntervalMs().toString(), selectedPulseCount().toString(),
-            selectedTrainIntervalS().toString(), pulseTrainCount().toString(),
-            pulseDurationUs().toString(), "buffer"
-        )
+        // Each preset ships with a pre-rendered intensity plot PNG; we
+        // simply point the Image at it instead of re-rendering on the
+        // Python side every time the user changes a control.
+        if (vetPlotImage) vetPlotImage.updateImage(selectedIntensityPlotUrl())
+    }
+
+    function applyActivePresetToConnector() {
+        var pid = selectedPresetId()
+        if (pid && pid !== "")
+            LIFUConnector.setActiveVetPreset(pid)
+        else
+            LIFUConnector.clearActiveVetPreset()
     }
 
     function configureNow() {
         // configure_transmitter() snapshots its args internally and
         // resets the run-progress state machine, so we don't need to
-        // mirror that here.
+        // mirror that here. Push the active preset's delays/apodizations
+        // into the connector first so get_solution() picks them up.
+        applyActivePresetToConnector()
         LIFUConnector.configure_transmitter(
             fixedX, fixedY, selectedDepthMm().toString(),
             selectedFrequencyKHz().toString(), selectedVoltage().toString(),
@@ -255,7 +260,13 @@ Rectangle {
         }
     }
 
-    Component.onCompleted: refreshPlot()
+    Component.onCompleted: {
+        presetOptions = LIFUConnector.getVetPresets()
+        if (presetCombo.currentIndex < 0 && presetOptions.length > 0)
+            presetCombo.currentIndex = 0
+        applyActivePresetToConnector()
+        refreshPlot()
+    }
 
     // Master layout: top RowLayout (3 columns) + bottom controls panel.
     ColumnLayout {
@@ -312,6 +323,7 @@ Rectangle {
                             background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
                             onActivated: {
                                 LIFUConnector.clear_run_progress()
+                                applyActivePresetToConnector()
                                 if (everConfigured) {
                                     // Preset switch changes voltage, depth,
                                     // and pulse parameters, so push the
@@ -423,7 +435,7 @@ Rectangle {
                             Text { text: "Total Duration:";   color: "#BDC3C7"; font.pixelSize: 13 }
                             Text { text: selectedDurationLabel(); color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
 
-                            Text { text: "Depth:";            color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: "Focal Depth (from Transducer Face):";            color: "#BDC3C7"; font.pixelSize: 13 }
                             Text { text: selectedDepthLabel(); color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
 
                             Rectangle {
@@ -435,20 +447,22 @@ Rectangle {
                                 color: "#3E4E6F"
                             }
 
-                            Text { text: "Frequency:";        color: "#BDC3C7"; font.pixelSize: 13 }
-                            Text { text: selectedFrequencyKHz() + " kHz"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            // Per-preset acoustic analysis values, loaded from
+                            // <preset_id>_settings.json's "analysis" section.
+                            Text { text: "MI:";              color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: formatAnalysis("MI", 3);                       color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
 
-                            Text { text: "Focus (X, Y, Z):";  color: "#BDC3C7"; font.pixelSize: 13 }
-                            Text { text: "(" + fixedX + ", " + fixedY + ", " + selectedDepthMm() + ") mm"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "TIS:";             color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: formatAnalysis("TIS", 4);                      color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
 
-                            Text { text: "Pulse Repetition Interval:"; color: "#BDC3C7"; font.pixelSize: 13 }
-                            Text { text: selectedPulseIntervalMs() + " ms"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "ISPPA:";           color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: formatAnalysis("ISPPA (W/cm2)", 2) + " W/cm\u00b2";   color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
 
-                            Text { text: "Pulse Count / Train:"; color: "#BDC3C7"; font.pixelSize: 13 }
-                            Text { text: selectedPulseCount();   color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "ISTPA:";           color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: formatAnalysis("ISTPA (mW/cm2)", 1) + " mW/cm\u00b2"; color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
 
-                            Text { text: "Pulse Trains:";        color: "#BDC3C7"; font.pixelSize: 13 }
-                            Text { text: pulseTrainCount();      color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: "PNP:";             color: "#BDC3C7"; font.pixelSize: 13 }
+                            Text { text: formatAnalysis("PNP (kPa)", 1) + " kPa";       color: "#9FB3C8"; font.pixelSize: 13; font.family: "Consolas" }
                         }
                     }
 
@@ -722,10 +736,6 @@ Rectangle {
 
     Connections {
         target: LIFUConnector
-
-        function onPlotGenerated(imageData) {
-            if (vetPlotImage) vetPlotImage.updateImage(imageData)
-        }
 
         function onTemperatureTxUpdated(module, tx_temp, amb_temp) {
             // The connector evaluates cooldown / shutdown internally;
