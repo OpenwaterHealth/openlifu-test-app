@@ -57,6 +57,15 @@ def parse_arguments():
         const="all",
         help="Shortcut for --mode all.",
     )
+    parser.add_argument(
+        "--loglevel",
+        default="info",
+        type=str,
+        help=(
+            "Logging level for the lifu_connector logger "
+            "(debug, info, warning, error, critical). Default: info."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -90,6 +99,20 @@ def build_app_tabs(mode: str):
 
 def main():
     args = parse_arguments()
+
+    # Apply the requested log level to the lifu_connector logger before
+    # any of its modules log anything interesting. argparse already
+    # rejected anything that's not a string; getLevelName handles
+    # case-insensitively when given an upper-cased name.
+    level_name = str(args.loglevel).upper()
+    level = logging.getLevelName(level_name)
+    if not isinstance(level, int):
+        print(
+            f"WARNING: invalid --loglevel '{args.loglevel}', falling back to INFO.",
+            file=sys.stderr,
+        )
+        level = logging.INFO
+    logging.getLogger("lifu_connector").setLevel(level)
 
     # Tell Windows to treat this as its own app (not python.exe) so the
     # taskbar shows our icon instead of the Python icon.
