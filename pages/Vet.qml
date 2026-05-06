@@ -319,7 +319,7 @@ Rectangle {
                             Layout.preferredHeight: 36
                             model: presetOptions.map(function(p) { return p.label })
                             currentIndex: 0
-                            enabled: LIFUConnector.state !== 3
+                            enabled: LIFUConnector.state !== 3 && LIFUConnector.runState !== "paused"
                             background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
                             onActivated: {
                                 LIFUConnector.clear_run_progress()
@@ -348,7 +348,7 @@ Rectangle {
                             Layout.preferredHeight: 36
                             model: durationOptions.map(function(o) { return o.label })
                             currentIndex: 0
-                            enabled: LIFUConnector.state !== 3
+                            enabled: LIFUConnector.state !== 3 && LIFUConnector.runState !== "paused"
                             background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
                             onActivated: {
                                 LIFUConnector.clear_run_progress()
