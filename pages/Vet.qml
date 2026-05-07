@@ -374,9 +374,13 @@ Rectangle {
                             text: "Save Log"
                             checked: saveLogs
                             scale: 0.9
+                            // Disabled while a run is in progress (or
+                            // paused) so logging can't be toggled
+                            // mid-run.
+                            enabled: LIFUConnector.state !== 3 && LIFUConnector.runState !== "paused"
                             contentItem: Text {
                                 text: saveLogsCheck.text
-                                color: "white"
+                                color: saveLogsCheck.enabled ? "white" : "#6B7480"
                                 font.pixelSize: 12
                                 leftPadding: saveLogsCheck.indicator.width + 6
                                 verticalAlignment: Text.AlignVCenter
@@ -420,6 +424,10 @@ Rectangle {
                             //Layout.preferredHeight: 40
                             //Layout.preferredWidth: 60
                             //padding:0
+                            // Disabled while a run is in progress (or
+                            // paused) so the log destination can't be
+                            // moved out from under an active run.
+                            enabled: LIFUConnector.state !== 3 && LIFUConnector.runState !== "paused"
                             onClicked: logFolderDialog.open()
                         }
                     }
