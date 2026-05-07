@@ -237,8 +237,8 @@ class _VetSession:
             return
         if not isinstance(data, dict):
             return
-        if isinstance(data.get("session_name"), str):
-            self.session_name = data["session_name"]
+        # session_name is intentionally not persisted; users start each
+        # app run with a blank name.
         if isinstance(data.get("save_logs"), bool):
             self.save_logs = data["save_logs"]
         folder = data.get("log_folder")
@@ -250,7 +250,6 @@ class _VetSession:
             os.makedirs(self._user_data_root, exist_ok=True)
             with open(self._settings_path(), 'w', encoding='utf-8') as f:
                 json.dump({
-                    "session_name": self.session_name,
                     "save_logs": self.save_logs,
                     "log_folder": self.log_folder,
                 }, f, indent=2)
@@ -323,11 +322,18 @@ class _VetSession:
             return None
         # Inject ``elapsed`` (seconds since run start) onto every record
         # so the format string can render it without a custom Formatter.
+        # Also gate down third-party SDK chatter to WARNING+ so
+        # openlifu_sdk's verbose DEBUG output doesn't drown out our own
+        # log lines in the file.
         start_wall = self._start_wall
-        def _add_elapsed(record):
+        def _vet_log_filter(record):
+            if (record.name == "openlifu_sdk"
+                    or record.name.startswith("openlifu_sdk.")):
+                if record.levelno < logging.WARNING:
+                    return False
             record.elapsed = max(0.0, record.created - start_wall)
             return True
-        handler.addFilter(_add_elapsed)
+        handler.addFilter(_vet_log_filter)
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter(VET_LOG_FORMAT, datefmt=VET_LOG_DATEFMT))
         # Make sure the root logger lets DEBUG records through to our
@@ -1311,7 +1317,8 @@ class LIFUConnector(QObject):
         if new_name == s.session_name:
             return
         s.session_name = new_name
-        s.save_settings()
+        # Not persisted across runs; just emit so the QML preview
+        # filename refreshes.
         self.vetSessionSettingsChanged.emit()
 
     @pyqtSlot(bool)
@@ -1366,6 +1373,17 @@ class LIFUConnector(QObject):
                 subprocess.Popen(["xdg-open", path])
         except Exception as e:
             self._emit_device_error("Open Log Folder", f"Could not open '{path}': {e}")
+
+    @pyqtSlot(result=str)
+    def previewLogName(self):
+        """Return the full path of the next projected run-log file."""
+        s = self._vet_session
+        now = datetime.now()
+        datestr = now.strftime("%Y%m%d")
+        run_num = s._next_run_number(datestr, s.session_id)
+        filename = (f"{datestr}_{s.session_id}_run{run_num:02d}_"
+                    f"{now.strftime('%H_%M_%S')}.log")
+        return os.path.join(s.log_folder, filename)
 
     def _extract_solution_settings(self, data):
         """Extract UI-editable settings from a solution-like dict."""

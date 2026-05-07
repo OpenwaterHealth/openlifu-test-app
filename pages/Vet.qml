@@ -291,7 +291,6 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 20
-        anchors.topMargin: 45
         spacing: 14
 
         // ===================== TOP ROW (3 columns) =====================
@@ -315,21 +314,14 @@ Rectangle {
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: 16
-                    spacing: 14
+                    spacing: 8
 
                     // ---------- Session controls ----------
-                    Text {
-                        text: "Session"
-                        color: "white"
-                        font.pixelSize: 16
-                        font.weight: Font.Bold
-                        Layout.alignment: Qt.AlignHCenter
-                    }
-
                     GridLayout {
+                        anchors.margins: 0
                         columns: 2
                         columnSpacing: 12
-                        rowSpacing: 8
+                        rowSpacing: 0
                         Layout.fillWidth: true
 
                         Text { text: "Session Name:"; color: "white"; font.pixelSize: 14; Layout.preferredWidth: 110 }
@@ -343,35 +335,32 @@ Rectangle {
                             background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
                             // Push name to the connector (which sanitizes
                             // and persists it). Mirror back the resulting
-                            // session_id so the read-only id field stays in
-                            // sync without an extra signal round-trip.
+                            // session_id so we can render the projected
+                            // filename without a signal round-trip.
                             onTextEdited: {
                                 LIFUConnector.setVetSessionName(text)
                                 sessionName = text
                                 sessionId = LIFUConnector.sanitizeSessionId(text)
                             }
                         }
+                    }
 
-                        Text { text: "Session ID:"; color: "white"; font.pixelSize: 14 }
-                        TextField {
-                            id: sessionIdField
-                            Layout.fillWidth: true
-                            text: sessionId
-                            readOnly: true
-                            selectByMouse: true
-                            color: "#9FB3C8"
-                            background: Rectangle { color: "#1B1D22"; border.color: "#555"; radius: 4 }
-                        }
+                    // Compact one-row save-logs control: checkbox +
+                    // clickable path text + Change button.
+                    RowLayout {
+                        anchors.margins: 0
+                        Layout.fillWidth: true
+                        spacing: 4
 
                         CheckBox {
                             id: saveLogsCheck
-                            Layout.columnSpan: 2
-                            text: "Save Logs"
+                            text: "Save Log"
                             checked: saveLogs
+                            scale: 0.9
                             contentItem: Text {
                                 text: saveLogsCheck.text
                                 color: "white"
-                                font.pixelSize: 14
+                                font.pixelSize: 12
                                 leftPadding: saveLogsCheck.indicator.width + 6
                                 verticalAlignment: Text.AlignVCenter
                             }
@@ -381,51 +370,44 @@ Rectangle {
                             }
                         }
 
-                        Text { text: "Log Folder:"; color: "white"; font.pixelSize: 14 }
-                        RowLayout {
+                        Text {
+                            id: logPathText
                             Layout.fillWidth: true
-                            spacing: 6
-                            TextField {
-                                id: logFolderField
-                                Layout.fillWidth: true
-                                text: logFolder
-                                readOnly: true
-                                selectByMouse: true
-                                enabled: saveLogs
-                                color: "#9FB3C8"
-                                background: Rectangle { color: "#1B1D22"; border.color: "#555"; radius: 4 }
-                            }
-                            Button {
-                                text: "Change"
-                                enabled: saveLogs
-                                onClicked: logFolderDialog.open()
-                            }
-                            Button {
-                                // Folder-icon shortcut to launch the OS
-                                // file browser at the configured path.
-                                text: "\ud83d\udcc1"  // 📁
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Open log folder"
-                                enabled: saveLogs
+                            elide: Text.ElideMiddle
+                            font.pixelSize: 11
+                            color: saveLogs ? "#9FB3C8" : "#6B7480"
+                            text: saveLogs
+                                ? "" + (sessionId, logFolder,
+                                      LIFUConnector.previewLogName())
+                                : logFolder
+                            ToolTip.visible: hovered
+                            ToolTip.text: text
+                            HoverHandler { id: logPathHover }
+                            property bool hovered: logPathHover.hovered
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
                                 onClicked: LIFUConnector.openLogFolder()
                             }
                         }
-                    }
 
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        color: "#3E4E6F"
+                        Button {
+                            text: "Change"
+                            font.pixelSize: 12
+                            leftPadding: 5
+                            rightPadding: 5
+                            topPadding: 12
+                            bottomPadding: 14
+                            implicitWidth: implicitContentWidth + leftPadding + rightPadding
+                            implicitHeight: implicitContentHeight + topPadding + bottomPadding
+                            //Layout.preferredHeight: 40
+                            //Layout.preferredWidth: 60
+                            //padding:0
+                            onClicked: logFolderDialog.open()
+                        }
                     }
 
                     // ---------- Sonication settings ----------
-                    Text {
-                        text: "Sonication Settings"
-                        color: "white"
-                        font.pixelSize: 16
-                        font.weight: Font.Bold
-                        Layout.alignment: Qt.AlignHCenter
-                    }
 
                     GridLayout {
                         columns: 2
