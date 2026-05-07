@@ -508,6 +508,11 @@ class LIFUConnector(QObject):
     vetSessionSettingsChanged = pyqtSignal()
     vetLogStarted = pyqtSignal(str)    # absolute log file path
     vetLogFinalized = pyqtSignal(str)  # absolute log file path
+    # Fires when anything that affects ``getVetScaledVoltage`` changes
+    # (active preset, cached module user_configs). QML bindings can
+    # reference this signal via a notify-property so the displayed
+    # scaled voltage refreshes.
+    vetScalingChanged = pyqtSignal()
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -592,6 +597,14 @@ class LIFUConnector(QObject):
         # apodizations with these so the Vet page uses the per-preset
         # measured values rather than recomputing from element geometry.
         self._active_vet_preset = None
+
+        # Per-module ``user_config`` dicts (parsed JSON from
+        # ``txdevice.read_config``), keyed by module index. Refreshed
+        # by ``queryNumModules`` whenever the connected count changes.
+        # Used in the Vet path to scale voltage by the ratio of the
+        # preset's calibration sensitivity to the connected device's
+        # measured sensitivity at the run frequency.
+        self._module_user_configs = {}
 
         self._interface_mutex = QRecursiveMutex()
 
@@ -1119,6 +1132,12 @@ class LIFUConnector(QObject):
                         "pulse_count": pulse_count,
                         "pulse_train_interval": pulse_train_interval,
                         "pulse_train_count": int(trainCount)}
+            # NOTE: voltage is NOT scaled here. The Vet page applies the
+            # sensitivity scaling once via getVetScaledVoltage() before
+            # calling configure_transmitter / directSetVoltage, so the
+            # ``voltage`` argument we receive is already the
+            # device-corrected value. Scaling again here would compound
+            # the correction.
             solution = {
                 "id": "solution",
                 "name": "Solution",
@@ -1129,6 +1148,119 @@ class LIFUConnector(QObject):
                 "voltage": float(voltage),
                 "transducer": transducer_dummy}
         return solution
+
+    def _device_sensitivity_at(self, freq_hz):
+        """Average device sensitivity across modules at ``freq_hz``.
+
+        Returns ``(mean, per_module_dict)`` or ``(None, {})`` if no
+        connected module has sensitivity data. ``per_module_dict`` maps
+        module index -> interpolated sensitivity for logging.
+        """
+        per_mod = {}
+        logger.debug(
+            "_device_sensitivity_at: freq=%.1fHz, cached_modules=%s",
+            float(freq_hz), sorted(self._module_user_configs.keys()),
+        )
+        for idx, cfg in self._module_user_configs.items():
+            mod = cfg.get("module") or {}
+            sens = mod.get("sensitivity") or []
+            if not sens:
+                logger.debug(
+                    "_device_sensitivity_at: module %d has no sensitivity data", idx,
+                )
+                continue
+            try:
+                pts = sorted((float(f), float(v)) for f, v in sens)
+            except (TypeError, ValueError) as e:
+                logger.debug(
+                    "_device_sensitivity_at: module %d sensitivity malformed: %s",
+                    idx, e,
+                )
+                continue
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            # numpy.interp clamps below/above the range to endpoints,
+            # which is the behaviour we want here.
+            interp = float(np.interp(float(freq_hz), xs, ys))
+            per_mod[idx] = interp
+            logger.debug(
+                "_device_sensitivity_at: module %d sens(%.1fHz)=%.2f (table %d pts, range %.0f..%.0fHz)",
+                idx, float(freq_hz), interp, len(pts), xs[0], xs[-1],
+            )
+        if not per_mod:
+            logger.debug("_device_sensitivity_at: no usable sensitivity data")
+            return None, {}
+        mean = float(np.mean(list(per_mod.values())))
+        logger.debug(
+            "_device_sensitivity_at: mean=%.2f across %d modules",
+            mean, len(per_mod),
+        )
+        return mean, per_mod
+
+    def _apply_vet_sensitivity_scaling(self, voltage, freq_hz, preset):
+        """Scale ``voltage`` by ``preset_sens / device_sens`` if available.
+
+        Returns ``voltage`` unchanged when no Vet preset is active, the
+        preset has no calibration sensitivity, or no connected module
+        reports sensitivity data.
+        """
+        logger.debug(
+            "_apply_vet_sensitivity_scaling: input voltage=%.4fV freq=%.1fHz "
+            "preset_id=%s",
+            float(voltage), float(freq_hz),
+            (preset or {}).get("id", "(none)"),
+        )
+        if preset is None:
+            logger.debug("_apply_vet_sensitivity_scaling: no active preset")
+            return voltage
+        preset_sens = preset.get("sensitivity")
+        if not preset_sens or float(preset_sens) <= 0:
+            logger.debug(
+                "_apply_vet_sensitivity_scaling: preset '%s' has no usable "
+                "sensitivity (%r)", preset.get("id", "?"), preset_sens,
+            )
+            return voltage
+        device_sens, per_mod = self._device_sensitivity_at(freq_hz)
+        if not device_sens or device_sens <= 0:
+            logger.info(
+                "Vet preset '%s': no device sensitivity available; "
+                "using unscaled voltage %.3fV.",
+                preset.get("id", "?"), voltage,
+            )
+            return voltage
+        scale = float(preset_sens) / device_sens
+        scaled = voltage * scale
+        logger.info(
+            "Vet preset '%s': voltage %.3fV -> %.3fV (scale=%.3f, "
+            "preset_sens=%s, device_sens=%.1f @ %.1fkHz, per_module=%s)",
+            preset.get("id", "?"), voltage, scaled, scale,
+            preset_sens, device_sens, freq_hz / 1e3,
+            {i: round(v, 1) for i, v in per_mod.items()},
+        )
+        return scaled
+
+    @pyqtSlot(str, str, result=str)
+    def getVetScaledVoltage(self, voltage_str, freq_khz_str):
+        """Return ``voltage_str`` scaled by the active preset's sensitivity ratio.
+
+        Exposed to QML so the Vet page can apply the scaling before
+        pushing the HV setpoint via ``directSetVoltage`` and before
+        showing the value in the UI. Returns the input unchanged on any
+        parse failure.
+        """
+        try:
+            v = float(voltage_str)
+            f_hz = float(freq_khz_str) * 1e3
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "getVetScaledVoltage: bad input (voltage=%r, freq_khz=%r): %s",
+                voltage_str, freq_khz_str, e,
+            )
+            return str(voltage_str)
+        scaled = self._apply_vet_sensitivity_scaling(
+            v, f_hz, self._active_vet_preset,
+        )
+        return f"{scaled:.6f}"
 
     def _load_pinmap_data(self, num_modules: int):
         """Load pinmap data for a given module count."""
@@ -1305,13 +1437,27 @@ class LIFUConnector(QObject):
             "id": preset_id,
             "delays": data.get("delays", []),
             "apodizations": data.get("apodization", data.get("apodizations", [])),
+            # Calibration sensitivity used by the preset's voltage
+            # number; we compare against the connected device's
+            # ``user_config['module']['sensitivity']`` to compute a
+            # per-run voltage scale factor.
+            "sensitivity": data.get("sensitivity"),
+            "frequency_khz": float(data.get("frequency_khz", 0.0)),
+            "voltage": float(data.get("voltage", 0.0)),
         }
-        logger.info("Active Vet preset set to '%s'", preset_id)
+        logger.info(
+            "Active Vet preset set to '%s' (calib_sens=%s @ %.1fkHz, calib_voltage=%.2fV)",
+            preset_id, self._active_vet_preset["sensitivity"],
+            self._active_vet_preset["frequency_khz"],
+            self._active_vet_preset["voltage"],
+        )
+        self.vetScalingChanged.emit()
         return True
 
     @pyqtSlot()
     def clearActiveVetPreset(self):
         self._active_vet_preset = None
+        self.vetScalingChanged.emit()
 
     # ------------------------------------------------------------------
     # Vet-mode session-logging settings (persist across app runs)
@@ -1634,7 +1780,27 @@ class LIFUConnector(QObject):
                 trigger_mode=trigger_mode,
             )
             self._update_trigger_state(result)
-            logger.info("Sequence settings directly updated")
+            # Mirror the new values into the cached configure args so a
+            # fresh Start (which snapshots from _last_configure_args)
+            # uses these settings rather than the previous configure's.
+            if self._last_configure_args is None:
+                self._last_configure_args = {}
+            self._last_configure_args.update({
+                "pulseInterval": str(pulseInterval),
+                "pulseCount": str(pulseCount),
+                "trainInterval": str(trainInterval),
+                "trainCount": str(trainCount),
+                "mode": str(mode),
+            })
+            # Run-progress bookkeeping was sized to the previous
+            # trainCount; clear it so begin_run_progress re-snapshots
+            # against the new values on the next Start.
+            self._reset_run_state()
+            logger.info(
+                "Sequence settings directly updated "
+                "(pulse_int=%sms pulses=%s train_int=%ss trains=%s mode=%s)",
+                pulseInterval, pulseCount, trainInterval, trainCount, mode,
+            )
             return True
         except LIFUError as e:
             self._handle_lifu_error("Set Sequence", e)
@@ -1677,7 +1843,34 @@ class LIFUConnector(QObject):
                 sequence=solution['sequence'],
                 trigger_mode=str(mode).lower(),
             )
-            logger.info("Pulse settings directly updated")
+            # Mirror the new values into the cached configure args so a
+            # fresh Start (which snapshots from _last_configure_args)
+            # uses these settings rather than the previous configure's.
+            if self._last_configure_args is None:
+                self._last_configure_args = {}
+            self._last_configure_args.update({
+                "x": str(xInput), "y": str(yInput), "z": str(zInput),
+                "freq": str(freq), "voltage": str(voltage),
+                "pulseInterval": str(pulseInterval),
+                "pulseCount": str(pulseCount),
+                "trainInterval": str(trainInterval),
+                "trainCount": str(trainCount),
+                "durationUs": str(durationS),
+                "mode": str(mode),
+            })
+            # Run-progress bookkeeping was sized to the previous
+            # trainCount; clear it so begin_run_progress re-snapshots
+            # against the new values on the next Start.
+            self._reset_run_state()
+            logger.info(
+                "Pulse settings directly updated "
+                "(voltage=%sV freq=%skHz focus=(%s,%s,%s)mm "
+                "pulse_len=%sus pulse_int=%sms pulses=%s "
+                "train_int=%ss trains=%s mode=%s)",
+                voltage, freq, xInput, yInput, zInput,
+                durationS, pulseInterval, pulseCount,
+                trainInterval, trainCount, mode,
+            )
             return True
         except LIFUError as e:
             self._handle_lifu_error("Set Pulse", e)
@@ -2037,6 +2230,28 @@ class LIFUConnector(QObject):
             self._num_modules_connected if self._num_modules_connected > 0
             else self._manual_num_modules,
         )
+        # Compact per-module transducer info. One line per module so a
+        # multi-module run still yields only a few lines, but the full
+        # user_config is still recoverable from these fields.
+        for idx in sorted(self._module_user_configs.keys()):
+            cfg = self._module_user_configs[idx]
+            mod = cfg.get("module") or {}
+            sens = mod.get("sensitivity") or []
+            sens_str = ",".join(f"{int(f/1000)}k:{int(v)}" for f, v in sens) if sens else "(none)"
+            logger.info(
+                "%s tx[%d] sn=%s hwid=%s hw=%s fw=%s sdk=%s freq=%skHz "
+                "module=%s name='%s' nx=%s ny=%s pitch=%s kerf=%s "
+                "xt=%s/%s sens[%s]",
+                prefix, idx,
+                cfg.get("sn", "?"), cfg.get("hwid", "?"),
+                cfg.get("hw_ver", "?"), cfg.get("fw_ver", "?"),
+                cfg.get("sdk_ver", "?"), cfg.get("freq", "?"),
+                mod.get("id", "?"), mod.get("name", "?"),
+                mod.get("nx", "?"), mod.get("ny", "?"),
+                mod.get("pitch", "?"), mod.get("kerf", "?"),
+                mod.get("crosstalk_frac", "?"), mod.get("crosstalk_dist", "?"),
+                sens_str,
+            )
 
     def _set_run_state(self, new_state):
         if new_state == self._run_state:
@@ -2735,15 +2950,53 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             count = self.interface.txdevice.get_tx_module_count()
+            prev_count = self._num_modules_connected
             self._num_modules_connected = count
             self.numModulesUpdated.emit()
             logger.debug(f"Number of connected TX modules: {self._num_modules_connected}")
+            # Refresh the cached per-module ``user_config`` whenever
+            # the connected count changes (or when we go from 0 to N).
+            # Best-effort: failures are logged at warning and the
+            # cache is simply left empty for that module.
+            if count != prev_count:
+                self._refresh_module_user_configs_locked(count)
         except LIFUError as e:
             self._handle_lifu_error("TX Modules", e)
         except Exception as e:
             self._handle_lifu_error("TX Modules", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
+
+    def _refresh_module_user_configs_locked(self, count):
+        """Read ``user_config`` from each connected module.
+
+        Caller is responsible for holding ``_interface_mutex``.
+        """
+        self._module_user_configs = {}
+        if count <= 0:
+            self.vetScalingChanged.emit()
+            return
+        for module_idx in range(count):
+            try:
+                config = self.interface.txdevice.read_config(module=module_idx)
+                cfg_dict = json.loads(config.get_json_str())
+            except (LIFUError, ValueError, OSError) as e:
+                logger.warning(
+                    "Module %d: failed to read user_config: %s", module_idx, e,
+                )
+                continue
+            self._module_user_configs[module_idx] = cfg_dict
+            sn = cfg_dict.get("sn", "?")
+            mod = cfg_dict.get("module", {}) or {}
+            sens = mod.get("sensitivity") or []
+            logger.info(
+                "Module %d user_config: sn=%s hw=%s fw=%s freq=%skHz "
+                "module_id=%s sensitivity_pts=%d",
+                module_idx, sn, cfg_dict.get("hw_ver", "?"),
+                cfg_dict.get("fw_ver", "?"), cfg_dict.get("freq", "?"),
+                mod.get("id", "?"), len(sens),
+            )
+        self.vetScalingChanged.emit()
 
 
     @pyqtSlot(int)
@@ -3392,6 +3645,13 @@ class LIFUConnector(QObject):
                 config = self.interface.txdevice.read_config(module=module)
                 json_str = config.get_json_str()
                 logger.info(f"User config read from {target}: {json_str}")
+                # Refresh the cached copy so subsequent solution
+                # generation uses the freshly-read sensitivity table.
+                try:
+                    self._module_user_configs[module] = json.loads(json_str)
+                    self.vetScalingChanged.emit()
+                except ValueError:
+                    pass
                 self.userConfigRead.emit(target, json_str)
             except LIFUError as e:
                 msg = f"{str(e)}"

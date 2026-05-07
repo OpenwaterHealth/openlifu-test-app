@@ -58,6 +58,18 @@ Rectangle {
     function selectedPresetLabel()     { return selectedPreset().label }
     function selectedVoltage()         { return selectedPreset().voltage }
     function selectedFrequencyKHz()    { return selectedPreset().frequency_khz }
+    // Apply per-device sensitivity scaling against the active preset's
+    // calibration sensitivity. Returns a Number; falls back to the raw
+    // preset voltage when the connector reports no scaling change.
+    function scaledVoltage() {
+        // Reference scalingTick so QML refreshes this binding whenever
+        // the active preset or cached user_configs change.
+        scalingTick;
+        return parseFloat(
+            LIFUConnector.getVetScaledVoltage(
+                selectedVoltage().toString(),
+                selectedFrequencyKHz().toString()))
+    }
     function selectedPulseLengthUs()   { return selectedPreset().pulse_length_us }
     function selectedPulseIntervalMs() { return selectedPreset().pulse_interval_ms }
     function selectedPulseCount()      { return selectedPreset().pulse_count }
@@ -95,6 +107,10 @@ Rectangle {
     property bool hvOn: false
     property int configuredModuleCount: 0
     property int previousConnectorState: LIFUConnector.state
+    // Bumped by the connector's vetScalingChanged signal so any
+    // binding that calls scaledVoltage() picks up the new value when
+    // the active preset or cached module sensitivities change.
+    property int scalingTick: 0
 
     // ----- Session/logging state (synced with LIFUConnector) -----
     property string sessionName: ""
@@ -248,9 +264,10 @@ Rectangle {
         // mirror that here. Push the active preset's delays/apodizations
         // into the connector first so get_solution() picks them up.
         applyActivePresetToConnector()
+        var v = scaledVoltage()
         LIFUConnector.configure_transmitter(
             fixedX, fixedY, selectedDepthMm().toString(),
-            selectedFrequencyKHz().toString(), selectedVoltage().toString(),
+            selectedFrequencyKHz().toString(), v.toString(),
             selectedPulseIntervalMs().toString(), selectedPulseCount().toString(),
             selectedTrainIntervalS().toString(), pulseTrainCount().toString(),
             pulseDurationUs().toString(), fixedTriggerMode
@@ -431,10 +448,11 @@ Rectangle {
                                     // Preset switch changes voltage, depth,
                                     // and pulse parameters, so push the
                                     // full pulse update + voltage to HV.
-                                    LIFUConnector.directSetVoltage(selectedVoltage().toString())
+                                    var v = scaledVoltage()
+                                    LIFUConnector.directSetVoltage(v.toString())
                                     LIFUConnector.directSetPulse(
                                         fixedX, fixedY, selectedDepthMm().toString(),
-                                        selectedFrequencyKHz().toString(), selectedVoltage().toString(),
+                                        selectedFrequencyKHz().toString(), v.toString(),
                                         selectedPulseIntervalMs().toString(), selectedPulseCount().toString(),
                                         selectedTrainIntervalS().toString(), pulseTrainCount().toString(),
                                         pulseDurationUs().toString(), fixedTriggerMode
@@ -530,7 +548,7 @@ Rectangle {
                             visible: outputParamsSection.expanded
 
                             Text { text: "Voltage:";          color: "#BDC3C7"; font.pixelSize: 13 }
-                            Text { text: selectedVoltage() + " V"; color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
+                            Text { text: scaledVoltage().toFixed(2) + " V"; color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
 
                             Text { text: "Pulse Length:";     color: "#BDC3C7"; font.pixelSize: 13 }
                             Text { text: (selectedPulseLengthUs() / 1000.0).toFixed(1) + " ms"; color: "#43BB57"; font.pixelSize: 13; font.family: "Consolas" }
@@ -947,6 +965,12 @@ Rectangle {
 
         function onVetSessionSettingsChanged() {
             loadSessionSettings()
+        }
+
+        function onVetScalingChanged() {
+            // Bump tick so any binding referencing scalingTick (e.g.
+            // the Output Parameters voltage row) re-evaluates.
+            scalingTick = scalingTick + 1
         }
 
         function onVetLogFinalized(path) {
