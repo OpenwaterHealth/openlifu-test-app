@@ -192,6 +192,183 @@ SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculat
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
 
 
+# =============================================================================
+# Vet-mode session logging
+# =============================================================================
+#
+# A run-scoped ``logging.FileHandler`` attached to the root logger captures
+# every module's output (lifu_connector + openlifu_sdk + verification +
+# anything else using ``logging``) for the duration of one Vet sonication.
+# A small ``logging.Filter`` adds an ``elapsed`` attribute so the format
+# string can include time-since-start without subclassing ``Formatter``.
+# Unhandled exceptions are routed through ``sys.excepthook`` -> ``logger``
+# while a run is active so a stray traceback ends up in the log too.
+
+VET_LOG_FORMAT = "%(asctime)s [+%(elapsed)8.3fs] %(levelname)-7s %(name)s: %(message)s"
+VET_LOG_DATEFMT = "%H:%M:%S"
+
+
+class _VetSession:
+    """Persisted session settings + run-scoped log file management."""
+
+    SETTINGS_FILENAME = "vet_session_settings.json"
+    DEFAULT_FOLDER = os.path.join(os.path.expanduser("~"), "openlifu_vet_logs")
+
+    def __init__(self, user_data_root):
+        self._user_data_root = user_data_root
+        self.session_name = ""
+        self.save_logs = True
+        self.log_folder = self.DEFAULT_FOLDER
+        self._handler = None
+        self._start_wall = 0.0
+        self._prev_excepthook = None
+        self._load_settings()
+
+    # ---- settings persistence -------------------------------------------------
+
+    def _settings_path(self):
+        return os.path.join(self._user_data_root, self.SETTINGS_FILENAME)
+
+    def _load_settings(self):
+        try:
+            with open(self._settings_path(), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        if isinstance(data.get("session_name"), str):
+            self.session_name = data["session_name"]
+        if isinstance(data.get("save_logs"), bool):
+            self.save_logs = data["save_logs"]
+        folder = data.get("log_folder")
+        if isinstance(folder, str) and folder.strip():
+            self.log_folder = folder
+
+    def save_settings(self):
+        try:
+            os.makedirs(self._user_data_root, exist_ok=True)
+            with open(self._settings_path(), 'w', encoding='utf-8') as f:
+                json.dump({
+                    "session_name": self.session_name,
+                    "save_logs": self.save_logs,
+                    "log_folder": self.log_folder,
+                }, f, indent=2)
+        except OSError as e:
+            logger.warning(f"Vet session: failed to persist settings: {e}")
+
+    @staticmethod
+    def sanitize_id(name):
+        """Snake-case an arbitrary session name; default ``"session"`` if empty."""
+        s = re.sub(r'[^A-Za-z0-9]+', '_', str(name or "").strip()).strip('_').lower()
+        return s if s else "session"
+
+    @property
+    def session_id(self):
+        return self.sanitize_id(self.session_name)
+
+    @property
+    def is_active(self):
+        return self._handler is not None
+
+    @property
+    def current_path(self):
+        return self._handler.baseFilename if self._handler is not None else None
+
+    # ---- run lifecycle --------------------------------------------------------
+
+    def _next_run_number(self, datestr, session_id):
+        """Return the next ``runNN`` index for the given date + session id."""
+        try:
+            entries = os.listdir(self.log_folder)
+        except OSError:
+            return 1
+        prefix = f"{datestr}_{session_id}_run"
+        max_n = 0
+        for entry in entries:
+            if not entry.startswith(prefix):
+                continue
+            m = re.match(r'^(\d+)', entry[len(prefix):])
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        return max_n + 1
+
+    def begin_run(self):
+        """Attach a file handler to the root logger for this run.
+
+        Returns the absolute log file path, or ``None`` if logging is
+        disabled or the file could not be opened. Idempotent if a run
+        log is already active.
+        """
+        if self.is_active:
+            return self.current_path
+        if not self.save_logs:
+            return None
+        self._start_wall = time.time()
+        wall_dt = datetime.fromtimestamp(self._start_wall)
+        sid = self.session_id
+        try:
+            os.makedirs(self.log_folder, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Vet session: cannot create '{self.log_folder}': {e}")
+            return None
+        run_num = self._next_run_number(wall_dt.strftime("%Y%m%d"), sid)
+        filename = (f"{wall_dt.strftime('%Y%m%d')}_{sid}_run{run_num:02d}_"
+                    f"{wall_dt.strftime('%H_%M_%S')}.log")
+        path = os.path.join(self.log_folder, filename)
+        try:
+            handler = logging.FileHandler(path, mode='w', encoding='utf-8')
+        except OSError as e:
+            logger.error(f"Vet session: cannot open '{path}': {e}")
+            return None
+        # Inject ``elapsed`` (seconds since run start) onto every record
+        # so the format string can render it without a custom Formatter.
+        start_wall = self._start_wall
+        def _add_elapsed(record):
+            record.elapsed = max(0.0, record.created - start_wall)
+            return True
+        handler.addFilter(_add_elapsed)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter(VET_LOG_FORMAT, datefmt=VET_LOG_DATEFMT))
+        # Make sure the root logger lets DEBUG records through to our
+        # handler (handlers can only see records the logger admits).
+        # Other handlers have their own ``setLevel`` so they aren't
+        # affected by this.
+        root = logging.getLogger()
+        if root.level == logging.NOTSET or root.level > logging.DEBUG:
+            root.setLevel(logging.DEBUG)
+        root.addHandler(handler)
+        self._handler = handler
+        # Route uncaught exceptions through logging while the run is
+        # active so any stray traceback ends up in the file.
+        self._prev_excepthook = sys.excepthook
+        sys.excepthook = self._log_uncaught
+        return path
+
+    def _log_uncaught(self, exc_type, exc_value, exc_tb):
+        if not issubclass(exc_type, KeyboardInterrupt):
+            logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+        if self._prev_excepthook is not None:
+            self._prev_excepthook(exc_type, exc_value, exc_tb)
+
+    def end_run(self):
+        """Detach and close the file handler. Returns the closed path."""
+        if self._handler is None:
+            return None
+        path = self._handler.baseFilename
+        root = logging.getLogger()
+        try:
+            root.removeHandler(self._handler)
+            self._handler.close()
+        except Exception:
+            pass
+        self._handler = None
+        if self._prev_excepthook is not None:
+            sys.excepthook = self._prev_excepthook
+            self._prev_excepthook = None
+        return path
+
+
 class _TelemetryPollThread(QThread):
     """QThread that polls hardware telemetry every 1 second.
 
@@ -319,6 +496,11 @@ class LIFUConnector(QObject):
     # have changed (delivered trains, block count, elapsed, etc.).
     runProgressChanged = pyqtSignal()
 
+    # Vet-mode session logging signals.
+    vetSessionSettingsChanged = pyqtSignal()
+    vetLogStarted = pyqtSignal(str)    # absolute log file path
+    vetLogFinalized = pyqtSignal(str)  # absolute log file path
+
     def __init__(self, hv_test_mode=False):
         super().__init__()
         self.interface = LIFUInterface(HV_test_mode=hv_test_mode,
@@ -407,6 +589,17 @@ class LIFUConnector(QObject):
 
         self._ensure_preset_solutions_seeded()
 
+        # Vet-mode session logger. When running from source the
+        # settings file lives in the repo root (gitignored) so the path
+        # the developer chose persists with the checkout; in a frozen
+        # build it falls back to the user data root since the bundled
+        # _MEIPASS directory is read-only and ephemeral.
+        if getattr(sys, 'frozen', False):
+            session_settings_dir = self._get_user_data_root()
+        else:
+            session_settings_dir = _base_path()
+        self._vet_session = _VetSession(session_settings_dir)
+
         self._bridge = _Bridge()
 
         # Wire OWSignals -> bridge
@@ -477,6 +670,12 @@ class LIFUConnector(QObject):
             self.interface.close()
         except Exception as e:
             logger.error(f"Error closing LIFU interface: {e}")
+        # Tear down any in-progress run log so the file is closed and
+        # stderr is restored even on shutdown.
+        try:
+            self._close_run_log(reason="aborted_app_quit")
+        except Exception:
+            pass
 
     def _emit_device_error(self, title: str, message: str):
         """Log a device/communication failure and surface it to QML as a popup."""
@@ -751,10 +950,10 @@ class LIFUConnector(QObject):
                     if new_trigger_state != self._trigger_state:
                         self._trigger_state = new_trigger_state
                         self.triggerStateChanged.emit(self._trigger_state)
-                        logger.info(f"Trigger state updated to: {'RUNNING' if self._trigger_state else 'STOPPED'}")
+                        logger.debug(f"Trigger state updated to: {'RUNNING' if self._trigger_state else 'STOPPED'}")
                     
                     if parsed["status"] == "STOPPED":
-                        logger.info("Trigger is stopped.")
+                        logger.debug("Trigger is stopped.")
                         self._state = READY
                         self.stateChanged.emit(self._state)
 
@@ -1085,6 +1284,89 @@ class LIFUConnector(QObject):
     def clearActiveVetPreset(self):
         self._active_vet_preset = None
 
+    # ------------------------------------------------------------------
+    # Vet-mode session-logging settings (persist across app runs)
+    # ------------------------------------------------------------------
+
+    @pyqtSlot(result="QVariantMap")
+    def getVetSessionSettings(self):
+        """Return the persisted Vet session settings for the QML page."""
+        s = self._vet_session
+        return {
+            "sessionName": s.session_name,
+            "sessionId": s.session_id,
+            "saveLogs": s.save_logs,
+            "logFolder": s.log_folder,
+        }
+
+    @pyqtSlot(str, result=str)
+    def sanitizeSessionId(self, name):
+        """Snake-case a session name. Used by the QML id preview field."""
+        return _VetSession.sanitize_id(name)
+
+    @pyqtSlot(str)
+    def setVetSessionName(self, name):
+        s = self._vet_session
+        new_name = str(name or "")
+        if new_name == s.session_name:
+            return
+        s.session_name = new_name
+        s.save_settings()
+        self.vetSessionSettingsChanged.emit()
+
+    @pyqtSlot(bool)
+    def setVetSessionSaveLogs(self, enabled):
+        s = self._vet_session
+        new_val = bool(enabled)
+        if new_val == s.save_logs:
+            return
+        s.save_logs = new_val
+        s.save_settings()
+        self.vetSessionSettingsChanged.emit()
+
+    @pyqtSlot(str)
+    def setVetSessionLogFolder(self, folder):
+        s = self._vet_session
+        # QML's FolderDialog returns a QUrl-style ``file:///...`` string.
+        new_folder = str(folder or "").strip()
+        if new_folder.lower().startswith("file:///"):
+            # Strip the URL prefix and unquote percent-encoded characters.
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(new_folder)
+            new_folder = unquote(parsed.path)
+            # On Windows urlparse leaves a leading "/" before drive letter.
+            if sys.platform == "win32" and re.match(r"^/[A-Za-z]:", new_folder):
+                new_folder = new_folder[1:]
+        elif new_folder.lower().startswith("file://"):
+            new_folder = new_folder[7:]
+        new_folder = os.path.normpath(new_folder) if new_folder else ""
+        if not new_folder or new_folder == s.log_folder:
+            return
+        s.log_folder = new_folder
+        s.save_settings()
+        self.vetSessionSettingsChanged.emit()
+
+    @pyqtSlot()
+    def openLogFolder(self):
+        """Open the configured log folder in the OS file browser."""
+        path = self._vet_session.log_folder
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as e:
+            self._emit_device_error("Open Log Folder", f"Could not create '{path}': {e}")
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # noqa: S606 - intentional shell exec on user folder
+            elif sys.platform == "darwin":
+                import subprocess
+                subprocess.Popen(["open", path])
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            self._emit_device_error("Open Log Folder", f"Could not open '{path}': {e}")
+
     def _extract_solution_settings(self, data):
         """Extract UI-editable settings from a solution-like dict."""
         target = data.get('target', {})
@@ -1407,7 +1689,13 @@ class LIFUConnector(QObject):
             self._reset_run_state()
             self.update_state()
             self._apply_auto_hv_for_state()
-            logger.info("Transmitter configured")
+            preset_id = (self._active_vet_preset or {}).get("id", "(none)")
+            logger.info(
+                f"[CONFIGURE] Transmitter configured: preset={preset_id} "
+                f"voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm "
+                f"pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} "
+                f"train_int={trainInterval}s trains={trainCount} mode={mode}"
+            )
         except LIFUSolutionError as e:
             self._configured = False
             self.update_state()
@@ -1477,8 +1765,9 @@ class LIFUConnector(QObject):
             self._async_mode_enabled = True
             self._state = RUNNING
             self.stateChanged.emit(self._state)
-            logger.info("Sonication started")
-            logger.debug(f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, turn_hv_on: {turn_hv_on})")
+            logger.info(f"[START] Sonication started "
+                        f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
+                        f"turn_hv_on={turn_hv_on})")
         except LIFUHVSettleError as e:
             # SDK leaves async OFF on settle failure (start_sonication only
             # toggles it after the HV settle succeeds). Mirror that here.
@@ -1515,8 +1804,9 @@ class LIFUConnector(QObject):
             self._async_mode_enabled = False
             self._state = READY
             self.stateChanged.emit(self._state)
-            logger.info("Sonication stopped")
-            logger.debug(f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, turn_hv_off: {turn_hv_off})")
+            logger.info(f"[STOP] Sonication stopped "
+                        f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
+                        f"turn_hv_off={turn_hv_off})")
         except LIFUError as e:
             # Do not change local state if the stop failed – hardware may still be running.
             self.stateChanged.emit(self._state)
@@ -1626,8 +1916,8 @@ class LIFUConnector(QObject):
             self._pre_cooldown_hv_mode = self._hv_enable_mode
         if self._hv_enable_mode != HV_EN_OFF:
             self.setHvEnableMode(HV_EN_OFF)
-        logger.warning(f"Thermal shutdown: TX {observed_temp:.1f} C >= "
-                       f"{THERMAL_SHUTDOWN_THRESHOLD_C:.1f} C")
+        logger.warning(f"[THERMAL] Shutdown triggered: TX {observed_temp:.1f} C >= "
+                       f"{THERMAL_SHUTDOWN_THRESHOLD_C:.1f} C; HV forced off")
         self.thermalShutdownEvent.emit(float(observed_temp),
                                        float(THERMAL_SHUTDOWN_THRESHOLD_C),
                                        float(THERMAL_COOLING_THRESHOLD_C))
@@ -1636,12 +1926,88 @@ class LIFUConnector(QObject):
     # Run-progress / pause-resume state machine
     # =====================================================================
 
+    def _open_run_log(self):
+        """Open the per-run log file (no-op if save-logs is disabled).
+
+        The connector logs an opening banner via the regular logger so
+        the message is also visible on the console handler. After
+        ``begin_run`` returns, every ``logger.*`` call from any module
+        is mirrored into the file until ``_close_run_log``.
+        """
+        path = self._vet_session.begin_run()
+        # Banner first so it's the first thing in the file (and console).
+        if path:
+            logger.info("=" * 70)
+            logger.info(
+                "[SESSION] Run log opened: session='%s' id='%s' file='%s'",
+                self._vet_session.session_name or "(unspecified)",
+                self._vet_session.session_id,
+                path,
+            )
+            self._log_run_summary(prefix="[CONFIG]")
+            logger.info("=" * 70)
+            self.vetLogStarted.emit(path)
+        elif not self._vet_session.save_logs:
+            logger.info("[SESSION] Run started (logging disabled)")
+
+    def _close_run_log(self, reason):
+        """Close the per-run log file (no-op if no log is open)."""
+        if not self._vet_session.is_active:
+            return
+        # Footer/summary first so it lands inside the still-attached file.
+        delivered_trains = min(self._run_trains_delivered_before_block,
+                               self._run_original_train_total)
+        delivered_pulses = delivered_trains * self._run_original_pulse_count
+        elapsed_s = self._run_elapsed_ms / 1000.0
+        logger.info("=" * 70)
+        logger.info(
+            "[SESSION] Run ended: reason=%s trains=%d/%d pulses=%d blocks=%d elapsed=%.3fs",
+            reason.upper(),
+            delivered_trains,
+            self._run_original_train_total,
+            delivered_pulses,
+            self._run_block_count,
+            elapsed_s,
+        )
+        logger.info("=" * 70)
+        path = self._vet_session.end_run()
+        if path:
+            self.vetLogFinalized.emit(path)
+
+    def _log_run_summary(self, prefix="[CONFIG]"):
+        """Log the parameters that this run was configured with."""
+        a = self._last_configure_args or {}
+        preset_id = (self._active_vet_preset or {}).get("id", "(none)")
+        logger.info(
+            "%s preset=%s voltage=%sV freq=%skHz focus=(%s,%s,%s)mm",
+            prefix, preset_id, a.get("voltage", "?"), a.get("freq", "?"),
+            a.get("x", "?"), a.get("y", "?"), a.get("z", "?"),
+        )
+        logger.info(
+            "%s pulse_len=%sus pulse_int=%sms pulses=%s train_int=%ss trains=%s mode=%s",
+            prefix, a.get("durationUs", "?"), a.get("pulseInterval", "?"),
+            a.get("pulseCount", "?"), a.get("trainInterval", "?"),
+            a.get("trainCount", "?"), a.get("mode", "?"),
+        )
+        logger.info(
+            "%s total_duration=%.3fs total_trains=%d hv_mode=%s tx_modules=%s",
+            prefix, self._run_original_duration_s, self._run_original_train_total,
+            HV_EN_MODES.get(self._hv_enable_mode, "?"),
+            self._num_modules_connected if self._num_modules_connected > 0
+            else self._manual_num_modules,
+        )
+
     def _set_run_state(self, new_state):
         if new_state == self._run_state:
             return
         self._run_state = new_state
         self.runStateChanged.emit(new_state)
         self.runProgressChanged.emit()
+        # Finalize the log on terminal transitions (after emitting the
+        # state change so any handlers logging from the slot still hit
+        # the file).
+        if new_state in ("finished", "aborted"):
+            self._close_run_log(reason=new_state)
 
     def _reset_run_state(self):
         """Clear all run-progress bookkeeping back to idle."""
@@ -1741,6 +2107,11 @@ class LIFUConnector(QObject):
             if self._run_trains_delivered_before_block >= self._run_original_train_total:
                 # Natural completion of the full sequence.
                 self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+                logger.info(f"[FINISH] Run completed: delivered "
+                            f"{self._run_trains_delivered_before_block} trains "
+                            f"in {self._run_elapsed_ms/1000.0:.2f} s "
+                            f"(original total: {self._run_original_train_total} trains, "
+                            f"{self._run_original_duration_s:.3f} s)")
                 self._set_run_state("finished")
                 # Restore original train count for the next run; safe to
                 # do now since the device is finishing on its own.
@@ -1790,6 +2161,11 @@ class LIFUConnector(QObject):
                 self._run_in_block_current = 0
                 self._run_in_block_total = 0
                 self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
+                logger.info(f"[FINISH] Run completed (via state change): delivered "
+                            f"{total_delivered} trains "
+                            f"in {self._run_elapsed_ms/1000.0:.2f} s "
+                            f"(original total: {self._run_original_train_total} trains, "
+                            f"{self._run_original_duration_s:.3f} s)")
                 self._set_run_state("finished")
                 self._restore_original_trigger_async()
 
@@ -1888,7 +2264,7 @@ class LIFUConnector(QObject):
             self._apply_train_count(remaining)
             self.runStateChanged.emit("paused")
             self.runProgressChanged.emit()
-            logger.info(f"Sonication paused at "
+            logger.info(f"[PAUSE] Sonication paused at "
                         f"{delivered_so_far}/{self._run_original_train_total} trains, "
                         f"{remaining} remaining")
         else:
@@ -1897,7 +2273,8 @@ class LIFUConnector(QObject):
             self.runStateChanged.emit("finished")
             self.runProgressChanged.emit()
             self._restore_original_trigger_async()
-            logger.info("Pause arrived at sequence completion; marking finished")
+            logger.info("[PAUSE] Pause arrived at sequence completion; marking finished")
+            self._close_run_log(reason="finished")
 
     @pyqtSlot()
     def resume_sonication(self):
@@ -1918,6 +2295,8 @@ class LIFUConnector(QObject):
         self._run_block_count += 1
         self._run_in_block_current = 0
         self._set_run_state("running")
+        logger.info(f"[RESUME] Continuing run; block #{self._run_block_count}, "
+                    f"{self._run_in_block_total} trains remaining")
         self.start_sonication()
 
     @pyqtSlot()
@@ -1963,6 +2342,11 @@ class LIFUConnector(QObject):
         self.runStateChanged.emit("aborted")
         self.runProgressChanged.emit()
         self._restore_original_trigger_async()
+        delivered = self._run_trains_delivered_before_block
+        logger.info(f"[ABORT] User abort at "
+                    f"{delivered}/{self._run_original_train_total} trains "
+                    f"after {self._run_elapsed_ms/1000.0:.2f} s")
+        self._close_run_log(reason="aborted")
 
     @pyqtSlot()
     def begin_run_progress(self):
@@ -1978,6 +2362,9 @@ class LIFUConnector(QObject):
         self._run_block_count = 1
         self._run_start_time_ms = time.monotonic() * 1000.0
         self._run_elapsed_ms = 0.0
+        # Open the per-run log file BEFORE flipping run-state so the
+        # state-change banner ends up in the file too.
+        self._open_run_log()
         self._set_run_state("running")
 
     @pyqtSlot()

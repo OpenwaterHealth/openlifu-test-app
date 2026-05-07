@@ -1,6 +1,7 @@
 import QtQuick 6.0
 import QtQuick.Controls 6.0
 import QtQuick.Layouts 6.0
+import QtQuick.Dialogs
 
 Rectangle {
     id: vetPage
@@ -94,6 +95,14 @@ Rectangle {
     property bool hvOn: false
     property int configuredModuleCount: 0
     property int previousConnectorState: LIFUConnector.state
+
+    // ----- Session/logging state (synced with LIFUConnector) -----
+    property string sessionName: ""
+    property string sessionId: "session"
+    property bool saveLogs: true
+    property string logFolder: ""
+    // Most recent finalized log path; drives the bottom toast.
+    property string lastSavedLog: ""
 
     // The thermal/cooldown state machine, the run/pause/resume tracker,
     // and the per-block snapshot logic used to live here as QML
@@ -260,7 +269,17 @@ Rectangle {
         }
     }
 
+    function loadSessionSettings() {
+        var s = LIFUConnector.getVetSessionSettings()
+        if (!s) return
+        sessionName = s.sessionName || ""
+        sessionId = s.sessionId || "session"
+        saveLogs = (s.saveLogs === undefined) ? true : s.saveLogs
+        logFolder = s.logFolder || ""
+    }
+
     Component.onCompleted: {
+        loadSessionSettings()
         presetOptions = LIFUConnector.getVetPresets()
         if (presetCombo.currentIndex < 0 && presetOptions.length > 0)
             presetCombo.currentIndex = 0
@@ -298,6 +317,108 @@ Rectangle {
                     anchors.margins: 16
                     spacing: 14
 
+                    // ---------- Session controls ----------
+                    Text {
+                        text: "Session"
+                        color: "white"
+                        font.pixelSize: 16
+                        font.weight: Font.Bold
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+
+                    GridLayout {
+                        columns: 2
+                        columnSpacing: 12
+                        rowSpacing: 8
+                        Layout.fillWidth: true
+
+                        Text { text: "Session Name:"; color: "white"; font.pixelSize: 14; Layout.preferredWidth: 110 }
+                        TextField {
+                            id: sessionNameField
+                            Layout.fillWidth: true
+                            text: sessionName
+                            placeholderText: "(optional)"
+                            selectByMouse: true
+                            color: "white"
+                            background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
+                            // Push name to the connector (which sanitizes
+                            // and persists it). Mirror back the resulting
+                            // session_id so the read-only id field stays in
+                            // sync without an extra signal round-trip.
+                            onTextEdited: {
+                                LIFUConnector.setVetSessionName(text)
+                                sessionName = text
+                                sessionId = LIFUConnector.sanitizeSessionId(text)
+                            }
+                        }
+
+                        Text { text: "Session ID:"; color: "white"; font.pixelSize: 14 }
+                        TextField {
+                            id: sessionIdField
+                            Layout.fillWidth: true
+                            text: sessionId
+                            readOnly: true
+                            selectByMouse: true
+                            color: "#9FB3C8"
+                            background: Rectangle { color: "#1B1D22"; border.color: "#555"; radius: 4 }
+                        }
+
+                        CheckBox {
+                            id: saveLogsCheck
+                            Layout.columnSpan: 2
+                            text: "Save Logs"
+                            checked: saveLogs
+                            contentItem: Text {
+                                text: saveLogsCheck.text
+                                color: "white"
+                                font.pixelSize: 14
+                                leftPadding: saveLogsCheck.indicator.width + 6
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            onToggled: {
+                                saveLogs = checked
+                                LIFUConnector.setVetSessionSaveLogs(checked)
+                            }
+                        }
+
+                        Text { text: "Log Folder:"; color: "white"; font.pixelSize: 14 }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            TextField {
+                                id: logFolderField
+                                Layout.fillWidth: true
+                                text: logFolder
+                                readOnly: true
+                                selectByMouse: true
+                                enabled: saveLogs
+                                color: "#9FB3C8"
+                                background: Rectangle { color: "#1B1D22"; border.color: "#555"; radius: 4 }
+                            }
+                            Button {
+                                text: "Change"
+                                enabled: saveLogs
+                                onClicked: logFolderDialog.open()
+                            }
+                            Button {
+                                // Folder-icon shortcut to launch the OS
+                                // file browser at the configured path.
+                                text: "\ud83d\udcc1"  // 📁
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Open log folder"
+                                enabled: saveLogs
+                                onClicked: LIFUConnector.openLogFolder()
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: "#3E4E6F"
+                    }
+
+                    // ---------- Sonication settings ----------
                     Text {
                         text: "Sonication Settings"
                         color: "white"
@@ -684,6 +805,56 @@ Rectangle {
         }
     }
 
+    // Folder picker for the log directory. selectedFolder is a QUrl
+    // (file:///...); the connector unpacks it into a native path.
+    FolderDialog {
+        id: logFolderDialog
+        title: "Choose log folder"
+        currentFolder: logFolder ? "file:///" + logFolder.replace(/\\/g, "/") : ""
+        onAccepted: {
+            LIFUConnector.setVetSessionLogFolder(selectedFolder.toString())
+            // Pull the canonical normalised path back from the connector.
+            loadSessionSettings()
+        }
+    }
+
+    // Transient toast: announces the path of the most recently saved
+    // log file. Auto-hides after a few seconds.
+    Rectangle {
+        id: logSavedToast
+        anchors.bottom: parent.bottom
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: 24
+        visible: opacity > 0.0
+        opacity: 0.0
+        radius: 8
+        color: "#163A26"
+        border.color: "#1f963d"
+        border.width: 2
+        z: 10
+        property string message: ""
+        implicitWidth: toastText.implicitWidth + 32
+        implicitHeight: toastText.implicitHeight + 18
+        Text {
+            id: toastText
+            anchors.centerIn: parent
+            text: logSavedToast.message
+            color: "white"
+            font.pixelSize: 14
+        }
+        Behavior on opacity { NumberAnimation { duration: 250 } }
+        Timer {
+            id: logSavedToastTimer
+            interval: 5000
+            onTriggered: logSavedToast.opacity = 0.0
+        }
+        function show(msg) {
+            message = msg
+            opacity = 0.95
+            logSavedToastTimer.restart()
+        }
+    }
+
     // Local thermal-shutdown popup. Distinct from the global device-error
     // dialog so the message is specific to the Vet page's safety logic.
     Dialog {
@@ -790,6 +961,18 @@ Rectangle {
                 }
             }
             previousConnectorState = state
+        }
+
+        function onVetSessionSettingsChanged() {
+            loadSessionSettings()
+        }
+
+        function onVetLogFinalized(path) {
+            lastSavedLog = path
+            // Show just the basename so the toast stays compact; full
+            // path is still in the field above and the log itself.
+            var name = path.split(/[\\/]/).pop()
+            logSavedToast.show("Log saved: " + name)
         }
     }
 }
