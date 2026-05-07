@@ -7,7 +7,7 @@ import argparse
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
-from lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
+from lifu.lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
 from pathlib import Path
 
 from version import get_version
@@ -100,10 +100,10 @@ def build_app_tabs(mode: str):
 def main():
     args = parse_arguments()
 
-    # Apply the requested log level to the lifu_connector logger before
-    # any of its modules log anything interesting. argparse already
-    # rejected anything that's not a string; getLevelName handles
-    # case-insensitively when given an upper-cased name.
+    # Apply the requested log level to the lifu connector's logger
+    # before any of its modules log anything interesting. The module
+    # lives at ``lifu/lifu_connector.py`` so its ``__name__`` (and
+    # therefore the logger name) is ``lifu.lifu_connector``.
     level_name = str(args.loglevel).upper()
     level = logging.getLevelName(level_name)
     if not isinstance(level, int):
@@ -112,7 +112,7 @@ def main():
             file=sys.stderr,
         )
         level = logging.INFO
-    logging.getLogger("lifu_connector").setLevel(level)
+    logging.getLogger("lifu.lifu_connector").setLevel(level)
 
     # Tell Windows to treat this as its own app (not python.exe) so the
     # taskbar shows our icon instead of the Python icon.
