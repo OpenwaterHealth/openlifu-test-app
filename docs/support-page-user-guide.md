@@ -172,6 +172,8 @@ The **Save PDF** button appears after at least one test run has completed.
 
 The confirmation message disappears automatically after 5 seconds.
 
+For reference, see an [example diagnostic report](openlifu-diag-2026-05-06_21-38-58.pdf) generated from a passing test run.
+
 ---
 
 ## Connection Behaviour
