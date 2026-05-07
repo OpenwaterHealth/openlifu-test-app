@@ -11,10 +11,12 @@ import glob
 
 def _base_path():
     """Return the directory containing bundled data files.
-    Works in both frozen (PyInstaller) and normal Python execution."""
+    Works in both frozen (PyInstaller) and normal Python execution.
+    In source mode this is the project root (the parent of the
+    ``lifu/`` package), where pinmaps and preset folders live."""
     if getattr(sys, 'frozen', False):
         return sys._MEIPASS
-    return os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import threading
 import time
 from datetime import datetime, timedelta
@@ -23,8 +25,8 @@ import re
 import base58
 import json
 import copy
-from scripts.generate_ultrasound_plot import generate_ultrasound_plot_from_solution  # Import the function directly
-from scripts.test_reports import read_test_report, test_report_to_config, check_config_against_device
+from plot.plot import generate_ultrasound_plot_from_solution  # Import the function directly
+from test_reports.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface, LIFUInterfaceStatus
 from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 from openlifu_sdk.io.exceptions import (
@@ -1103,14 +1105,52 @@ class LIFUConnector(QObject):
                     "amplitude": 1.0
                     }
             focus = np.array([float(xInput), float(yInput), float(zInput)])
-            pinmap_data = self._load_pinmap_data(num_modules)
-            element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
-            numelements = element_positions.shape[0]
-            logger.debug(f"{num_modules}x config file loaded")
-            distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
-            tof = distances*1e-3 / SPEED_OF_SOUND
-            delays = tof.max() - tof
-            apodizations = np.ones(numelements)
+
+            # When a Vet preset is active its measured delays/apodizations
+            # fully replace the geometric ones, so we can skip loading
+            # the pinmap (and avoid touching disk for it) entirely.
+            preset = self._active_vet_preset
+            preset_delays = None
+            preset_apod = None
+            if preset is not None:
+                preset_delays = np.array(preset.get("delays", []), dtype=float).reshape(-1)
+                preset_apod = np.array(preset.get("apodizations", []), dtype=float).reshape(-1)
+                expected = num_modules * NUM_ELEMENTS_PER_MODULE
+                if (preset_delays.size != expected
+                        or preset_apod.size != expected):
+                    logger.warning(
+                        "Active Vet preset '%s' has %d delays / %d apodizations, "
+                        "expected %d; falling back to pinmap-derived values.",
+                        preset.get("id", "?"), preset_delays.size,
+                        preset_apod.size, expected,
+                    )
+                    preset_delays = None
+                    preset_apod = None
+
+            if preset_delays is not None:
+                # Vet preset path: no pinmap needed.
+                delays = preset_delays
+                apodizations = preset_apod
+                numelements = delays.size
+                # Minimal transducer dict – downstream consumers only
+                # read ``elements`` (for plotting) and ``module_invert``;
+                # neither is needed in Vet mode.
+                transducer_dummy = {
+                    "id": preset.get("id", ""),
+                    "name": preset.get("name", preset.get("id", "")),
+                    "elements": [],
+                }
+            else:
+                pinmap_data = self._load_pinmap_data(num_modules)
+                element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
+                numelements = element_positions.shape[0]
+                logger.debug(f"{num_modules}x config file loaded")
+                distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
+                tof = distances*1e-3 / SPEED_OF_SOUND
+                delays = tof.max() - tof
+                apodizations = np.ones(numelements)
+                transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
+
             pulse_count = int(pulseCount)
             pulse_train_interval = float(trainInterval)
             if pulse_train_interval == 0:
@@ -1119,7 +1159,6 @@ class LIFUConnector(QObject):
                         "pulse_count": pulse_count,
                         "pulse_train_interval": pulse_train_interval,
                         "pulse_train_count": int(trainCount)}
-            transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
             solution = {
                 "id": "solution",
                 "name": "Solution",
@@ -1129,22 +1168,6 @@ class LIFUConnector(QObject):
                 "sequence": sequence,
                 "voltage": float(voltage),
                 "transducer": transducer_dummy}
-            # If a Vet preset is active, override the geometrically
-            # computed delays/apodizations with the preset's measured
-            # values (sized to the active element count).
-            preset = self._active_vet_preset
-            if preset is not None:
-                preset_delays = np.array(preset.get("delays", []), dtype=float).reshape(-1)
-                preset_apod = np.array(preset.get("apodizations", []), dtype=float).reshape(-1)
-                if preset_delays.size == numelements and preset_apod.size == numelements:
-                    solution["delays"] = preset_delays
-                    solution["apodizations"] = preset_apod
-                else:
-                    logger.warning(
-                        "Active Vet preset '%s' has %d delays / %d apodizations, "
-                        "expected %d; falling back to computed values.",
-                        preset.get("id", "?"), preset_delays.size, preset_apod.size, numelements,
-                    )
         return solution
 
     def _load_pinmap_data(self, num_modules: int):
