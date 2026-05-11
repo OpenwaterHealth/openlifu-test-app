@@ -41,7 +41,7 @@ from openlifu_sdk.io.exceptions import (
 )
 
 # Shim: re-export support connector so callers can import from either module.
-from lifu_support import LIFUSupportConnector  # noqa: F401
+#from lifu.lifu_support import LIFUSupportConnector  # noqa: F401
 
 # import verification-tests
 from openlifu_verification.prodreqs_base_class import *

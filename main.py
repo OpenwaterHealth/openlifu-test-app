@@ -8,6 +8,7 @@ from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
 from lifu.lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
+from lifu.lifu_support import LIFUSupportConnector
 from pathlib import Path
 
 from version import get_version
