@@ -196,6 +196,14 @@ THERMAL_SHUTDOWN_THRESHOLD_C = 75.0
 SPEED_OF_SOUND = 1500  # Speed of sound in m/s, used for time-of-flight calculations
 NUM_ELEMENTS_PER_MODULE = 64  # Assuming each module has 64 elements, adjust as needed
 
+# How many extra times a device-write should be retried after a
+# transient ``LIFUCommunicationError`` (timeout) before surfacing the
+# error to the user. With MAX_TIMEOUT_RETRIES=3 we attempt a write up
+# to 4 times total (1 initial + 3 retries); the user only sees the
+# popup once we've failed more than ``MAX_TIMEOUT_RETRIES`` times in
+# a row.
+MAX_TIMEOUT_RETRIES = 3
+
 
 # =============================================================================
 # Vet-mode session logging
@@ -790,6 +798,39 @@ class LIFUConnector(QObject):
     def _hv_ready(self) -> bool:
         """Return True if HV is connected and not disabled by the user."""
         return self._hvConnected and self._hv_enable_mode != HV_EN_OFF
+
+    def _call_with_comm_retry(self, label, func, *args, **kwargs):
+        """Call ``func(*args, **kwargs)`` retrying on transient timeouts.
+
+        ``LIFUCommunicationError`` is treated as a transient comms
+        glitch and retried up to :data:`MAX_TIMEOUT_RETRIES` additional
+        times (so ``MAX_TIMEOUT_RETRIES + 1`` attempts in total).
+        Every retry is logged at WARNING with attempt counts so the
+        run log makes it obvious that recovery happened. If the final
+        attempt still fails the exception is re-raised so the caller's
+        normal error-handling (popup, state rollback, etc.) runs.
+        Any other exception is raised immediately without retry.
+        """
+        last_exc = None
+        total_attempts = MAX_TIMEOUT_RETRIES + 1
+        for attempt in range(1, total_attempts + 1):
+            try:
+                return func(*args, **kwargs)
+            except LIFUCommunicationError as e:
+                last_exc = e
+                if attempt < total_attempts:
+                    logger.warning(
+                        "%s: communication timeout on attempt %d/%d (%s); retrying...",
+                        label, attempt, total_attempts, e,
+                    )
+                else:
+                    logger.error(
+                        "%s: communication timeout after %d attempts (%s); giving up.",
+                        label, total_attempts, e,
+                    )
+        # last_exc is guaranteed set here -- the loop only exits the
+        # success path via ``return`` above.
+        raise last_exc
 
     def _apply_auto_hv_for_state(self):
         """Drive the HV rail to match AUTO mode + current configured state.
@@ -1785,10 +1826,30 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             voltage = float(voltage_str)
-            if self.interface.hvcontroller.set_voltage(voltage=voltage):
+            ok = self._call_with_comm_retry(
+                "Set Voltage",
+                self.interface.hvcontroller.set_voltage,
+                voltage=voltage,
+            )
+            if ok:
                 logger.info(f"Voltage directly set to {voltage} V")
                 return True
             logger.error("Failed to directly set voltage")
+            return False
+        except LIFUCommunicationError as e:
+            # Final retry attempt failed -- surface the timeout to the
+            # user. Drop out of READY so they have to reconfigure before
+            # starting (the device's solution state is now suspect).
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Set Voltage", e,
+                                    context="Communication timeout")
+            return False
+        except (ValueError, TypeError) as e:
+            self._emit_device_error("Set Voltage", f"Invalid voltage value: {e}")
+            return False
+        except LIFUError as e:
+            self._handle_lifu_error("Set Voltage", e)
             return False
         except Exception as e:
             logger.error(f"Error in directSetVoltage: {e}")
@@ -1813,7 +1874,9 @@ class LIFUConnector(QObject):
                 pulse_train_interval_s = pulse_count * pulse_interval_s
             pulse_train_count = int(trainCount)            
             trigger_mode = str(mode).lower()
-            result = self.interface.txdevice.set_trigger(
+            result = self._call_with_comm_retry(
+                "Set Sequence",
+                self.interface.txdevice.set_trigger,
                 pulse_interval=pulse_interval_s,
                 pulse_count=pulse_count,
                 pulse_train_interval=pulse_train_interval_s,
@@ -1843,6 +1906,15 @@ class LIFUConnector(QObject):
                 pulseInterval, pulseCount, trainInterval, trainCount, mode,
             )
             return True
+        except LIFUCommunicationError as e:
+            # All retries exhausted. The on-device trigger config is
+            # now in an unknown state; force the user back through
+            # Configure before another Start.
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Set Sequence", e,
+                                    context="Communication timeout")
+            return False
         except LIFUError as e:
             self._handle_lifu_error("Set Sequence", e)
             return False
@@ -1873,11 +1945,17 @@ class LIFUConnector(QObject):
                 self._emit_device_error("Set Pulse", "Failed to build a valid solution.")
                 return False
             transducer = solution.get("transducer") if isinstance(solution, dict) else None
-            if transducer is not None and "module_invert" in transducer:
-                self.interface.txdevice.set_module_invert(transducer["module_invert"])
-            else:
-                self.interface.txdevice.set_module_invert(False)
-            self.interface.txdevice.set_solution(
+            invert_flag = bool(transducer["module_invert"]) if (
+                transducer is not None and "module_invert" in transducer
+            ) else False
+            self._call_with_comm_retry(
+                "Set Pulse (module invert)",
+                self.interface.txdevice.set_module_invert,
+                invert_flag,
+            )
+            self._call_with_comm_retry(
+                "Set Pulse",
+                self.interface.txdevice.set_solution,
                 pulse=solution['pulse'],
                 delays=solution['delays'],
                 apodizations=solution['apodizations'],
@@ -1913,6 +1991,15 @@ class LIFUConnector(QObject):
                 trainInterval, trainCount, mode,
             )
             return True
+        except LIFUCommunicationError as e:
+            # All retries exhausted. The on-device pulse/solution is
+            # now in an unknown state; force the user back through
+            # Configure before another Start.
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Set Pulse", e,
+                                    context="Communication timeout")
+            return False
         except LIFUError as e:
             self._handle_lifu_error("Set Pulse", e)
             return False
@@ -1943,7 +2030,12 @@ class LIFUConnector(QObject):
         # Force async OFF for the duration of the write.
         self._set_async_mode(False, reason="configure_transmitter")
         try:
-            self.interface.set_solution(solution, trigger_mode=mode)
+            self._call_with_comm_retry(
+                "Configure Transmitter",
+                self.interface.set_solution,
+                solution,
+                trigger_mode=mode,
+            )
             self._configured = True
             # Snapshot the args used so pause/resume can rebuild the
             # trigger via set_trigger only (cheap) instead of redoing the
@@ -1971,6 +2063,11 @@ class LIFUConnector(QObject):
                 f"pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} "
                 f"train_int={trainInterval}s trains={trainCount} mode={mode}"
             )
+        except LIFUCommunicationError as e:
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Configure Transmitter", e,
+                                    context="Communication timeout")
         except LIFUSolutionError as e:
             self._configured = False
             self.update_state()
@@ -2034,15 +2131,27 @@ class LIFUConnector(QObject):
             # Enable the unsolicited STATUS stream so the UI gets push-mode
             # temperature and trigger-state updates without polling the TX
             # device while it is sonicating.
-            self.interface.start_sonication(turn_hv_on=turn_hv_on,
-                                            wait_for_settle=wait_for_settle,
-                                            async_mode=True)
+            self._call_with_comm_retry(
+                "Start Sonication",
+                self.interface.start_sonication,
+                turn_hv_on=turn_hv_on,
+                wait_for_settle=wait_for_settle,
+                async_mode=True,
+            )
             self._async_mode_enabled = True
             self._state = RUNNING
             self.stateChanged.emit(self._state)
             logger.info(f"[START] Sonication started "
                         f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
                         f"turn_hv_on={turn_hv_on})")
+        except LIFUCommunicationError as e:
+            # SDK leaves async OFF on early-write failures. Stay in
+            # READY -- start failure doesn't invalidate the loaded
+            # solution, the user can just try Start again.
+            self._async_mode_enabled = False
+            self.stateChanged.emit(self._state)
+            self._handle_lifu_error("Start Sonication", e,
+                                    context="Communication timeout")
         except LIFUHVSettleError as e:
             # SDK leaves async OFF on settle failure (start_sonication only
             # toggles it after the HV settle succeeds). Mirror that here.
@@ -2072,7 +2181,11 @@ class LIFUConnector(QObject):
             # AUTO keeps HV energized while still configured; only WHILE_RUNNING
             # drops the rail at sonication-stop.
             turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
-            self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+            self._call_with_comm_retry(
+                "Stop Sonication",
+                self.interface.stop_sonication,
+                turn_hv_off=turn_hv_off,
+            )
             # SDK's stop_sonication() turns async OFF after stopping the
             # trigger; mirror that on our tracker so subsequent state
             # queries (e.g. directSet*) don't try to restore it.
@@ -2082,6 +2195,11 @@ class LIFUConnector(QObject):
             logger.info(f"[STOP] Sonication stopped "
                         f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
                         f"turn_hv_off={turn_hv_off})")
+        except LIFUCommunicationError as e:
+            # Do not change local state -- hardware may still be running.
+            self.stateChanged.emit(self._state)
+            self._handle_lifu_error("Stop Sonication", e,
+                                    context="Communication timeout")
         except LIFUError as e:
             # Do not change local state if the stop failed – hardware may still be running.
             self.stateChanged.emit(self._state)
@@ -2179,7 +2297,11 @@ class LIFUConnector(QObject):
             try:
                 # Mirror stop_sonication's HV policy.
                 turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
-                self.interface.stop_sonication(turn_hv_off=turn_hv_off)
+                self._call_with_comm_retry(
+                    "Thermal shutdown stop",
+                    self.interface.stop_sonication,
+                    turn_hv_off=turn_hv_off,
+                )
             except Exception as e:
                 logger.warning(f"Thermal shutdown stop_sonication failed: {e}")
             self._async_mode_enabled = False
