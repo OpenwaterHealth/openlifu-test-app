@@ -4,7 +4,7 @@ import QtQuick.Layouts 6.0
 import QtQuick.Dialogs
 
 Rectangle {
-    id: demoPage
+    id: controllerPage
     width: parent.width
     height: parent.height
     color: "#29292B"
@@ -455,8 +455,8 @@ Rectangle {
         width: 480
         height: 200
         property string errorMessage: ""
-        x: (demoPage.width - width) / 2
-        y: (demoPage.height - height) / 2
+        x: (controllerPage.width - width) / 2
+        y: (controllerPage.height - height) / 2
 
         background: Rectangle {
             color: "#1E1E20"
@@ -495,8 +495,8 @@ Rectangle {
         focus: true
         width: 420
         height: 230
-        x: (demoPage.width - width) / 2
-        y: (demoPage.height - height) / 2
+        x: (controllerPage.width - width) / 2
+        y: (controllerPage.height - height) / 2
 
         background: Rectangle {
             color: "#1E1E20"
@@ -615,8 +615,8 @@ Rectangle {
         focus: true
         width: 520
         height: 380
-        x: (demoPage.width - width) / 2
-        y: (demoPage.height - height) / 2
+        x: (controllerPage.width - width) / 2
+        y: (controllerPage.height - height) / 2
 
         background: Rectangle {
             color: "#1E1E20"
@@ -762,7 +762,7 @@ Rectangle {
 
     // HEADER
     Text {
-        text: "Focused Ultrasound Demo"
+        text: "Device Controller"
         font.pixelSize: 18
         font.weight: Font.Bold
         color: "white"

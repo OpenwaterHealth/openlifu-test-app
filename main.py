@@ -37,6 +37,19 @@ def parse_arguments():
         action="store_true",
         help="Enable HV test mode for LIFUConnector",
     )
+    parser.add_argument(
+        "--simulate",
+        nargs="?",
+        type=int,
+        const=2,
+        default=None,
+        metavar="N",
+        help=(
+            "Run against an in-memory simulated device instead of real "
+            "hardware. Optional N specifies the number of simulated TX "
+            "modules (default 2)."
+        ),
+    )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--mode",
@@ -74,7 +87,7 @@ def parse_arguments():
 # SidebarMenu.qml via the appTabs context property.
 TAB_DEFINITIONS = {
     "vet":          {"label": "Run\n(Veterinary)",  "icon": "\ueb2e", "page": "pages/Vet.qml"},
-    "demo":         {"label": "Demo",        "icon": "\ueb34", "page": "pages/Demo.qml"},
+    "controller":         {"label": "Controller",        "icon": "\ueb34", "page": "pages/Controller.qml"},
     "transmitter":  {"label": "Transmitter", "icon": "\ueab9", "page": "pages/Transmitter.qml"},
     "console":      {"label": "Console",     "icon": "\ueaae", "page": "pages/Console.qml"},
     "testing":      {"label": "Verification","icon": "\ueb2f", "page": "pages/Testing.qml"},
@@ -82,16 +95,22 @@ TAB_DEFINITIONS = {
 }
 
 MODE_TAB_LISTS = {
-    "default": ["demo", "transmitter", "console", "testing", "settings"],
+    "default": ["controller", "transmitter", "console", "testing", "settings"],
     # Vet mode is a kiosk-style single-page UX: no sidebar, no Settings.
     "vet":     ["vet"],
-    "all":     ["vet", "demo", "transmitter", "console", "testing", "settings"],
+    "all":     ["vet", "controller", "transmitter", "console", "testing", "settings"],
 }
 
+# In simulation mode only the Vet and Controller pages are exercised; the
+# rest are hidden so users don't poke at unsupported features.
+SIMULATE_TAB_ALLOWLIST = {"vet", "controller"}
 
-def build_app_tabs(mode: str):
+
+def build_app_tabs(mode: str, simulate: bool = False):
     """Return a list of tab dicts for the given mode, suitable for QML."""
     tab_ids = MODE_TAB_LISTS.get(mode, MODE_TAB_LISTS["default"])
+    if simulate:
+        tab_ids = [t for t in tab_ids if t in SIMULATE_TAB_ALLOWLIST]
     return [
         {"id": tid, **TAB_DEFINITIONS[tid]}
         for tid in tab_ids
@@ -164,8 +183,18 @@ def main():
 
     engine = QQmlApplicationEngine()
 
-    # Initialize LIFUConnector with hv_test_mode from command-line argument
-    lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
+    # Initialize the connector. --simulate swaps in an in-memory fake of
+    # LIFUInterface so the rest of the app exercises real code paths
+    # without requiring USB hardware.
+    simulating = args.simulate is not None
+    if simulating:
+        from lifu.simulated_lifu_connector import SimulatedLIFUConnector
+        # Vet mode is a single-module kiosk UX; force num_modules=1 there
+        # regardless of what the user passed to --simulate.
+        sim_modules = 1 if args.mode == "vet" else args.simulate
+        lifu_connector = SimulatedLIFUConnector(num_modules=sim_modules)
+    else:
+        lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
     lifu_support_connector = LIFUSupportConnector(interface=lifu_connector.interface)
 
     # Expose to QML
@@ -173,7 +202,8 @@ def main():
     engine.rootContext().setContextProperty("LIFUSupportConnector", lifu_support_connector)
     engine.rootContext().setContextProperty("appVersion", APP_VERSION)
     engine.rootContext().setContextProperty("appMode", args.mode)
-    engine.rootContext().setContextProperty("appTabs", build_app_tabs(args.mode))
+    engine.rootContext().setContextProperty("appSimulate", simulating)
+    engine.rootContext().setContextProperty("appTabs", build_app_tabs(args.mode, simulate=simulating))
     app.setProperty("appVersion", APP_VERSION)
 
     engine.load(resource_path("main.qml"))

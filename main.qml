@@ -79,7 +79,7 @@ Window {
                 // StackLayout (instead of a single dynamic Loader) so each
                 // tab's page is instantiated once and its state survives
                 // tab switches. This makes the sonication progress UI on
-                // Demo persist when the user pops over to Transmitter or
+                // Controller persist when the user pops over to Transmitter or
                 // Console and returns.
                 StackLayout {
                     Layout.fillWidth: true
@@ -113,12 +113,12 @@ Window {
             return
         }
 
-        // Switching from a sonication page (Vet/Demo) to Settings while
+        // Switching from a sonication page (Vet/Controller) to Settings while
         // configured (or having been stopped/finished): force a Reset so
         // the user has to re-Program/Configure before the next run, and
         // make sure HV is dropped.
         if (targetId === "settings"
-            && (currentId === "vet" || currentId === "demo")
+            && (currentId === "vet" || currentId === "controller")
             && LIFUConnector.state >= 2
             && LIFUConnector.state !== 3) {
             if (LIFUConnector.hvEnableMode === 1) {

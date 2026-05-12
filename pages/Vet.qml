@@ -99,7 +99,7 @@ Rectangle {
         return Math.max(1, Math.round(selectedDurationSeconds() / trainPeriodS))
     }
 
-    // ----- State (mirrors Demo.qml's progress/status state machine) -----
+    // ----- State (mirrors Controller.qml's progress/status state machine) -----
     property bool everConfigured: false
     property var txTemperatures: []
     property real hvPositiveRail: NaN
