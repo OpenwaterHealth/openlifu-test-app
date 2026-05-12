@@ -54,6 +54,15 @@ from openlifu_verification.prodreqs_run_indefinitely_test import TransmitterInde
 # Set up logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
+# Uncomment to activate logging from the sdk
+#sdklogger = logging.getLogger('openlifu_sdk.io')
+#sdklogger.setLevel(logging.INFO)
+#sdklogger.addHandler(ch)
 
 
 # Minimum required openlifu-sdk version. Bump this whenever the test app
@@ -130,17 +139,6 @@ def check_sdk_version(min_version: str = MIN_SDK_VERSION):
         f"openlifu-sdk {installed} is older than the required minimum {min_version}. "
         f"Please upgrade with: pip install --upgrade 'openlifu-sdk>={min_version}'",
     )
-
-
-ch = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
-
-#sdklogger = logging.getLogger('openlifu_sdk.io')
-#sdklogger.setLevel(logging.DEBUG)
-#sdklogger.addHandler(ch)
-
 
 def _parse_tx_module(target: str):
     """Parse a target string like 'tx 0', 'tx_0', 'tx0' into an integer module index.
@@ -2125,12 +2123,13 @@ class LIFUConnector(QObject):
             # Determine HV control parameters based on enable mode.
             # AUTO already energized HV at Configure time, but turn_hv_on=True
             # is harmless if it's already on. WHILE_RUNNING turns it on now.
-            turn_hv_on = self._hv_enable_mode in (HV_EN_AUTO, HV_EN_WHILE_RUNNING)
-            wait_for_settle = True  # Always wait for settle
+            turn_hv_on = self._hv_enable_mode == HV_EN_WHILE_RUNNING
+            wait_for_settle = turn_hv_on  # Always wait for settle
 
             # Enable the unsolicited STATUS stream so the UI gets push-mode
             # temperature and trigger-state updates without polling the TX
             # device while it is sonicating.
+            logger.info('[START] Turning on Sonication')
             self._call_with_comm_retry(
                 "Start Sonication",
                 self.interface.start_sonication,
