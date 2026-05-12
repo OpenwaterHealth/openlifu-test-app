@@ -569,6 +569,7 @@ class LIFUConnector(QObject):
         self._tx_connect_time: float | None = None  # monotonic timestamp of last TX connect
         self._hv_poll_failures = 0   # consecutive HV telemetry failures
         self._tx_poll_failures = 0   # consecutive TX telemetry failures
+        self._temp_poll_failures = 0  # consecutive temperature poll failures
         self._monitoring_paused = False  # set True while diagnostics tab is active
         
         # Solution loading state
@@ -2949,7 +2950,7 @@ class LIFUConnector(QObject):
             self._interface_mutex.unlock()
 
     @pyqtSlot()
-    def queryTxTemperature(self):
+    def queryTxTemperature(self, warn_after_consecutive_failures=3):
         """Fetch and emit temperature data for all connected modules."""
         if self._num_modules_connected <= 0:
             return
@@ -2959,8 +2960,11 @@ class LIFUConnector(QObject):
                 try:
                     tx_temp = self.interface.txdevice.get_temperature(module=module)
                     amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
+                    self._temp_poll_failures = 0  # reset on success
                 except LIFUError as e:
-                    logger.warning(f"Module {module}: failed to read temperature: {e}")
+                    self._temp_poll_failures += 1
+                    if self._temp_poll_failures >= warn_after_consecutive_failures:
+                        logger.warning(f"Module {module}: failed to read temperature {self._temp_poll_failures} consecutive times: {e}")
                     continue
                 self.temperatureTxUpdated.emit(module, tx_temp, amb_temp)
                 logger.debug(f"Module: {module} Temperature Data - Temp1: {tx_temp}, Temp2: {amb_temp}")
