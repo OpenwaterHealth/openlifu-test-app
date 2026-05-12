@@ -552,13 +552,22 @@ class LIFUConnector(QObject):
     # scaled voltage refreshes.
     vetScalingChanged = pyqtSignal()
 
+    def _make_interface(self, hv_test_mode=False):
+        """Construct the underlying LIFUInterface.
+
+        Subclasses (e.g. ``SimulatedLIFUConnector``) override this to
+        substitute a fake implementation without re-running the rest
+        of ``__init__``.
+        """
+        return LIFUInterface(HV_test_mode=hv_test_mode,
+                             run_async=True,
+                             voltage_table_selection="evt0",
+                             sequence_time_selection="stress_test",
+                             duty_cycle_selection="stress_test")
+
     def __init__(self, hv_test_mode=False):
         super().__init__()
-        self.interface = LIFUInterface(HV_test_mode=hv_test_mode,
-                                       run_async=True, 
-                                       voltage_table_selection="evt0",
-                                       sequence_time_selection="stress_test",
-                                       duty_cycle_selection="stress_test")
+        self.interface = self._make_interface(hv_test_mode=hv_test_mode)
         self._txConnected = False
         self._hvConnected = False
         self._configured = False
@@ -1148,7 +1157,7 @@ class LIFUConnector(QObject):
                     self.solutionLoadError.emit(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
                     return
         else:
-            # Demo UI displays frequency in kHz, duration in microseconds, and pulse interval in ms.
+            # Controller UI displays frequency in kHz, duration in microseconds, and pulse interval in ms.
             frequency_hz = float(freq) * 1e3
             duration_seconds = float(durationS) * 1e-6
             pulse_interval_seconds = float(pulseInterval) * 1e-3
@@ -2975,7 +2984,7 @@ class LIFUConnector(QObject):
         """Return the list of HV enable mode options.
 
         Index order matches the HV_EN_* integer constants and is the
-        contract used by QML ComboBoxes (Demo, Vet) for index-based
+        contract used by QML ComboBoxes (Controller, Vet) for index-based
         selection. Append-only.
         """
         return ["AUTO", "ON", "OFF", "WHILE_RUNNING"]
