@@ -1,5 +1,5 @@
 {
-    "label": "Knee (400kPa, 5% Duty Cycle)",
+    "label": "Knee (400kPa, 20% Duty Cycle)",
     "frequency_khz": 400.0,
     "voltage": 27.948905237926315,
     "sensitivity": 3598,

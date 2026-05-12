@@ -1,5 +1,5 @@
 {
-    "label": "Hip (400kPa, 5% Duty Cycle)",
+    "label": "Hip (400kPa, 20% Duty Cycle)",
     "frequency_khz": 400.0,
     "voltage": 19.13915249280202,
     "sensitivity": 3598,
