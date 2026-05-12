@@ -2991,7 +2991,6 @@ class LIFUConnector(QObject):
         self._interface_mutex.lock()
         try:
             fw_version = self.interface.hvcontroller.get_version()
-            logger.info(f"Version: {fw_version}")
             hw_id = self.interface.hvcontroller.get_hardware_id(raw_hex=True)
             if hw_id:
                 if len(hw_id) > HW_ID_DATA_LENGTH:
@@ -3000,7 +2999,7 @@ class LIFUConnector(QObject):
             else:
                 device_id = 'N/A'
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
-            logger.info(f"Device Info - Firmware: {fw_version}, Device ID: {device_id}")
+            logger.info(f"Console - Firmware Version: {fw_version}, HWID: {device_id}")
         except LIFUError as e:
             self._handle_lifu_error("Console Info", e)
         except Exception as e:
@@ -3019,7 +3018,6 @@ class LIFUConnector(QObject):
             for module_idx in range(module_count):
                 try:
                     fw_version = self.interface.txdevice.get_version(module=module_idx)
-                    logger.info(f"Module {module_idx} version: {fw_version}")
                 except LIFUError as e:
                     logger.warning(f"Module {module_idx}: failed to read firmware version: {e}")
                     fw_version = "N/A"
@@ -3034,7 +3032,7 @@ class LIFUConnector(QObject):
                     device_id = hw_id
                 else:
                     device_id = 'N/A'
-                logger.info(f"Module {module_idx} - Firmware: {fw_version}, Device ID: {device_id}")
+                logger.info(f"Module {module_idx} - Firmware Version: {fw_version}, HWID: {device_id}")
                 modules_info.append({
                     "module": module_idx,
                     "firmwareVersion": fw_version,
