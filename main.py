@@ -21,9 +21,6 @@ APP_VERSION = get_version()
 
 logger = logging.getLogger(__name__)
 
-# Suppress PyQt6 DeprecationWarnings related to SIP
-warnings.simplefilter("ignore", DeprecationWarning)
-
 def resource_path(rel: str) -> str:
     import sys, os
     base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(sys.executable if getattr(sys,"frozen",False) else __file__)))
@@ -41,13 +38,13 @@ def parse_arguments():
         "--simulate",
         nargs="?",
         type=int,
-        const=2,
+        const=1,
         default=None,
         metavar="N",
         help=(
             "Run against an in-memory simulated device instead of real "
             "hardware. Optional N specifies the number of simulated TX "
-            "modules (default 2)."
+            "modules (default 1)."
         ),
     )
     mode_group = parser.add_mutually_exclusive_group()
@@ -191,7 +188,9 @@ def main():
         from lifu.simulated_lifu_connector import SimulatedLIFUConnector
         # Vet mode is a single-module kiosk UX; force num_modules=1 there
         # regardless of what the user passed to --simulate.
-        sim_modules = 1 if args.mode == "vet" else args.simulate
+        sim_modules = args.simulate
+        print(f"Initializing simulated connector with {sim_modules} module(s)...")
+
         lifu_connector = SimulatedLIFUConnector(num_modules=sim_modules)
     else:
         lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)

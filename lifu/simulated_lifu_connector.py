@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class SimulatedLIFUConnector(LIFUConnector):
     """Drop-in connector that talks to a :class:`SimulatedLIFUInterface`."""
 
-    def __init__(self, num_modules: int = 2):
+    def __init__(self, num_modules: int = 1):
         self._sim_num_modules = max(1, int(num_modules))
         logger.info(
             "SimulatedLIFUConnector: initializing with %d simulated TX module(s)",
