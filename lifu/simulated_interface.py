@@ -41,8 +41,13 @@ TX_TEMP_NOISE_SIGMA = 0.2
 HV_TEMP_NOISE_SIGMA = 0.1
 HV_VMON_NOISE_SIGMA = 0.05
 
-# Auto-connect delay after start_monitoring() (seconds).
-AUTO_CONNECT_DELAY_S = 0.5
+# Auto-connect delay after start_monitoring() (seconds). Set to 0 so
+# the simulator reports HV + TX as already connected when the QML
+# bindings first evaluate; this avoids transient "Cannot read property
+# of null" warnings from QML expressions that touch device state during
+# launch and lets pages like Vet build their initial plot URL on first
+# refresh (used by the docs/_capture_screenshots.py helper).
+AUTO_CONNECT_DELAY_S = 0.0
 # How often the run engine emits a temperature heartbeat STATUS frame.
 HEARTBEAT_INTERVAL_MS = 1000
 
@@ -115,7 +120,7 @@ class SimulatedTxDevice:
     the emitter for unsolicited STATUS frames during sonication.
     """
 
-    def __init__(self, num_modules: int = 2):
+    def __init__(self, num_modules: int = 1):
         self.num_modules = max(1, int(num_modules))
         self.signal_connected = OWSignal()
         self.signal_disconnected = OWSignal()
@@ -654,7 +659,7 @@ class _SimulatedRunEngine(QObject):
 class SimulatedLIFUInterface(QObject):
     """Drop-in fake for :class:`openlifu_sdk.io.LIFUInterface`."""
 
-    def __init__(self, num_modules: int = 2,
+    def __init__(self, num_modules: int = 1,
                  voltage_table_selection: Optional[str] = None,
                  sequence_time_selection: Optional[str] = None,
                  duty_cycle_selection: Optional[str] = None,
