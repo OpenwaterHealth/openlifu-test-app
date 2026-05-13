@@ -1,6 +1,6 @@
-# OpenLIFU Test Application
+# Open-LIFU Test Application
 
-Python example UI for OPEN LIFU used for Hardware Testing and Basic Usage
+Python example UI for Open-LIFU used for Hardware Testing and Basic Usage
 
 ![App Image](docs/app_image.png)
 
@@ -42,7 +42,7 @@ Python example UI for OPEN LIFU used for Hardware Testing and Basic Usage
    pip install -e .[dev,test]
    ```
 
-4. **Install OpenLIFU Python**:
+4. **Install Open-LIFU Python**:
    ```bash
    git clone https://github.com/OpenwaterHealth/OpenLIFU-python.git
    cd OpenLIFU-python
@@ -74,7 +74,7 @@ Additional notes:
 ## Building Executable
 
 ### Quick Build (Windows)
-Simply double-click `build.bat` or run it from command prompt:
+Simply double-click `build.bat` or run it from the command prompt:
 ```cmd
 build.bat
 ```
