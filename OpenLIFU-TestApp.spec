@@ -4,25 +4,14 @@
 #   - TestApp.exe          (default GUI, no console window)
 #   - TestApp_console.exe  (same app, console attached for debugging)
 #
-# Optional: when the environment variable OPENLIFU_CONTEXT is set
-# (e.g. "vet", "diathermy"), a third kiosk EXE is also built that
-# auto-launches into operator-kiosk mode for that context:
-#   - OpenLIFUDeviceController-<context>.exe
-#
-# This keeps the GitHub release pipeline vendor-neutral by default; the
-# context-specific EXE is opt-in via a workflow_dispatch input. See
-# .github/workflows/release-build.yml.
+# Operator-kiosk builds live in a separate repo
+# (openlifu-operator-interface); this spec is engineering-only.
 import os
-import tempfile
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 APP_NAME = "TestApp"
 ENTRY = "main.py"
 ICON_FILE = os.path.abspath("assets/images/favicon.ico")
-
-# Context-specific kiosk build is gated on the OPENLIFU_CONTEXT env var.
-# Empty / unset means "ship the default release EXEs only".
-CONTEXT = os.environ.get("OPENLIFU_CONTEXT", "").strip().lower()
 
 # ---- bundled data + hidden imports ----------------------------------------
 datas = []
@@ -39,7 +28,6 @@ for folder in (
     "assets",
     "preset_templates",
     "preset_solutions",
-    "preset_settings",
 ):
     if os.path.isdir(folder):
         datas.append((folder, folder))
@@ -89,54 +77,6 @@ a_main = Analysis(
     optimize=0,
 )
 
-# ---- optional context-specific kiosk analysis -----------------------------
-
-context_exes = []
-context_analyses = []
-if CONTEXT:
-    # Generate a tiny wrapper script at spec-evaluation time that
-    # injects ``--context=<CONTEXT>`` into sys.argv before delegating
-    # to main.main. This avoids checking a separate file into the repo
-    # for every supported context.
-    wrapper_src = (
-        '"""Auto-generated kiosk entry point for context: {ctx}\n'
-        'Created by OpenLIFU-TestApp.spec from $OPENLIFU_CONTEXT.\n'
-        '"""\n'
-        'import sys\n'
-        'if not any(a == "--context" or a.startswith("--context=") for a in sys.argv):\n'
-        '    sys.argv.insert(1, "--context={ctx}")\n'
-        'from main import main\n'
-        'if __name__ == "__main__":\n'
-        '    main()\n'
-    ).format(ctx=CONTEXT)
-    wrapper_path = os.path.join(
-        tempfile.gettempdir(), f"_openlifu_kiosk_{CONTEXT}.py"
-    )
-    with open(wrapper_path, "w", encoding="utf-8") as f:
-        f.write(wrapper_src)
-
-    a_kiosk = Analysis(
-        [wrapper_path],
-        pathex=[os.path.abspath(".")],
-        binaries=binaries,
-        datas=datas,
-        hiddenimports=hidden,
-        excludes=["PySide6", "shiboken6", "PySide2", "PyQt5"],
-        noarchive=False,
-        optimize=0,
-    )
-    # MERGE deduplicates shared modules/binaries between the two
-    # analyses so COLLECT ships only one copy of Qt, openlifu_sdk, etc.
-    MERGE(
-        (a_main, "main", APP_NAME),
-        (a_kiosk, os.path.basename(wrapper_path)[:-3],
-         f"OpenLIFUDeviceController-{CONTEXT}"),
-    )
-    context_analyses.append(a_kiosk)
-
-# PYZ/EXE must be built after MERGE (if any) so the merged module lists
-# end up in the right archive.
-
 pyz_main = PYZ(a_main.pure)
 
 exe_gui = EXE(
@@ -148,29 +88,11 @@ exe_cli = EXE(
     name=f"{APP_NAME}_console", console=True, icon=ICON_FILE, upx=True,
 )
 
-for a_kiosk in context_analyses:
-    pyz_kiosk = PYZ(a_kiosk.pure)
-    exe_kiosk = EXE(
-        pyz_kiosk, a_kiosk.scripts, [], exclude_binaries=True,
-        name=f"OpenLIFUDeviceController-{CONTEXT}",
-        console=False, icon=ICON_FILE, upx=True,
-    )
-    context_exes.append(exe_kiosk)
-
 
 # ---- COLLECT (shared bundle) ----------------------------------------------
 
-_collect_args = [exe_gui, exe_cli]
-_collect_args.extend(context_exes)
-_collect_args.append(a_main.binaries)
-_collect_args.append(a_main.zipfiles)
-_collect_args.append(a_main.datas)
-for a in context_analyses:
-    _collect_args.append(a.binaries)
-    _collect_args.append(a.zipfiles)
-    _collect_args.append(a.datas)
-
 coll = COLLECT(
-    *_collect_args,
+    exe_gui, exe_cli,
+    a_main.binaries, a_main.zipfiles, a_main.datas,
     strip=False, upx=True, upx_exclude=[], name=APP_NAME,
 )

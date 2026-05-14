@@ -1,5 +1,3 @@
-from turtle import mode
-
 from PyQt6.QtCore import QObject, QRecursiveMutex, QThread, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import asyncio
 import contextlib
