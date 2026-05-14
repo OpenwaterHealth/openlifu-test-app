@@ -1,4 +1,4 @@
-"""Controller-page slots mixed into :class:`LIFUConnector`.
+﻿"""Controller-page slots mixed into :class:`LIFUConnector`.
 
 Holds solution loading, transmitter configuration, sonication
 control (start/stop/pause/resume/abort), HV-enable-mode policy, and
@@ -57,29 +57,6 @@ __all__ = ["ControllerMixin"]
 
 class ControllerMixin:
     """Controller-page solution/sonication/HV-mode slots."""
-
-    @pyqtSlot(str, float)
-    def configureSolution(self, solutionName, amplitude):
-        """Configures the solution and emits status to QML."""
-        self._interface_mutex.lock()
-        try:
-            logger.debug("Configuring solution: %s with amplitude: %s", solutionName, amplitude)
-            solution = None  # Replace with actual configuration logic
-            self.interface.set_solution(solution)
-            logger.info("Solution '%s' configured successfully.", solutionName)
-            self.solutionConfigured.emit(f"Solution '{solutionName}' configured.")
-        except LIFUError as e:
-            self.solutionConfigured.emit("Configuration failed.")
-            self._handle_lifu_error("Configure Solution", e,
-                                    context=f"Failed to configure solution '{solutionName}'")
-        except Exception as e:
-            self.solutionConfigured.emit("Configuration error.")
-            self._handle_lifu_error("Configure Solution", e,
-                                    context="Unexpected error")
-        finally:
-            self._interface_mutex.unlock()
-
-
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer"):
@@ -165,7 +142,7 @@ class ControllerMixin:
                 delays = preset_delays
                 apodizations = preset_apod
                 numelements = delays.size
-                # Minimal transducer dict – downstream consumers only
+                # Minimal transducer dict â€“ downstream consumers only
                 # read ``elements`` (for plotting) and ``module_invert``;
                 # neither is needed when using preset path.
                 transducer_dummy = {
@@ -208,123 +185,6 @@ class ControllerMixin:
                 "voltage": float(voltage),
                 "transducer": transducer_dummy}
         return solution
-
-
-    def _device_sensitivity_at(self, freq_hz):
-        """Average device sensitivity across modules at ``freq_hz``.
-
-        Returns ``(mean, per_module_dict)`` or ``(None, {})`` if no
-        connected module has sensitivity data. ``per_module_dict`` maps
-        module index -> interpolated sensitivity for logging.
-        """
-        per_mod = {}
-        logger.debug(
-            "_device_sensitivity_at: freq=%.1fHz, cached_modules=%s",
-            float(freq_hz), sorted(self._module_user_configs.keys()),
-        )
-        for idx, cfg in self._module_user_configs.items():
-            mod = cfg.get("module") or {}
-            sens = mod.get("sensitivity") or []
-            if not sens:
-                logger.debug(
-                    "_device_sensitivity_at: module %d has no sensitivity data", idx,
-                )
-                continue
-            try:
-                pts = sorted((float(f), float(v)) for f, v in sens)
-            except (TypeError, ValueError) as e:
-                logger.debug(
-                    "_device_sensitivity_at: module %d sensitivity malformed: %s",
-                    idx, e,
-                )
-                continue
-            xs = [p[0] for p in pts]
-            ys = [p[1] for p in pts]
-            # numpy.interp clamps below/above the range to endpoints,
-            # which is the behaviour we want here.
-            interp = float(np.interp(float(freq_hz), xs, ys))
-            per_mod[idx] = interp
-            logger.debug(
-                "_device_sensitivity_at: module %d sens(%.1fHz)=%.2f (table %d pts, range %.0f..%.0fHz)",
-                idx, float(freq_hz), interp, len(pts), xs[0], xs[-1],
-            )
-        if not per_mod:
-            logger.debug("_device_sensitivity_at: no usable sensitivity data")
-            return None, {}
-        mean = float(np.mean(list(per_mod.values())))
-        logger.debug(
-            "_device_sensitivity_at: mean=%.2f across %d modules",
-            mean, len(per_mod),
-        )
-        return mean, per_mod
-
-
-    def _apply_preset_sensitivity_scaling(self, voltage, freq_hz, preset):
-        """Scale ``voltage`` by ``preset_sens / device_sens`` if available.
-
-        Returns ``voltage`` unchanged when no Active preset is active, the
-        preset has no calibration sensitivity, or no connected module
-        reports sensitivity data.
-        """
-        logger.debug(
-            "_apply_preset_sensitivity_scaling: input voltage=%.4fV freq=%.1fHz "
-            "preset_id=%s",
-            float(voltage), float(freq_hz),
-            (preset or {}).get("id", "(none)"),
-        )
-        if preset is None:
-            logger.debug("_apply_preset_sensitivity_scaling: no active preset")
-            return voltage
-        preset_sens = preset.get("sensitivity")
-        if not preset_sens or float(preset_sens) <= 0:
-            logger.debug(
-                "_apply_preset_sensitivity_scaling: preset '%s' has no usable "
-                "sensitivity (%r)", preset.get("id", "?"), preset_sens,
-            )
-            return voltage
-        device_sens, per_mod = self._device_sensitivity_at(freq_hz)
-        if not device_sens or device_sens <= 0:
-            logger.info(
-                "Active preset '%s': no device sensitivity available; "
-                "using unscaled voltage %.3fV.",
-                preset.get("id", "?"), voltage,
-            )
-            return voltage
-        scale = float(preset_sens) / device_sens
-        scaled = voltage * scale
-        logger.info(
-            "Active preset '%s': voltage %.3fV -> %.3fV (scale=%.3f, "
-            "preset_sens=%s, device_sens=%.1f @ %.1fkHz, per_module=%s)",
-            preset.get("id", "?"), voltage, scaled, scale,
-            preset_sens, device_sens, freq_hz / 1e3,
-            {i: round(v, 1) for i, v in per_mod.items()},
-        )
-        return scaled
-
-
-    @pyqtSlot(str, str, result=str)
-    def getScaledVoltage(self, voltage_str, freq_khz_str):
-        """Return ``voltage_str`` scaled by the active preset's sensitivity ratio.
-
-        Exposed to QML so the operator page can apply the scaling before
-        pushing the HV setpoint via ``directSetVoltage`` and before
-        showing the value in the UI. Returns the input unchanged on any
-        parse failure.
-        """
-        try:
-            v = float(voltage_str)
-            f_hz = float(freq_khz_str) * 1e3
-        except (TypeError, ValueError) as e:
-            logger.warning(
-                "getScaledVoltage: bad input (voltage=%r, freq_khz=%r): %s",
-                voltage_str, freq_khz_str, e,
-            )
-            return str(voltage_str)
-        scaled = self._apply_preset_sensitivity_scaling(
-            v, f_hz, self._active_preset,
-        )
-        return f"{scaled:.6f}"
-
 
     @pyqtSlot(str, result=bool)
     def directSetVoltage(self, voltage_str):
@@ -717,7 +577,7 @@ class ControllerMixin:
             self._handle_lifu_error("Stop Sonication", e,
                                     context="Communication timeout")
         except LIFUError as e:
-            # Do not change local state if the stop failed – hardware may still be running.
+            # Do not change local state if the stop failed â€“ hardware may still be running.
             self.stateChanged.emit(self._state)
             self._handle_lifu_error("Stop Sonication", e)
         except Exception as e:
@@ -726,161 +586,7 @@ class ControllerMixin:
         finally:
             self._interface_mutex.unlock()
 
-    # =====================================================================
-    # Thermal management (TX)
-    # =====================================================================
 
-
-    @pyqtSlot()
-    def pause_sonication(self):
-        """Pause an active sonication. Stops the trigger and
-        immediately reprograms the device with a shorter trainCount
-        covering only the *remaining* portion of the original sequence,
-        so that ``resume_sonication()`` can simply call
-        ``start_sonication()`` (no further set_trigger / set_solution
-        needed)."""
-        if self._state != RUNNING or self._run_state != "running":
-            logger.warning("pause_sonication called while not running")
-            return
-        # 1. Snapshot delivered count from the current block. Be
-        #    defensive about the in-block counter potentially over-
-        #    running its block total (it is set to ``pt_curr+1`` on each
-        #    STATUS frame, which can briefly exceed the block total
-        #    around the natural-completion boundary).
-        inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
-        if self._run_in_block_total > 0 and inblock > self._run_in_block_total:
-            inblock = self._run_in_block_total
-        delivered_so_far = min(self._run_trains_delivered_before_block + inblock,
-                               self._run_original_train_total)
-        remaining = max(0, self._run_original_train_total - delivered_so_far)
-
-        # 2. Flip our run-state to "paused" *before* invoking
-        #    stop_sonication. stop_sonication emits stateChanged
-        #    synchronously, which would otherwise re-enter
-        #    ``_on_state_changed_for_run_state`` while ``_run_state`` is
-        #    still "running" and double-count ``_run_in_block_current``
-        #    against ``_run_trains_delivered_before_block`` -- causing
-        #    the bar to jump to 100% and the run to be marked finished.
-        #    Same hazard exists for any late STATUS-frame progress
-        #    emission still in flight.
-        self._run_trains_delivered_before_block = delivered_so_far
-        self._run_in_block_current = 0
-        self._run_in_block_total = remaining
-        self._run_state = "paused"  # raw assignment; signal at end
-
-        # 3. Stop the trigger.
-        self._interface_mutex.lock()
-        try:
-            turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
-            self.interface.stop_sonication(turn_hv_off=turn_hv_off)
-            self._async_mode_enabled = False
-            self._state = READY
-            self.stateChanged.emit(self._state)
-        except LIFUError as e:
-            self._handle_lifu_error("Pause Sonication", e)
-        except Exception as e:
-            self._handle_lifu_error("Pause Sonication", e, context="Unexpected error")
-        finally:
-            self._interface_mutex.unlock()
-
-        # 4. If anything remains, push the shortened trainCount so
-        #    Resume only has to call start_sonication. If the user hit
-        #    Pause exactly at sequence completion (remaining == 0)
-        #    promote to "finished" instead of leaving a degenerate
-        #    paused state with nothing to resume.
-        if remaining > 0:
-            self._apply_train_count(remaining)
-            self.runStateChanged.emit("paused")
-            self.runProgressChanged.emit()
-            logger.info(f"[PAUSE] Sonication paused at "
-                        f"{delivered_so_far}/{self._run_original_train_total} trains, "
-                        f"{remaining} remaining")
-        else:
-            self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
-            self._run_state = "finished"
-            self.runStateChanged.emit("finished")
-            self.runProgressChanged.emit()
-            self._restore_original_trigger_async()
-            logger.info("[PAUSE] Pause arrived at sequence completion; marking finished")
-            self._close_run_log(reason="finished")
-
-
-    @pyqtSlot()
-    def resume_sonication(self):
-        """Resume a previously-paused sonication. Assumes
-        ``pause_sonication`` already pushed the shortened trigger
-        settings, so this is just a start_sonication."""
-        if self._run_state != "paused":
-            logger.warning("resume_sonication called while not paused")
-            return
-        if self._run_in_block_total <= 0:
-            # Defensive: paused with nothing left to do. Promote to
-            # finished and restore the original trigger for the next run.
-            if self._run_elapsed_ms <= 0 and self._run_start_time_ms > 0:
-                self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
-            self._set_run_state("finished")
-            self._restore_original_trigger_async()
-            return
-        self._run_block_count += 1
-        self._run_in_block_current = 0
-        self._set_run_state("running")
-        logger.info(f"[RESUME] Continuing run; block #{self._run_block_count}, "
-                    f"{self._run_in_block_total} trains remaining")
-        self.start_sonication()
-
-
-    @pyqtSlot()
-    def abort_sonication(self):
-        """Hard-stop a running or paused sonication. If running, stops
-        the trigger first. Restores the originally-programmed trainCount
-        (via set_trigger) so the next Start replays the user's full
-        selection."""
-        if self._run_state not in ("running", "paused"):
-            return
-        # Snapshot delivered count and flip run-state to "aborted"
-        # BEFORE stop_sonication. Same race rationale as pause: the
-        # synchronous stateChanged emission must not see _run_state ==
-        # "running" or it can mis-mark as finished.
-        if self._run_state == "running":
-            inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
-            if self._run_in_block_total > 0 and inblock > self._run_in_block_total:
-                inblock = self._run_in_block_total
-            self._run_trains_delivered_before_block = min(
-                self._run_trains_delivered_before_block + inblock,
-                self._run_original_train_total
-            )
-        self._run_in_block_current = 0
-        self._run_in_block_total = 0
-        if self._run_start_time_ms > 0 and self._run_elapsed_ms <= 0:
-            self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
-        self._run_state = "aborted"  # raw assignment; signal after stop
-
-        if self._state == RUNNING:
-            self._interface_mutex.lock()
-            try:
-                turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
-                self.interface.stop_sonication(turn_hv_off=turn_hv_off)
-                self._async_mode_enabled = False
-                self._state = READY
-                self.stateChanged.emit(self._state)
-            except LIFUError as e:
-                self._handle_lifu_error("Abort Sonication", e)
-            except Exception as e:
-                self._handle_lifu_error("Abort Sonication", e, context="Unexpected error")
-            finally:
-                self._interface_mutex.unlock()
-        self.runStateChanged.emit("aborted")
-        self.runProgressChanged.emit()
-        self._restore_original_trigger_async()
-        delivered = self._run_trains_delivered_before_block
-        logger.info(f"[ABORT] User abort at "
-                    f"{delivered}/{self._run_original_train_total} trains "
-                    f"after {self._run_elapsed_ms/1000.0:.2f} s")
-        self._close_run_log(reason="aborted")
-
-
-    @pyqtSlot(int)
-    def setHvEnableMode(self, hv_en_mode):
         """Set HV enable mode (0=AUTO, 1=ON, 2=OFF, 3=WHILE_RUNNING)."""
         if hv_en_mode not in HV_EN_MODES:
             logger.warning(f"Invalid HV enable mode: {hv_en_mode}")
@@ -956,12 +662,6 @@ class ControllerMixin:
         return ["AUTO", "ON", "OFF", "WHILE_RUNNING"]
         
 
-    @pyqtSlot(result=bool)
-    def canSetHvOn(self):
-        """Return whether HV can be set to ON mode (requires HV connection)."""
-        return self._hvConnected
-    
-
     @pyqtSlot(result='QVariantList')
     def getPresetSolutions(self):
         """Return preset solutions found in preset_solutions/*.json.
@@ -1002,15 +702,6 @@ class ControllerMixin:
             logger.error(f"Error indexing preset solutions: {e}")
             return []
 
-
-    @pyqtSlot(str, result=bool)
-    def loadPresetSolution(self, file_path):
-        """Load a preset solution by file path.
-
-        This is a convenience wrapper that uses the same logic as loading any solution file.
-        """
-        return self.loadSolutionFromFile(file_path)
-    
 
     @pyqtSlot(str, result=bool)
     def loadSolutionFromFile(self, file_path):
@@ -1063,7 +754,7 @@ class ControllerMixin:
                 actual_elements = len(solution_data.get('transducer', {}).get('elements', []))
                 
                 if expected_elements != actual_elements:
-                    error_message = f"Element count mismatch!\nExpected: {expected_elements} elements ({self._num_modules_connected} modules × {NUM_ELEMENTS_PER_MODULE})\nFound in solution: {actual_elements} elements"
+                    error_message = f"Element count mismatch!\nExpected: {expected_elements} elements ({self._num_modules_connected} modules Ã— {NUM_ELEMENTS_PER_MODULE})\nFound in solution: {actual_elements} elements"
                     self.solutionLoadError.emit(error_message)
                     return False
             
