@@ -13,12 +13,12 @@ three supported drive frequencies (100 kHz, 200 kHz, 400 kHz).
 
 > **Note:** The Transmitter page is for engineering bring-up. End-to-end
 > sonication should use the [Controller](controller-page-user-guide.md)
-> page (full solution interface) or the [Vet](vet-page-user-guide.md)
+> page (full solution interface) or the [Operator](operator-interface-user-guide.md)
 > page (preset-driven kiosk). Routine hardware health checks should use
 > the [Support](support-page-user-guide.md) page's Diagnostics tab.
 
 Navigate to the Transmitter page by clicking the transmitter icon in
-the left sidebar. The page is hidden in `--simulate` and `--vet` modes.
+the left sidebar. The page is hidden in `--simulate` and `--context=<name>` modes.
 
 ![Transmitter tab — full layout](transmitter_tab.png)
 

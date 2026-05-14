@@ -49,24 +49,16 @@ def parse_arguments():
     )
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
-        "--mode",
-        choices=["default", "vet", "all"],
-        default="default",
-        help="UI mode: 'default' (engineering), 'vet' (veterinary, simplified), 'all' (every tab).",
-    )
-    mode_group.add_argument(
-        "--vet",
-        dest="mode",
-        action="store_const",
-        const="vet",
-        help="Shortcut for --mode vet.",
-    )
-    mode_group.add_argument(
-        "--all",
-        dest="mode",
-        action="store_const",
-        const="all",
-        help="Shortcut for --mode all.",
+        "--context",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help=(
+            "Launch in operator-kiosk mode for the given context (e.g. "
+            "'vet', 'diathermy'). The app shows a single Operator page "
+            "sourced from preset_settings/<NAME>/. Omit for engineering "
+            "mode (full sidebar with Controller/Transmitter/etc.)."
+        ),
     )
     parser.add_argument(
         "--loglevel",
@@ -83,29 +75,30 @@ def parse_arguments():
 # Tab id -> visible label, icon glyph, and QML page path. Consumed by
 # SidebarMenu.qml via the appTabs context property.
 TAB_DEFINITIONS = {
-    "vet":          {"label": "Run\n(Veterinary)",  "icon": "\ueb2e", "page": "pages/Vet.qml"},
-    "controller":         {"label": "Controller",        "icon": "\ueb34", "page": "pages/Controller.qml"},
+    "operator":     {"label": "Run",         "icon": "\ueb2e", "page": "pages/OperatorInterface.qml"},
+    "controller":   {"label": "Controller",  "icon": "\ueb34", "page": "pages/Controller.qml"},
     "transmitter":  {"label": "Transmitter", "icon": "\ueab9", "page": "pages/Transmitter.qml"},
     "console":      {"label": "Console",     "icon": "\ueaae", "page": "pages/Console.qml"},
     "testing":      {"label": "Verification","icon": "\ueb2f", "page": "pages/Testing.qml"},
     "settings":     {"label": "Settings",    "icon": "\ueabf", "page": "pages/Settings.qml"},
 }
 
-MODE_TAB_LISTS = {
-    "default": ["controller", "transmitter", "console", "testing", "settings"],
-    # Vet mode is a kiosk-style single-page UX: no sidebar, no Settings.
-    "vet":     ["vet"],
-    "all":     ["vet", "controller", "transmitter", "console", "testing", "settings"],
-}
+# Engineering mode (no --context): full sidebar.
+ENGINEERING_TABS = ["controller", "transmitter", "console", "testing", "settings"]
 
-# In simulation mode only the Vet and Controller pages are exercised; the
-# rest are hidden so users don't poke at unsupported features.
-SIMULATE_TAB_ALLOWLIST = {"vet", "controller"}
+# In operator-kiosk + simulation mode only the Operator and Controller
+# pages are exercised; the rest are hidden so users don't poke at
+# unsupported features.
+SIMULATE_TAB_ALLOWLIST = {"operator", "controller"}
 
 
-def build_app_tabs(mode: str, simulate: bool = False):
-    """Return a list of tab dicts for the given mode, suitable for QML."""
-    tab_ids = MODE_TAB_LISTS.get(mode, MODE_TAB_LISTS["default"])
+def build_app_tabs(context, simulate: bool = False):
+    """Return a list of tab dicts for the given context, suitable for QML."""
+    if context:
+        # Operator kiosk mode: single page, no sidebar.
+        tab_ids = ["operator"]
+    else:
+        tab_ids = list(ENGINEERING_TABS)
     if simulate:
         tab_ids = [t for t in tab_ids if t in SIMULATE_TAB_ALLOWLIST]
     return [
@@ -186,23 +179,27 @@ def main():
     simulating = args.simulate is not None
     if simulating:
         from lifu.simulated_lifu_connector import SimulatedLIFUConnector
-        # Vet mode is a single-module kiosk UX; force num_modules=1 there
-        # regardless of what the user passed to --simulate.
-        sim_modules = args.simulate
+        # Operator-kiosk mode is a single-module UX; force num_modules=1
+        # there regardless of what the user passed to --simulate.
+        sim_modules = 1 if args.context else args.simulate
         print(f"Initializing simulated connector with {sim_modules} module(s)...")
 
-        lifu_connector = SimulatedLIFUConnector(num_modules=sim_modules)
+        lifu_connector = SimulatedLIFUConnector(
+            num_modules=sim_modules, context=args.context,
+        )
     else:
-        lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
+        lifu_connector = LIFUConnector(
+            hv_test_mode=args.hv_test_mode, context=args.context,
+        )
     lifu_support_connector = LIFUSupportConnector(interface=lifu_connector.interface)
 
     # Expose to QML
     engine.rootContext().setContextProperty("LIFUConnector", lifu_connector)
     engine.rootContext().setContextProperty("LIFUSupportConnector", lifu_support_connector)
     engine.rootContext().setContextProperty("appVersion", APP_VERSION)
-    engine.rootContext().setContextProperty("appMode", args.mode)
+    engine.rootContext().setContextProperty("appContext", args.context or "")
     engine.rootContext().setContextProperty("appSimulate", simulating)
-    engine.rootContext().setContextProperty("appTabs", build_app_tabs(args.mode, simulate=simulating))
+    engine.rootContext().setContextProperty("appTabs", build_app_tabs(args.context, simulate=simulating))
     app.setProperty("appVersion", APP_VERSION)
 
     engine.load(resource_path("main.qml"))

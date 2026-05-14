@@ -20,7 +20,7 @@ The **Settings** page covers two distinct engineering workflows:
 > to Settings while `state == RUNNING`.
 
 Navigate to the Settings page by clicking the gear icon in the left
-sidebar. The page is hidden in `--simulate` and `--vet` modes.
+sidebar. The page is hidden in `--simulate` and `--context=<name>` modes.
 
 ![Settings tab — full layout](settings_tab.png)
 
@@ -99,7 +99,7 @@ example (TX module):
 }
 ```
 
-Sensitivity calibration values written here are what the Vet page uses
+Sensitivity calibration values written here are what the Operator page uses
 to scale per-preset voltage so each module produces the preset's
 calibration pressure.
 
@@ -157,4 +157,4 @@ here.
 | **Load Test Report** flashes red with a serial mismatch | The selected report does not belong to the selected device | Pick the correct report (or switch the **Target Component** dropdown) |
 | **Update Firmware** is greyed out | Path empty, or device not connected, or another update in progress | Check all three preconditions |
 | Update dialog shows an error mid-flash | USB drop, cable issue, or wrong firmware image | Power-cycle the device. Use a known-good signed `.bin`. Do not interrupt the next attempt |
-| Cannot navigate to Settings | A sonication is currently running | Stop the run from the [Controller](controller-page-user-guide.md) or [Vet](vet-page-user-guide.md) page first |
+| Cannot navigate to Settings | A sonication is currently running | Stop the run from the [Controller](controller-page-user-guide.md) or [Operator](operator-interface-user-guide.md) page first |

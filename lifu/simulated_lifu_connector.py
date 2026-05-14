@@ -18,13 +18,13 @@ logger = logging.getLogger(__name__)
 class SimulatedLIFUConnector(LIFUConnector):
     """Drop-in connector that talks to a :class:`SimulatedLIFUInterface`."""
 
-    def __init__(self, num_modules: int = 1):
+    def __init__(self, num_modules: int = 1, context: str | None = None):
         self._sim_num_modules = max(1, int(num_modules))
         logger.info(
             "SimulatedLIFUConnector: initializing with %d simulated TX module(s)",
             self._sim_num_modules,
         )
-        super().__init__(hv_test_mode=False)
+        super().__init__(hv_test_mode=False, context=context)
 
     def _make_interface(self, hv_test_mode=False):
         return SimulatedLIFUInterface(num_modules=self._sim_num_modules)
