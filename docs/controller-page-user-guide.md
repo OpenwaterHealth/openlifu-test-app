@@ -1,6 +1,6 @@
 # Controller Page — User Guide
 
-**Open-LIFU Engineering App**
+**Open-LIFU Test App**
 
 ---
 
@@ -10,6 +10,9 @@ The **Controller** page is the main engineering surface for configuring
 and running an arbitrary sonication. It exposes every parameter the
 firmware accepts, lets you load and save full solutions to JSON, and
 drives the device through its `READY → RUNNING → READY` cycle.
+
+The Controller has limited solution generation capabilities via it's input fields,
+but does not have the full flexibility of the OpenLIFU application. For more complex sonication patterns, users should generate a JSON solution using the SDK and load it into the Controller. Solutions loaded from JSON disable the input fields, and respect the parameters as authoritative — the Controller becomes a live dashboard for monitoring and running the solution, but not editing it.
 
 Navigate to the Controller page by clicking the controller icon in the
 left sidebar.
@@ -24,9 +27,9 @@ The Controller is split into three columns:
 
 | Column | Purpose |
 |--------|---------|
-| **Left — Inputs** | All sonication parameters: voltage, sequence, pulse, focus point, trigger settings |
-| **Centre — Plot** | Live ultrasound profile rendered from the current parameters |
-| **Right — Status & Actions** | Connection LEDs, telemetry, preset/load/save, Configure / Start / Stop |
+| **Left — Inputs** | All sonication parameters: voltage, sequence, pulse, focus point, trigger settings, as well as Loading/saving from presets and files |
+| **Top Right — Plot** | Graphical depiction of the timing and delays |
+| **Lower Right — Status & Actions** | Connection LEDs, telemetry, Configure / Start / Stop |
 
 ---
 
@@ -48,8 +51,7 @@ The Controller is split into three columns:
 | Pulse Train Interval | s | Time between train starts (disabled in Single mode) |
 | Pulse Train Count | — | Number of trains (Sequence mode only) |
 
-If the **Pulse Train Interval** is shorter than `Pulse Interval × Pulse
-Count`, the field turns red — the firmware will reject the solution.
+When using Trigger Mode "Single", the Pulse Train Interval and Pulse Train Count fields are disabled, and the device will emit a single train of pulses when Start is pressed. In "Continuous" mode, the device will emit trains of pulses indefinitely until Stop is pressed; the Pulse Train Interval field is enabled but ignored, and the Pulse Train Count field is disabled. In "Sequence" mode, the device will emit a fixed number of pulse trains as specified by the Pulse Train Count field; both the Pulse Train Interval and Pulse Train Count fields are enabled.
 
 ### Pulse Settings
 
@@ -68,56 +70,80 @@ Count`, the field turns red — the firmware will reject the solution.
 ### Field colour conventions
 
 - **White** — pristine value, never sent
-- **Orange** — value edited but not yet committed to the device
 - **Green** — value confirmed by the device after a successful Configure
 - **Grey** — section is read-only (a solution was loaded from a JSON
   file, or the device is currently running)
+- **Orange** — value is being directly edited but not yet committed to the device
 
 Once the device has been configured at least once on a manually-entered
 solution, edits to individual fields are committed straight to the device
 when you press Enter or tab away — no need to re-Configure for each
-small change.
+change.
+
+### Solution Load/Save controls
+At the bottom of the left column are controls for loading and saving sonication
+solutions as JSON files. This is the only way to interact with the more complex
+parameters like arbitrary delays and element apodizations.
+
+Selecting **Load** will pull up the Load Solution Dialog:
+![Load Solution Popup](controller_load_solution_popup.png)
+
+| Control | Action |
+|---------|--------|
+| **Preset** dropdown | Pick a JSON solution from the presets solution folder |
+| **Load from File** | Open a file picker for an arbitrary `.json` solution |
+| **Cancel** | Close the dialog without loading a solution |
+| **Load** | Load the selected solution, close the dialog |
+
+Loading a solution from disk locks the input fields (read-only grey)
+because the JSON is treated as authoritative.
+
+![Loaded Solution](controller_loaded_solution.png)
+
+Selecting **Save** will open the Save Solution Dialog:
+![Save Solution Popup](controller_save_solution_popup.png)
+| Control | Action |
+|---------|--------|
+| **Solution_id** | Identifer for the solution, used as the filename when saving |
+| **Solution Name** | Human-friendly name for the solution, stored in the JSON metadata |
+| **File Location** | Directory to save the JSON solution to |
+| **Browse** | Open a directory picker to select the File Location |
+| **Save as Default** | Save the solution as the default parameters to use when the app is opened |
+| **Cancel** | Close the dialog without saving |
+| **Save** | Save the solution to file and close the dialog |
+
+Clicking **Edit Solution** after loading a solution from JSON will drop the loaded solution, unlock the fields, and allow you to edit parameters manually. This is a one-way operation — once you click Edit Solution, the Controller will no longer reference the loaded JSON for any parameters, and any changes you make in the UI will not be reflected in the JSON. If you want to go back to the loaded JSON parameters, you can either re-load the solution from file or click Reset to drop all parameters and return to the default state.
 
 ---
 
-## Centre column — Plot
+## Top Right panel — Plot
 
-The plot shows the simulated lateral and axial pressure profile for the
-current parameters. It re-renders every time **Configure** succeeds or
-when an in-place edit is committed. The image is generated by
-`plot/plot.py`.
+The plot shows the pulse to be generated, the envelope of the pulse train, and a representation of the time delays applied to each element. The depiction of the time delays uses a fixed approximation of the element position based on whether or not there are 1 or 2 modules connected. 
 
 ---
 
-## Right column — Status & Actions
+## Bottom Right panel — Status & Actions
 
 ### Connection / status header
 
 | Indicator | Meaning |
 |-----------|---------|
-| **TX LED** | Red = disconnected · Dark green = connected · Green = configured · Blue = running |
-| **HV LED** | Red = disconnected · Dark green = HV controller seen · Green = ready · Blue = HV rail energised |
-| **System State** | Mirrors `LIFUConnector.state`: Disconnected / Connected / Ready / Running / Test Script Ready |
+| **System State** | Mirrors `LIFUConnector.state`: Disconnected / Connected / Ready / Running |
+| **Modules** | Number of connected TX modules |
+| **HV Mode** | AUTO / ON / OFF / WHILE_RUNNING |
+| **TX LED** | Red = disconnected · Dark green = connected · Green = ready · Blue = running |
 | **Temp [...]** | Per-module TX driver temperature in °C |
+| **HV LED** | Red = disconnected · Dark green = connected · Green = ready · Blue = HV rail energised |
 | **Rails +x.xx / -x.xx V** | Most recent monitored HV rail readings |
+| **Progress Bar** | See below |
 
-### Solution file controls
 
-| Control | Action |
-|---------|--------|
-| **Preset** dropdown | Pick a JSON solution from `preset_solutions/` |
-| **Load Solution** | Open a file picker for an arbitrary `.json` solution |
-| **Save Solution** | Save the current parameters as a JSON solution. Defaults to the presets folder using a sanitised version of the solution ID |
-
-Loading a solution from disk locks the input fields (read-only grey)
-because the JSON is treated as authoritative. Use **Reset** to drop the
-loaded solution and unlock the inputs for manual editing.
 
 ### Action buttons
 
 | Button | Behaviour |
 |--------|-----------|
-| **Configure** | Validate the current parameters and push them to the firmware. Required at least once before Start can be enabled. Re-rendering of the plot happens here |
+| **Configure** | Validate the current parameters and push them to the firmware. Required at least once before Start can be enabled. |
 | **Reset** | Drop the loaded solution, unlock fields, drop HV (if `AUTO`), and return to `CONNECTED` |
 | **Start** | Begin sonication. Disabled until the device is in `READY` |
 | **Stop** | Abort the current run |
@@ -147,24 +173,6 @@ firmware, so the bar advances even when the app is not actively polling.
 
 ---
 
-## Units summary
-
-The Controller accepts operator-friendly units in the UI; the firmware
-and JSON solutions use SI:
-
-| UI Field | UI Units | Stored / Wire Units |
-|----------|----------|---------------------|
-| Frequency | kHz | Hz |
-| Duration | µs | s |
-| Pulse Interval | ms | s |
-| Pulse Train Interval | s | s |
-| Voltage | V | V |
-
-Loading a JSON solution converts SI back to UI units; saving a solution
-or sending it to the device converts UI units back to SI.
-
----
-
 ## Typical workflow
 
 1. Connect the Console and Transmitter — the **TX** and **HV** LEDs go
@@ -175,19 +183,9 @@ or sending it to the device converts UI units back to SI.
    System State moves to `Ready`.
 4. Click **Start**. The progress bar begins to fill and the system state
    flips to `Running`.
-5. Wait for **FINISHED**, or click **Stop** to abort.
+5. Wait for **FINISHED** (if using Single or Sequence mode), or click **Stop** to abort.
 6. Edit any field and press Enter — the new value is pushed live without
    a full re-Configure (assuming you have not loaded a solution from
    file).
 
 ---
-
-## Troubleshooting
-
-| Symptom | Likely cause | Action |
-|---------|--------------|--------|
-| Start is greyed out | Device not in `Ready` | Press Configure first; verify TX LED is green |
-| Pulse Train Interval field is red | Train interval shorter than pulse interval × count | Increase the train interval or reduce pulses per train |
-| Configure pops a red error toast | Solution rejected by the SDK safety check | Inspect the message — usually voltage exceeds the duty/duration table for the connected device |
-| Inputs are all grey and uneditable | A JSON solution is loaded | Click **Reset** to unlock fields |
-| Progress bar shows `STOPPED` mid-run | User pressed Stop, or thermal/communication error | Check the log; press Reset and Configure again before retrying |

@@ -1,6 +1,6 @@
 # Launch Options
 
-**Open-LIFU Engineering App**
+**Open-LIFU Test App**
 
 The Open-LIFU Test App is launched from `main.py` (or the packaged
 `OpenLIFU-TestApp.exe`). A handful of command-line flags control which UI

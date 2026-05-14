@@ -1,6 +1,6 @@
 # Console Page — User Guide
 
-**Open-LIFU Engineering App**
+**Open-LIFU Test App**
 
 ---
 

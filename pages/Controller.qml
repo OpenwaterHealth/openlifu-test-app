@@ -156,13 +156,6 @@ Rectangle {
         triggerPulseTrainInterval.text = settings.trainInterval.toString()
         triggerPulseTrainCount.text = settings.trainCount.toString()
 
-        if (!LIFUConnector.txConnected && settings.numModules && settings.numModules > 0) {
-            var idx = numModulesComboBox.model.indexOf(settings.numModules)
-            if (idx >= 0) {
-                numModulesComboBox.currentIndex = idx
-            }
-        }
-
         updateTrainIntervalValidation()
     }
 
@@ -490,7 +483,7 @@ Rectangle {
 
     Dialog {
         id: loadPresetDialog
-        title: "Load Preset"
+        title: "Load Solution"
         modal: true
         focus: true
         width: 420
@@ -705,13 +698,13 @@ Rectangle {
 
                 Button {
                     text: "Save as Default"
-                    enabled: numModulesComboBox.currentValue > 0
+                    enabled: LIFUConnector.queryNumModulesConnected > 0
                     onClicked: {
                         var saveDefaultOk = LIFUConnector.saveSolutionToFile(
                             "default_solution",
                             saveSolutionNameField.text.trim().length > 0 ? saveSolutionNameField.text : "Default Solution",
                             LIFUConnector.getDefaultSolutionFilePath(),
-                            numModulesComboBox.currentValue.toString(),
+                            LIFUConnector.queryNumModulesConnected.toString(),
                             xInput.text, yInput.text, zInput.text,
                             frequencyInput.text, voltage.text,
                             triggerPulseInterval.text, triggerPulseCount.text,
@@ -731,13 +724,13 @@ Rectangle {
 
                 Button {
                     text: "Save"
-                    enabled: saveSolutionIdField.text.trim().length > 0 && saveSolutionPath.trim().length > 0 && numModulesComboBox.currentValue > 0
+                    enabled: saveSolutionIdField.text.trim().length > 0 && saveSolutionPath.trim().length > 0 && LIFUConnector.queryNumModulesConnected > 0
                     onClicked: {
                         var saveOk = LIFUConnector.saveSolutionToFile(
                             saveSolutionIdField.text,
                             saveSolutionNameField.text,
                             saveSolutionPath,
-                            numModulesComboBox.currentValue.toString(),
+                            LIFUConnector.queryNumModulesConnected.toString(),
                             xInput.text, yInput.text, zInput.text,
                             frequencyInput.text, voltage.text,
                             triggerPulseInterval.text, triggerPulseCount.text,
@@ -1477,27 +1470,12 @@ Rectangle {
                         }
 
                         Text {
-                            text: "Modules:"
+                            text: "Modules: " + LIFUConnector.queryNumModulesConnected
                             font.pixelSize: 12
                             color: "#BDC3C7"
                             verticalAlignment: Text.AlignVCenter
                         }
 
-                        ComboBox {
-                            id: numModulesComboBox
-                            model: [1, 2]
-                            currentIndex: 0
-                            enabled: !LIFUConnector.txConnected && !solutionLoaded
-                            implicitWidth: 68
-                            implicitHeight: 26
-                            font.pixelSize: 12
-                            background: Rectangle {
-                                color: "#222"
-                                border.color: numModulesComboBox.enabled ? "#999" : "#555"
-                                radius: 4
-                            }
-                            onCurrentValueChanged: LIFUConnector.setManualNumModules(currentValue)
-                        }
                         
                         Text {
                             text: "HV Enable:"
@@ -1935,9 +1913,6 @@ Rectangle {
 
         function onNumModulesUpdated() {
             configuredModuleCount = LIFUConnector.queryNumModulesConnected
-            var hwModules = LIFUConnector.queryNumModulesConnected
-            numModulesComboBox.currentIndex = numModulesComboBox.model.indexOf(hwModules) >= 0
-                ? numModulesComboBox.model.indexOf(hwModules) : 0
         }
 
         function onMonVoltagesReceived(voltages) {
