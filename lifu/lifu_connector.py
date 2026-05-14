@@ -580,7 +580,6 @@ class LIFUConnector(QObject):
         self._trigger_state = False  # Internal state to track trigger status
         self._txconfigured_state = False  # Internal state to track trigger status
         self._num_modules_connected = 0
-        self._manual_num_modules = 1  # fallback when TX not connected
         self._tx_connect_time: float | None = None  # monotonic timestamp of last TX connect
         self._hv_poll_failures = 0   # consecutive HV telemetry failures
         self._tx_poll_failures = 0   # consecutive TX telemetry failures
@@ -1130,7 +1129,7 @@ class LIFUConnector(QObject):
 
     def get_solution(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=False):
         """Simulate configuring the transmitter."""
-        num_modules = self._num_modules_connected if self._num_modules_connected > 0 else self._manual_num_modules
+        num_modules = self._num_modules_connected if self._num_modules_connected > 0 else 1
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
             solution = self._loaded_solution_data
@@ -1423,11 +1422,6 @@ class LIFUConnector(QObject):
         except Exception:
             pass
         return 0
-
-    @pyqtSlot(int)
-    def setManualNumModules(self, n: int):
-        """Set the manual module count used when TX hardware is not connected."""
-        self._manual_num_modules = max(1, int(n))
 
     def _get_preset_templates_path(self) -> str:
         return os.path.join(_base_path(), "preset_templates")
@@ -2399,7 +2393,7 @@ class LIFUConnector(QObject):
             prefix, self._run_original_duration_s, self._run_original_train_total,
             HV_EN_MODES.get(self._hv_enable_mode, "?"),
             self._num_modules_connected if self._num_modules_connected > 0
-            else self._manual_num_modules,
+            else 1,
         )
         # Compact per-module transducer info. One line per module so a
         # multi-module run still yields only a few lines, but the full

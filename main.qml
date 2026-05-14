@@ -35,7 +35,7 @@ Window {
             anchors.right: parent.right
 
             // Set title and logo dynamically
-            titleText: "Open-LIFU"
+            titleText: "OpenLIFU"
             logoSource: "../assets/images/OpenwaterLogo.png" // Correct relative path
             appVerText: appVersion
             sdkVerText: LIFUConnector.sdkVersion
