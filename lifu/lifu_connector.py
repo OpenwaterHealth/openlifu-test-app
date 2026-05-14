@@ -204,26 +204,26 @@ MAX_TIMEOUT_RETRIES = 3
 
 
 # =============================================================================
-# Vet-mode session logging
+# Run-scoped session logging
 # =============================================================================
 #
 # A run-scoped ``logging.FileHandler`` attached to the root logger captures
 # every module's output (lifu_connector + openlifu_sdk + verification +
-# anything else using ``logging``) for the duration of one Vet sonication.
+# anything else using ``logging``) for the duration of one run.
 # A small ``logging.Filter`` adds an ``elapsed`` attribute so the format
 # string can include time-since-start without subclassing ``Formatter``.
 # Unhandled exceptions are routed through ``sys.excepthook`` -> ``logger``
 # while a run is active so a stray traceback ends up in the log too.
 
-VET_LOG_FORMAT = "%(asctime)s [+%(elapsed)8.3fs] %(levelname)-7s %(name)s: %(message)s"
-VET_LOG_DATEFMT = "%H:%M:%S"
+RUN_LOG_FORMAT = "%(asctime)s [+%(elapsed)8.3fs] %(levelname)-7s %(name)s: %(message)s"
+RUN_LOG_DATEFMT = "%H:%M:%S"
 
 
-class _VetSession:
+class _SessionLogger:
     """Persisted session settings + run-scoped log file management."""
 
-    SETTINGS_FILENAME = "vet_session_settings.json"
-    DEFAULT_FOLDER = os.path.join(os.path.expanduser("~"), "openlifu_vet_logs")
+    SETTINGS_FILENAME = "session_settings.json"
+    DEFAULT_FOLDER = os.path.join(os.path.expanduser("~"), "openlifu_logs")
 
     def __init__(self, user_data_root):
         self._user_data_root = user_data_root
@@ -265,7 +265,7 @@ class _VetSession:
                     "log_folder": self.log_folder,
                 }, f, indent=2)
         except OSError as e:
-            logger.warning(f"Vet session: failed to persist settings: {e}")
+            logger.warning(f"Session log: failed to persist settings: {e}")
 
     @staticmethod
     def sanitize_id(name):
@@ -320,7 +320,7 @@ class _VetSession:
         try:
             os.makedirs(self.log_folder, exist_ok=True)
         except OSError as e:
-            logger.error(f"Vet session: cannot create '{self.log_folder}': {e}")
+            logger.error(f"Session log: cannot create '{self.log_folder}': {e}")
             return None
         run_num = self._next_run_number(wall_dt.strftime("%Y%m%d"), sid)
         filename = (f"{wall_dt.strftime('%Y%m%d')}_{sid}_run{run_num:02d}_"
@@ -329,7 +329,7 @@ class _VetSession:
         try:
             handler = logging.FileHandler(path, mode='w', encoding='utf-8')
         except OSError as e:
-            logger.error(f"Vet session: cannot open '{path}': {e}")
+            logger.error(f"Session log: cannot open '{path}': {e}")
             return None
         # Inject ``elapsed`` (seconds since run start) onto every record
         # so the format string can render it without a custom Formatter.
@@ -337,16 +337,16 @@ class _VetSession:
         # openlifu_sdk's verbose DEBUG output doesn't drown out our own
         # log lines in the file.
         start_wall = self._start_wall
-        def _vet_log_filter(record):
+        def _run_log_filter(record):
             if (record.name == "openlifu_sdk"
                     or record.name.startswith("openlifu_sdk.")):
                 if record.levelno < logging.WARNING:
                     return False
             record.elapsed = max(0.0, record.created - start_wall)
             return True
-        handler.addFilter(_vet_log_filter)
+        handler.addFilter(_run_log_filter)
         handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter(VET_LOG_FORMAT, datefmt=VET_LOG_DATEFMT))
+        handler.setFormatter(logging.Formatter(RUN_LOG_FORMAT, datefmt=RUN_LOG_DATEFMT))
         # Make sure the root logger lets DEBUG records through to our
         # handler (handlers can only see records the logger admits).
         # Other handlers have their own ``setLevel`` so they aren't
@@ -535,22 +535,22 @@ class LIFUConnector(QObject):
     coolingStateChanged = pyqtSignal(bool)
     thermalShutdownEvent = pyqtSignal(float, float, float)  # (observedTempC, shutdownThresholdC, coolingThresholdC)
 
-    # Run-progress signals (drive the Vet-mode progress bar). The state
+    # Run-progress signals (drive the run progress bar). The state
     # is one of: "idle", "running", "paused", "finished", "aborted".
     runStateChanged = pyqtSignal(str)
     # Generic notify that any of the run-progress derived properties may
     # have changed (delivered trains, block count, elapsed, etc.).
     runProgressChanged = pyqtSignal()
 
-    # Vet-mode session logging signals.
-    vetSessionSettingsChanged = pyqtSignal()
-    vetLogStarted = pyqtSignal(str)    # absolute log file path
-    vetLogFinalized = pyqtSignal(str)  # absolute log file path
-    # Fires when anything that affects ``getVetScaledVoltage`` changes
+    # Run-scoped session logging signals.
+    sessionSettingsChanged = pyqtSignal()
+    runLogStarted = pyqtSignal(str)    # absolute log file path
+    runLogFinalized = pyqtSignal(str)  # absolute log file path
+    # Fires when anything that affects ``getScaledVoltage`` changes
     # (active preset, cached module user_configs). QML bindings can
     # reference this signal via a notify-property so the displayed
     # scaled voltage refreshes.
-    vetScalingChanged = pyqtSignal()
+    presetScalingChanged = pyqtSignal()
 
     def _make_interface(self, hv_test_mode=False):
         """Construct the underlying LIFUInterface.
@@ -565,8 +565,13 @@ class LIFUConnector(QObject):
                              sequence_time_selection="stress_test",
                              duty_cycle_selection="stress_test")
 
-    def __init__(self, hv_test_mode=False):
+    def __init__(self, hv_test_mode=False, context: str | None = None):
         super().__init__()
+        # Context name (e.g. "vet", "diathermy") selects which subfolder
+        # under preset_settings/ ships the presets and constants.json.
+        # ``None`` means "engineering mode" -- no presets and no
+        # operator page; getPresets() returns an empty list.
+        self._context = context
         self.interface = self._make_interface(hv_test_mode=hv_test_mode)
         self._txConnected = False
         self._hvConnected = False
@@ -643,16 +648,16 @@ class LIFUConnector(QObject):
         # set_solution (slow) for pause/resume/abort transitions.
         self._last_configure_args = None
 
-        # Active Vet-page preset (delays/apodizations baked from disk).
+        # Active preset (delays/apodizations baked from disk).
         # When set, get_solution() overrides its computed delays /
-        # apodizations with these so the Vet page uses the per-preset
+        # apodizations with these so the operator page uses the per-preset
         # measured values rather than recomputing from element geometry.
-        self._active_vet_preset = None
+        self._active_preset = None
 
         # Per-module ``user_config`` dicts (parsed JSON from
         # ``txdevice.read_config``), keyed by module index. Refreshed
         # by ``queryNumModules`` whenever the connected count changes.
-        # Used in the Vet path to scale voltage by the ratio of the
+        # Used in the Active preset path to scale voltage by the ratio of the
         # preset's calibration sensitivity to the connected device's
         # measured sensitivity at the run frequency.
         self._module_user_configs = {}
@@ -661,7 +666,7 @@ class LIFUConnector(QObject):
 
         self._ensure_preset_solutions_seeded()
 
-        # Vet-mode session logger. When running from source the
+        # Run-scoped session logger. When running from source the
         # settings file lives in the repo root (gitignored) so the path
         # the developer chose persists with the checkout; in a frozen
         # build it falls back to the user data root since the bundled
@@ -670,7 +675,7 @@ class LIFUConnector(QObject):
             session_settings_dir = self._get_user_data_root()
         else:
             session_settings_dir = _base_path()
-        self._vet_session = _VetSession(session_settings_dir)
+        self._session_logger = _SessionLogger(session_settings_dir)
 
         self._bridge = _Bridge()
 
@@ -1167,10 +1172,10 @@ class LIFUConnector(QObject):
                     }
             focus = np.array([float(xInput), float(yInput), float(zInput)])
 
-            # When a Vet preset is active its measured delays/apodizations
+            # When a Active preset is active its measured delays/apodizations
             # fully replace the geometric ones, so we can skip loading
             # the pinmap (and avoid touching disk for it) entirely.
-            preset = self._active_vet_preset
+            preset = self._active_preset
             preset_delays = None
             preset_apod = None
             if preset is not None:
@@ -1180,7 +1185,7 @@ class LIFUConnector(QObject):
                 if (preset_delays.size != expected
                         or preset_apod.size != expected):
                     logger.warning(
-                        "Active Vet preset '%s' has %d delays / %d apodizations, "
+                        "Active Active preset '%s' has %d delays / %d apodizations, "
                         "expected %d; falling back to pinmap-derived values.",
                         preset.get("id", "?"), preset_delays.size,
                         preset_apod.size, expected,
@@ -1189,13 +1194,13 @@ class LIFUConnector(QObject):
                     preset_apod = None
 
             if preset_delays is not None:
-                # Vet preset path: no pinmap needed.
+                # Active preset path: no pinmap needed.
                 delays = preset_delays
                 apodizations = preset_apod
                 numelements = delays.size
                 # Minimal transducer dict – downstream consumers only
                 # read ``elements`` (for plotting) and ``module_invert``;
-                # neither is needed in Vet mode.
+                # neither is needed when using preset path.
                 transducer_dummy = {
                     "id": preset.get("id", ""),
                     "name": preset.get("name", preset.get("id", "")),
@@ -1220,8 +1225,8 @@ class LIFUConnector(QObject):
                         "pulse_count": pulse_count,
                         "pulse_train_interval": pulse_train_interval,
                         "pulse_train_count": int(trainCount)}
-            # NOTE: voltage is NOT scaled here. The Vet page applies the
-            # sensitivity scaling once via getVetScaledVoltage() before
+            # NOTE: voltage is NOT scaled here. The operator page applies the
+            # sensitivity scaling once via getScaledVoltage() before
             # calling configure_transmitter / directSetVoltage, so the
             # ``voltage`` argument we receive is already the
             # device-corrected value. Scaling again here would compound
@@ -1285,33 +1290,33 @@ class LIFUConnector(QObject):
         )
         return mean, per_mod
 
-    def _apply_vet_sensitivity_scaling(self, voltage, freq_hz, preset):
+    def _apply_preset_sensitivity_scaling(self, voltage, freq_hz, preset):
         """Scale ``voltage`` by ``preset_sens / device_sens`` if available.
 
-        Returns ``voltage`` unchanged when no Vet preset is active, the
+        Returns ``voltage`` unchanged when no Active preset is active, the
         preset has no calibration sensitivity, or no connected module
         reports sensitivity data.
         """
         logger.debug(
-            "_apply_vet_sensitivity_scaling: input voltage=%.4fV freq=%.1fHz "
+            "_apply_preset_sensitivity_scaling: input voltage=%.4fV freq=%.1fHz "
             "preset_id=%s",
             float(voltage), float(freq_hz),
             (preset or {}).get("id", "(none)"),
         )
         if preset is None:
-            logger.debug("_apply_vet_sensitivity_scaling: no active preset")
+            logger.debug("_apply_preset_sensitivity_scaling: no active preset")
             return voltage
         preset_sens = preset.get("sensitivity")
         if not preset_sens or float(preset_sens) <= 0:
             logger.debug(
-                "_apply_vet_sensitivity_scaling: preset '%s' has no usable "
+                "_apply_preset_sensitivity_scaling: preset '%s' has no usable "
                 "sensitivity (%r)", preset.get("id", "?"), preset_sens,
             )
             return voltage
         device_sens, per_mod = self._device_sensitivity_at(freq_hz)
         if not device_sens or device_sens <= 0:
             logger.info(
-                "Vet preset '%s': no device sensitivity available; "
+                "Active preset '%s': no device sensitivity available; "
                 "using unscaled voltage %.3fV.",
                 preset.get("id", "?"), voltage,
             )
@@ -1319,7 +1324,7 @@ class LIFUConnector(QObject):
         scale = float(preset_sens) / device_sens
         scaled = voltage * scale
         logger.info(
-            "Vet preset '%s': voltage %.3fV -> %.3fV (scale=%.3f, "
+            "Active preset '%s': voltage %.3fV -> %.3fV (scale=%.3f, "
             "preset_sens=%s, device_sens=%.1f @ %.1fkHz, per_module=%s)",
             preset.get("id", "?"), voltage, scaled, scale,
             preset_sens, device_sens, freq_hz / 1e3,
@@ -1328,10 +1333,10 @@ class LIFUConnector(QObject):
         return scaled
 
     @pyqtSlot(str, str, result=str)
-    def getVetScaledVoltage(self, voltage_str, freq_khz_str):
+    def getScaledVoltage(self, voltage_str, freq_khz_str):
         """Return ``voltage_str`` scaled by the active preset's sensitivity ratio.
 
-        Exposed to QML so the Vet page can apply the scaling before
+        Exposed to QML so the operator page can apply the scaling before
         pushing the HV setpoint via ``directSetVoltage`` and before
         showing the value in the UI. Returns the input unchanged on any
         parse failure.
@@ -1341,12 +1346,12 @@ class LIFUConnector(QObject):
             f_hz = float(freq_khz_str) * 1e3
         except (TypeError, ValueError) as e:
             logger.warning(
-                "getVetScaledVoltage: bad input (voltage=%r, freq_khz=%r): %s",
+                "getScaledVoltage: bad input (voltage=%r, freq_khz=%r): %s",
                 voltage_str, freq_khz_str, e,
             )
             return str(voltage_str)
-        scaled = self._apply_vet_sensitivity_scaling(
-            v, f_hz, self._active_vet_preset,
+        scaled = self._apply_preset_sensitivity_scaling(
+            v, f_hz, self._active_preset,
         )
         return f"{scaled:.6f}"
 
@@ -1446,47 +1451,69 @@ class LIFUConnector(QObject):
         return os.path.join(self._get_runtime_preset_solutions_path(), "default_solution.json")
 
     # ------------------------------------------------------------------
-    # Vet-page preset settings (preset_vet_settings/<id>/<id>_settings.json)
+    # Per-context preset settings (preset_settings/<id>/<id>_settings.json)
     # ------------------------------------------------------------------
 
-    def _get_preset_vet_settings_path(self) -> str:
-        return os.path.join(_base_path(), "preset_vet_settings")
+    def _get_preset_settings_path(self) -> str:
+        ctx = self._context or ""
+        return os.path.join(_base_path(), "preset_settings", ctx)
 
-    def _load_vet_preset_file(self, preset_id: str):
-        """Load and return the parsed JSON for a Vet preset, or None on error."""
+    @pyqtSlot(result="QVariantMap")
+    def getContextConstants(self):
+        """Return UI constants (fixed params, duration choices, ...) for the active context.
+
+        Reads ``preset_settings/<context>/constants.json``. Returns an
+        empty dict when no context is active or the file is missing /
+        unreadable so QML can fall back to its own defaults.
+        """
+        if not self._context:
+            return {}
+        path = os.path.join(self._get_preset_settings_path(), "constants.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning("getContextConstants: cannot read %s: %s", path, e)
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _load_preset_file(self, preset_id: str):
+        """Load and return the parsed JSON for a preset, or None on error."""
         if not preset_id:
             return None
         json_path = os.path.join(
-            self._get_preset_vet_settings_path(), preset_id, f"{preset_id}_settings.json"
+            self._get_preset_settings_path(), preset_id, f"{preset_id}_settings.json"
         )
         try:
             with open(json_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (OSError, ValueError) as e:
-            logger.error("Failed to load Vet preset '%s': %s", preset_id, e)
+            logger.error("Failed to load Active preset '%s': %s", preset_id, e)
             return None
 
     @pyqtSlot(result="QVariantList")
-    def getVetPresets(self):
-        """Return UI-facing metadata for every preset in preset_vet_settings/.
+    def getPresets(self):
+        """Return UI-facing metadata for every preset in preset_settings/.
 
-        Each entry contains the parameters needed to drive the Vet page
+        Each entry contains the parameters needed to drive the operator page
         ComboBox plus the per-preset analysis dict and the absolute
         path to the intensity plot PNG (as a file:// URL for QML Image).
         Delays/apodizations are intentionally NOT included here -- they
-        are loaded on demand via setActiveVetPreset() to avoid pushing
+        are loaded on demand via setActivePreset() to avoid pushing
         large arrays through the QML/Qt variant layer.
         """
-        root = self._get_preset_vet_settings_path()
+        root = self._get_preset_settings_path()
         presets = []
+        if not self._context:
+            return presets
         if not os.path.isdir(root):
-            logger.warning("preset_vet_settings folder not found at %s", root)
+            logger.warning("preset_settings folder not found at %s", root)
             return presets
         for preset_id in sorted(os.listdir(root)):
             preset_dir = os.path.join(root, preset_id)
             if not os.path.isdir(preset_dir):
                 continue
-            data = self._load_vet_preset_file(preset_id)
+            data = self._load_preset_file(preset_id)
             if data is None:
                 continue
             png_path = os.path.join(preset_dir, f"{preset_id}_intensity_plot.png")
@@ -1510,13 +1537,13 @@ class LIFUConnector(QObject):
         return presets
 
     @pyqtSlot(str, result=bool)
-    def setActiveVetPreset(self, preset_id):
+    def setActivePreset(self, preset_id):
         """Make the named preset's delays/apodizations active for get_solution()."""
-        data = self._load_vet_preset_file(preset_id)
+        data = self._load_preset_file(preset_id)
         if data is None:
-            self._active_vet_preset = None
+            self._active_preset = None
             return False
-        self._active_vet_preset = {
+        self._active_preset = {
             "id": preset_id,
             "delays": data.get("delays", []),
             "apodizations": data.get("apodization", data.get("apodizations", [])),
@@ -1529,27 +1556,27 @@ class LIFUConnector(QObject):
             "voltage": float(data.get("voltage", 0.0)),
         }
         logger.info(
-            "Active Vet preset set to '%s' (calib_sens=%s @ %.1fkHz, calib_voltage=%.2fV)",
-            preset_id, self._active_vet_preset["sensitivity"],
-            self._active_vet_preset["frequency_khz"],
-            self._active_vet_preset["voltage"],
+            "Active Active preset set to '%s' (calib_sens=%s @ %.1fkHz, calib_voltage=%.2fV)",
+            preset_id, self._active_preset["sensitivity"],
+            self._active_preset["frequency_khz"],
+            self._active_preset["voltage"],
         )
-        self.vetScalingChanged.emit()
+        self.presetScalingChanged.emit()
         return True
 
     @pyqtSlot()
-    def clearActiveVetPreset(self):
-        self._active_vet_preset = None
-        self.vetScalingChanged.emit()
+    def clearActivePreset(self):
+        self._active_preset = None
+        self.presetScalingChanged.emit()
 
     # ------------------------------------------------------------------
-    # Vet-mode session-logging settings (persist across app runs)
+    # Run-scoped session-logging settings (persist across app runs)
     # ------------------------------------------------------------------
 
     @pyqtSlot(result="QVariantMap")
-    def getVetSessionSettings(self):
-        """Return the persisted Vet session settings for the QML page."""
-        s = self._vet_session
+    def getSessionSettings(self):
+        """Return the persisted session settings for the operator page."""
+        s = self._session_logger
         return {
             "sessionName": s.session_name,
             "sessionId": s.session_id,
@@ -1560,32 +1587,32 @@ class LIFUConnector(QObject):
     @pyqtSlot(str, result=str)
     def sanitizeSessionId(self, name):
         """Snake-case a session name. Used by the QML id preview field."""
-        return _VetSession.sanitize_id(name)
+        return _SessionLogger.sanitize_id(name)
 
     @pyqtSlot(str)
-    def setVetSessionName(self, name):
-        s = self._vet_session
+    def setSessionName(self, name):
+        s = self._session_logger
         new_name = str(name or "")
         if new_name == s.session_name:
             return
         s.session_name = new_name
         # Not persisted across runs; just emit so the QML preview
         # filename refreshes.
-        self.vetSessionSettingsChanged.emit()
+        self.sessionSettingsChanged.emit()
 
     @pyqtSlot(bool)
-    def setVetSessionSaveLogs(self, enabled):
-        s = self._vet_session
+    def setSessionSaveLogs(self, enabled):
+        s = self._session_logger
         new_val = bool(enabled)
         if new_val == s.save_logs:
             return
         s.save_logs = new_val
         s.save_settings()
-        self.vetSessionSettingsChanged.emit()
+        self.sessionSettingsChanged.emit()
 
     @pyqtSlot(str)
-    def setVetSessionLogFolder(self, folder):
-        s = self._vet_session
+    def setSessionLogFolder(self, folder):
+        s = self._session_logger
         # QML's FolderDialog returns a QUrl-style ``file:///...`` string.
         new_folder = str(folder or "").strip()
         if new_folder.lower().startswith("file:///"):
@@ -1603,12 +1630,12 @@ class LIFUConnector(QObject):
             return
         s.log_folder = new_folder
         s.save_settings()
-        self.vetSessionSettingsChanged.emit()
+        self.sessionSettingsChanged.emit()
 
     @pyqtSlot()
     def openLogFolder(self):
         """Open the configured log folder in the OS file browser."""
-        path = self._vet_session.log_folder
+        path = self._session_logger.log_folder
         try:
             os.makedirs(path, exist_ok=True)
         except OSError as e:
@@ -1629,7 +1656,7 @@ class LIFUConnector(QObject):
     @pyqtSlot(result=str)
     def previewLogName(self):
         """Return the full path of the next projected run-log file."""
-        s = self._vet_session
+        s = self._session_logger
         now = datetime.now()
         datestr = now.strftime("%Y%m%d")
         run_num = s._next_run_number(datestr, s.session_id)
@@ -2057,7 +2084,7 @@ class LIFUConnector(QObject):
             self._reset_run_state()
             self.update_state()
             self._apply_auto_hv_for_state()
-            preset_id = (self._active_vet_preset or {}).get("id", "(none)")
+            preset_id = (self._active_preset or {}).get("id", "(none)")
             logger.info(
                 f"[CONFIGURE] Transmitter configured: preset={preset_id} "
                 f"voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm "
@@ -2104,7 +2131,7 @@ class LIFUConnector(QObject):
             logger.info(f"Released loaded solution '{released}' on reset")
         # Drop any cached configure args + run-progress state.
         self._last_configure_args = None
-        self._active_vet_preset = None
+        self._active_preset = None
         self._reset_run_state()
         self.update_state()
         self._apply_auto_hv_for_state()
@@ -2237,7 +2264,7 @@ class LIFUConnector(QObject):
         self._evaluate_thermal_state()
 
     def _evaluate_thermal_state(self):
-        """Cooldown/shutdown state machine. Mirrors what Vet.qml used to
+        """Cooldown/shutdown state machine. Mirrors what OperatorInterface.qml used to
         do, but applied centrally so policy lives next to the device
         controls rather than in the page."""
         t = self._max_tx_temperature()
@@ -2333,25 +2360,25 @@ class LIFUConnector(QObject):
         ``begin_run`` returns, every ``logger.*`` call from any module
         is mirrored into the file until ``_close_run_log``.
         """
-        path = self._vet_session.begin_run()
+        path = self._session_logger.begin_run()
         # Banner first so it's the first thing in the file (and console).
         if path:
             logger.info("=" * 70)
             logger.info(
                 "[SESSION] Run log opened: session='%s' id='%s' file='%s'",
-                self._vet_session.session_name or "(unspecified)",
-                self._vet_session.session_id,
+                self._session_logger.session_name or "(unspecified)",
+                self._session_logger.session_id,
                 path,
             )
             self._log_run_summary(prefix="[CONFIG]")
             logger.info("=" * 70)
-            self.vetLogStarted.emit(path)
-        elif not self._vet_session.save_logs:
+            self.runLogStarted.emit(path)
+        elif not self._session_logger.save_logs:
             logger.info("[SESSION] Run started (logging disabled)")
 
     def _close_run_log(self, reason):
         """Close the per-run log file (no-op if no log is open)."""
-        if not self._vet_session.is_active:
+        if not self._session_logger.is_active:
             return
         # Footer/summary first so it lands inside the still-attached file.
         delivered_trains = min(self._run_trains_delivered_before_block,
@@ -2369,14 +2396,14 @@ class LIFUConnector(QObject):
             elapsed_s,
         )
         logger.info("=" * 70)
-        path = self._vet_session.end_run()
+        path = self._session_logger.end_run()
         if path:
-            self.vetLogFinalized.emit(path)
+            self.runLogFinalized.emit(path)
 
     def _log_run_summary(self, prefix="[CONFIG]"):
         """Log the parameters that this run was configured with."""
         a = self._last_configure_args or {}
-        preset_id = (self._active_vet_preset or {}).get("id", "(none)")
+        preset_id = (self._active_preset or {}).get("id", "(none)")
         logger.info(
             "%s preset=%s voltage=%sV freq=%skHz focus=(%s,%s,%s)mm",
             prefix, preset_id, a.get("voltage", "?"), a.get("freq", "?"),
@@ -2978,7 +3005,7 @@ class LIFUConnector(QObject):
         """Return the list of HV enable mode options.
 
         Index order matches the HV_EN_* integer constants and is the
-        contract used by QML ComboBoxes (Controller, Vet) for index-based
+        contract used by QML ComboBoxes (Controller, Operator) for index-based
         selection. Append-only.
         """
         return ["AUTO", "ON", "OFF", "WHILE_RUNNING"]
@@ -3146,7 +3173,7 @@ class LIFUConnector(QObject):
         """
         self._module_user_configs = {}
         if count <= 0:
-            self.vetScalingChanged.emit()
+            self.presetScalingChanged.emit()
             return
         for module_idx in range(count):
             try:
@@ -3168,7 +3195,7 @@ class LIFUConnector(QObject):
                 cfg_dict.get("fw_ver", "?"), cfg_dict.get("freq", "?"),
                 mod.get("id", "?"), len(sens),
             )
-        self.vetScalingChanged.emit()
+        self.presetScalingChanged.emit()
 
 
     @pyqtSlot(int)
@@ -3837,7 +3864,7 @@ class LIFUConnector(QObject):
                 # generation uses the freshly-read sensitivity table.
                 try:
                     self._module_user_configs[module] = json.loads(json_str)
-                    self.vetScalingChanged.emit()
+                    self.presetScalingChanged.emit()
                 except ValueError:
                     pass
                 self.userConfigRead.emit(target, json_str)

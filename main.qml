@@ -52,7 +52,7 @@ Window {
             Layout.fillHeight: true
 
             // Sidebar Menu. Hidden when only one tab is configured (e.g.
-            // vet-mode kiosk UI) so the page can use the full width.
+            // operator kiosk UI) so the page can use the full width.
             SidebarMenu {
                 Layout.alignment: Qt.AlignLeft
                 Layout.fillHeight: true
@@ -113,12 +113,12 @@ Window {
             return
         }
 
-        // Switching from a sonication page (Vet/Controller) to Settings while
+        // Switching from a sonication page (Operator/Controller) to Settings while
         // configured (or having been stopped/finished): force a Reset so
         // the user has to re-Program/Configure before the next run, and
         // make sure HV is dropped.
         if (targetId === "settings"
-            && (currentId === "vet" || currentId === "controller")
+            && (currentId === "operator" || currentId === "controller")
             && LIFUConnector.state >= 2
             && LIFUConnector.state !== 3) {
             if (LIFUConnector.hvEnableMode === 1) {

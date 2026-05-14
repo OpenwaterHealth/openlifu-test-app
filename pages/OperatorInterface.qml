@@ -4,21 +4,21 @@ import QtQuick.Layouts 6.0
 import QtQuick.Dialogs
 
 Rectangle {
-    id: vetPage
+    id: operatorPage
     width: parent.width
     height: parent.height
     color: "#29292B"
     radius: 20
     opacity: 0.95
 
-    // ----- Fixed parameters (per Vet spec) -----
-    readonly property string fixedX: "0"
-    readonly property string fixedY: "0"
-    readonly property string fixedTriggerMode: "Sequence"
+    // ----- Fixed parameters (per Operator spec) -----
+    property string fixedX: "0"
+    property string fixedY: "0"
+    property string fixedTriggerMode: "Sequence"
 
     // ----- Preset definitions -----
-    // Loaded at component-completed time from preset_vet_settings/ via
-    // LIFUConnector.getVetPresets(). Each entry carries the full
+    // Loaded at component-completed time from preset_settings/<context>/ via
+    // LIFUConnector.getPresets(). Each entry carries the full
     // sonication parameter dictionary plus the per-preset analysis
     // (MI/TIS/ISPPA/ISTPA/PNP) and the file URL of the matching
     // intensity_plot PNG. UI-facing units: voltage [V], frequency [kHz],
@@ -26,7 +26,10 @@ Rectangle {
     // depth [mm].
     property var presetOptions: []
 
-    readonly property var durationOptions: [
+    // Populated in Component.onCompleted via
+    // LIFUConnector.getContextConstants(). Fallback list keeps the
+    // page usable even if the constants file is missing.
+    property var durationOptions: [
         { label: "10 min", seconds: 600 },
         { label: "5 min",  seconds: 300 },
         { label: "2 min",  seconds: 120 },
@@ -66,7 +69,7 @@ Rectangle {
         // the active preset or cached user_configs change.
         scalingTick;
         return parseFloat(
-            LIFUConnector.getVetScaledVoltage(
+            LIFUConnector.getScaledVoltage(
                 selectedVoltage().toString(),
                 selectedFrequencyKHz().toString()))
     }
@@ -107,7 +110,7 @@ Rectangle {
     property bool hvOn: false
     property int configuredModuleCount: 0
     property int previousConnectorState: LIFUConnector.state
-    // Bumped by the connector's vetScalingChanged signal so any
+    // Bumped by the connector's presetScalingChanged signal so any
     // binding that calls scaledVoltage() picks up the new value when
     // the active preset or cached module sensitivities change.
     property int scalingTick: 0
@@ -247,15 +250,15 @@ Rectangle {
         // Each preset ships with a pre-rendered intensity plot PNG; we
         // simply point the Image at it instead of re-rendering on the
         // Python side every time the user changes a control.
-        if (vetPlotImage) vetPlotImage.updateImage(selectedIntensityPlotUrl())
+        if (plotImage) plotImage.updateImage(selectedIntensityPlotUrl())
     }
 
     function applyActivePresetToConnector() {
         var pid = selectedPresetId()
         if (pid && pid !== "")
-            LIFUConnector.setActiveVetPreset(pid)
+            LIFUConnector.setActivePreset(pid)
         else
-            LIFUConnector.clearActiveVetPreset()
+            LIFUConnector.clearActivePreset()
     }
 
     function configureNow() {
@@ -287,7 +290,7 @@ Rectangle {
     }
 
     function loadSessionSettings() {
-        var s = LIFUConnector.getVetSessionSettings()
+        var s = LIFUConnector.getSessionSettings()
         if (!s) return
         sessionName = s.sessionName || ""
         sessionId = s.sessionId || "session"
@@ -295,9 +298,23 @@ Rectangle {
         logFolder = s.logFolder || ""
     }
 
+    function loadContextConstants() {
+        var c = LIFUConnector.getContextConstants()
+        if (!c) return
+        var fp = c.fixed_params
+        if (fp) {
+            if (fp.x !== undefined) fixedX = String(fp.x)
+            if (fp.y !== undefined) fixedY = String(fp.y)
+            if (fp.trigger_mode !== undefined) fixedTriggerMode = String(fp.trigger_mode)
+        }
+        if (c.duration_options && c.duration_options.length > 0)
+            durationOptions = c.duration_options
+    }
+
     Component.onCompleted: {
+        loadContextConstants()
         loadSessionSettings()
-        presetOptions = LIFUConnector.getVetPresets()
+        presetOptions = LIFUConnector.getPresets()
         if (presetCombo.currentIndex < 0 && presetOptions.length > 0)
             presetCombo.currentIndex = 0
         applyActivePresetToConnector()
@@ -355,7 +372,7 @@ Rectangle {
                             // session_id so we can render the projected
                             // filename without a signal round-trip.
                             onTextEdited: {
-                                LIFUConnector.setVetSessionName(text)
+                                LIFUConnector.setSessionName(text)
                                 sessionName = text
                                 sessionId = LIFUConnector.sanitizeSessionId(text)
                             }
@@ -387,7 +404,7 @@ Rectangle {
                             }
                             onToggled: {
                                 saveLogs = checked
-                                LIFUConnector.setVetSessionSaveLogs(checked)
+                                LIFUConnector.setSessionSaveLogs(checked)
                             }
                         }
 
@@ -611,7 +628,7 @@ Rectangle {
                 border.width: 2
 
                 Image {
-                    id: vetPlotImage
+                    id: plotImage
                     anchors.fill: parent
                     anchors.margins: 10
                     fillMode: Image.PreserveAspectFit
@@ -715,7 +732,7 @@ Rectangle {
                     spacing: 14
 
                     Button {
-                        id: vetProgramButton
+                        id: programButton
                         text: "Program Device"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -724,15 +741,15 @@ Rectangle {
                         visible: LIFUConnector.state < 2
                         enabled: LIFUConnector.txConnected && LIFUConnector.state < 2
                         background: Rectangle {
-                            color: vetProgramButton.down ? "#2F333D" : "#3A3F4B"
+                            color: programButton.down ? "#2F333D" : "#3A3F4B"
                             radius: 6
                             border.color: "#BDC3C7"
                             border.width: 2
                         }
                         contentItem: Text {
-                            text: vetProgramButton.text
-                            color: vetProgramButton.enabled ? "white" : "#888"
-                            font: vetProgramButton.font
+                            text: programButton.text
+                            color: programButton.enabled ? "white" : "#888"
+                            font: programButton.font
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
@@ -740,7 +757,7 @@ Rectangle {
                     }
 
                     Button {
-                        id: vetStartButton
+                        id: startButton
                         text: LIFUConnector.runState === "paused" ? "Resume" : "Start"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -752,17 +769,17 @@ Rectangle {
                                  && LIFUConnector.hvConnected
                                  && LIFUConnector.hvEnableMode !== 2
                         background: Rectangle {
-                            color: !vetStartButton.enabled ? "#2A4030"
-                                 : vetStartButton.down    ? "#157031"
+                            color: !startButton.enabled ? "#2A4030"
+                                 : startButton.down    ? "#157031"
                                  : "#1f963d"
                             radius: 6
                             border.color: "#0E5A23"
                             border.width: 2
                         }
                         contentItem: Text {
-                            text: vetStartButton.text
-                            color: vetStartButton.enabled ? "white" : "#9CB8A4"
-                            font: vetStartButton.font
+                            text: startButton.text
+                            color: startButton.enabled ? "white" : "#9CB8A4"
+                            font: startButton.font
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
@@ -777,7 +794,7 @@ Rectangle {
                     }
 
                     Button {
-                        id: vetStopButton
+                        id: stopButton
                         text: LIFUConnector.runState === "paused" ? "Abort" : "Stop"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -786,17 +803,17 @@ Rectangle {
                         visible: LIFUConnector.state >= 2
                         enabled: LIFUConnector.state === 3 || LIFUConnector.runState === "paused"
                         background: Rectangle {
-                            color: !vetStopButton.enabled ? "#3A2424"
-                                 : vetStopButton.down    ? "#8E1F1F"
+                            color: !stopButton.enabled ? "#3A2424"
+                                 : stopButton.down    ? "#8E1F1F"
                                  : "#C0392B"
                             radius: 6
                             border.color: "#7A1F1F"
                             border.width: 2
                         }
                         contentItem: Text {
-                            text: vetStopButton.text
-                            color: vetStopButton.enabled ? "white" : "#B89A9A"
-                            font: vetStopButton.font
+                            text: stopButton.text
+                            color: stopButton.enabled ? "white" : "#B89A9A"
+                            font: stopButton.font
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                         }
@@ -820,7 +837,7 @@ Rectangle {
         title: "Choose log folder"
         currentFolder: logFolder ? "file:///" + logFolder.replace(/\\/g, "/") : ""
         onAccepted: {
-            LIFUConnector.setVetSessionLogFolder(selectedFolder.toString())
+            LIFUConnector.setSessionLogFolder(selectedFolder.toString())
             // Pull the canonical normalised path back from the connector.
             loadSessionSettings()
         }
@@ -864,7 +881,7 @@ Rectangle {
     }
 
     // Local thermal-shutdown popup. Distinct from the global device-error
-    // dialog so the message is specific to the Vet page's safety logic.
+    // dialog so the message is specific to the Operator page's safety logic.
     Dialog {
         id: thermalShutdownDialog
         modal: true
@@ -965,23 +982,23 @@ Rectangle {
                     // by navigating to Settings). Connector resets the
                     // run-progress state machine on its end; clear the
                     // plot here.
-                    vetPlotImage.source = "../assets/images/empty_graph.png"
+                    plotImage.source = "../assets/images/empty_graph.png"
                 }
             }
             previousConnectorState = state
         }
 
-        function onVetSessionSettingsChanged() {
+        function onSessionSettingsChanged() {
             loadSessionSettings()
         }
 
-        function onVetScalingChanged() {
+        function onPresetScalingChanged() {
             // Bump tick so any binding referencing scalingTick (e.g.
             // the Output Parameters voltage row) re-evaluates.
             scalingTick = scalingTick + 1
         }
 
-        function onVetLogFinalized(path) {
+        function onRunLogFinalized(path) {
             lastSavedLog = path
             // Show just the basename so the toast stays compact; full
             // path is still in the field above and the log itself.

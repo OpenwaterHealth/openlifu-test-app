@@ -1,0 +1,14 @@
+{
+    "fixed_params": {
+        "x": "0",
+        "y": "0",
+        "trigger_mode": "Sequence"
+    },
+    "duration_options": [
+        { "label": "10 min", "seconds": 600 },
+        { "label": "5 min",  "seconds": 300 },
+        { "label": "2 min",  "seconds": 120 },
+        { "label": "1 min",  "seconds": 60  },
+        { "label": "30 sec", "seconds": 30  }
+    ]
+}

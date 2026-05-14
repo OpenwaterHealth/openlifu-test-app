@@ -45,7 +45,7 @@ HV_VMON_NOISE_SIGMA = 0.05
 # the simulator reports HV + TX as already connected when the QML
 # bindings first evaluate; this avoids transient "Cannot read property
 # of null" warnings from QML expressions that touch device state during
-# launch and lets pages like Vet build their initial plot URL on first
+# launch and lets pages like Operator build their initial plot URL on first
 # refresh (used by the docs/_capture_screenshots.py helper).
 AUTO_CONNECT_DELAY_S = 0.0
 # How often the run engine emits a temperature heartbeat STATUS frame.
@@ -146,7 +146,7 @@ class SimulatedTxDevice:
 
     def _default_user_config(self, idx: int) -> dict:
         # Plausible 100 - 1000 kHz sensitivity table, V/MPa-ish.
-        # Slight per-module variation so vet voltage scaling isn't a no-op.
+        # Slight per-module variation so preset voltage scaling isn't a no-op.
         return {
             "sn": "SIMULATED",
             "hwid": "ABCDEFGH",

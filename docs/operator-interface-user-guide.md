@@ -1,9 +1,9 @@
-# OpenLIFU (Veterinary Interface)
+# OpenLIFU Operator Interface
 ---
 
 ## Overview
 
-The **Vet** page is a single-screen kiosk UI for veterinary operators.
+The **Operator** page is a single-screen kiosk UI for bedside operators. It is the default landing page whenever the app is launched with a ``--context=<name>`` argument (e.g. ``--context=vet`` or ``--context=diathermy``).
 It hides every parameter that should not be touched at the bedside and
 exposes only:
 
@@ -14,16 +14,23 @@ exposes only:
 - start / stop / pause controls,
 - live progress, temperature, and HV-rail telemetry.
 
-The Vet page is the *only* page shown when the app is launched with
-`--vet` (or `--mode vet`). In that mode the sidebar is hidden and the
-page fills the entire window. See [launch-options.md](launch-options.md) for the full mode matrix.
+The Operator page is the *only* page shown when the app is launched with
+a ``--context=<name>`` flag. In that mode the sidebar is hidden and the
+page fills the entire window. See [launch-options.md](launch-options.md) for the full launch matrix.
 
-![Vet tab — full layout](vet_tab.png)
+The set of preset protocols and the duration choices come from
+`preset_settings/<context>/` (settings JSONs + intensity plot PNGs +
+`constants.json`). The veterinary configuration described below uses
+`--context=vet` and ships three 400 kPa presets (hip / knee / spine);
+adding a new context is simply a matter of dropping a new folder under
+`preset_settings/` and launching with `--context=<new-folder-name>`.
+
+![Operator tab — full layout](vet_tab.png)
 
 ---
 
 ## Session controls
-For better organization of run logs, the Vet page has a few session management features:
+For better organization of run logs, the Operator page has a few session management features:
 
 | Field | Behaviour |
 |-------|-----------|
@@ -60,7 +67,7 @@ of the active preset:
 - **Pulse Length**, **Total Duration**, **Focal Depth**.
 - **MI**, **TIS**, **ISPPA**, **ISTPA**, **PNP** — acoustic analysis
   values from the preset's `analysis` block.
-![Vet Output Parameters](vet_output_parameters.png)
+![Operator Output Parameters](vet_output_parameters.png)
 ---
 
 ## Visualization Panel (top-right)
@@ -90,17 +97,17 @@ to the surface of the skin.
 | Finished | Green | Run completed normally |
 
 
-![Vet tab Ready](vet_ready.png)
+![Operator tab Ready](vet_ready.png)
 After Configuring, the system is in the 'Ready' state. The Duration and Preset can still be changed at this stage.
 
-![Vet tab Running](vet_running.png)
+![Operator tab Running](vet_running.png)
 While running, a Blue progress bar fills to show how much of the sonication is complete and how much time is remaining.
 
-![Vet tab Paused](vet_paused.png)
+![Operator tab Paused](vet_paused.png)
 If the user utilizes the 'Pause' feature and resumes the run, the system will continue from where it left off, and keep track of how many "blocks" of running have been used. At the completion of the sonication, the number of blocks will be shown, and recorded in the log.
-![Vet tab Finished](vet_finished.png)
+![Operator tab Finished](vet_finished.png)
 
-![Vet tab Aborted](vet_aborted.png)
+![Operator tab Aborted](vet_aborted.png)
 If the user presses 'Abort' after pausing a run, the system will stop the run and return to the 'Ready' state. The progress bar will turn orange to indicate the run was stopped before completion.
 
 
@@ -118,7 +125,7 @@ gate the run engine:
 ## Typical workflow
 
 1. Connect the Console and Transmitter.
-2. Type a **Session Name** (e.g. patient/animal ID).
+2. Type a **Session Name** (e.g. patient or animal ID).
 3. Pick a **Preset** and **Total Duration**.
 4. Click **Configure** — system state goes to `Ready`.
 5. Click **Start**. Watch the progress bar and temperatures.

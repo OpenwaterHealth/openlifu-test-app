@@ -5,7 +5,7 @@ the format::
 
     HH:MM:SS [+   E.EEEs] LEVEL   logger.name: message
 
-(see ``VET_LOG_FORMAT`` in :mod:`lifu.lifu_connector`).  Continuation
+(see ``RUN_LOG_FORMAT`` in :mod:`lifu.lifu_connector`).  Continuation
 lines from multi-line messages (notably tracebacks emitted via
 ``exc_info=True``) carry no timestamp prefix; they are appended to the
 preceding record's ``message``.

@@ -1,7 +1,13 @@
 name: Build & Release
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      context:
+        description: "Operator-kiosk context to build (e.g. 'vet'). Leave blank for the default TestApp release."
+        required: false
+        type: string
+        default: ""
   push:
     branches: [main, next]
     tags:
@@ -56,7 +62,18 @@ jobs:
 
       - name: Build with PyInstaller
         shell: bash
+        env:
+          # Optional operator-kiosk context. Set via workflow_dispatch
+          # input only; tag-pushed releases leave this empty so the
+          # default vendor-neutral TestApp.exe / TestApp_console.exe
+          # are the only artifacts shipped.
+          OPENLIFU_CONTEXT: ${{ github.event.inputs.context }}
         run: |
+          if [ -n "${OPENLIFU_CONTEXT}" ]; then
+            echo "Building with operator-kiosk context: ${OPENLIFU_CONTEXT}"
+          else
+            echo "Building default release (no context-specific kiosk EXE)"
+          fi
           python -m PyInstaller -y OpenLIFU-TestApp.spec
 
       # ── package ──────────────────────────────────────────────────
@@ -70,8 +87,14 @@ jobs:
             TAG=$(git describe --tags --dirty --always 2>/dev/null || echo "dev-${GITHUB_SHA::8}")
           fi
           echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "ARTIFACT_NAME=OpenLifu-TestApp-${TAG}" >> "$GITHUB_OUTPUT"
-          echo "ARTIFACT_ZIP=OpenLifu-TestApp-${TAG}.zip" >> "$GITHUB_OUTPUT"
+          CONTEXT="${{ github.event.inputs.context }}"
+          if [ -n "$CONTEXT" ]; then
+            echo "ARTIFACT_NAME=OpenLifu-TestApp-${CONTEXT}-${TAG}" >> "$GITHUB_OUTPUT"
+            echo "ARTIFACT_ZIP=OpenLifu-TestApp-${CONTEXT}-${TAG}.zip" >> "$GITHUB_OUTPUT"
+          else
+            echo "ARTIFACT_NAME=OpenLifu-TestApp-${TAG}" >> "$GITHUB_OUTPUT"
+            echo "ARTIFACT_ZIP=OpenLifu-TestApp-${TAG}.zip" >> "$GITHUB_OUTPUT"
+          fi
 
           # pre-release flag
           if [[ "$TAG" == *-rc.* ]]; then

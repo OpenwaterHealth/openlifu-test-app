@@ -22,7 +22,7 @@ regulatory evidence.
 > a connected Console + Transmitter.
 
 Navigate to the Verification page by clicking the verification icon in
-the left sidebar. The page is hidden in `--simulate` and `--vet` modes.
+the left sidebar. The page is hidden in `--simulate` and `--context=<name>` modes.
 
 ![Verification tab — full layout](testing_tab.png)
 
@@ -123,7 +123,7 @@ Status colour coding (case bar):
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
-| Start is greyed out | Device not connected, or sonication already running | Check the HV LED; if a sonication is in progress on Controller / Vet, stop it first |
+| Start is greyed out | Device not connected, or sonication already running | Check the HV LED; if a sonication is in progress on Controller / Operator, stop it first |
 | Frequency / Number of Modules disabled | Voltage Accuracy is selected | These two fields don't apply to Voltage Accuracy |
 | Stop appears to do nothing | Script is between two long-running steps | Allow a few seconds for the abort to be honoured |
 | Progress bar stays at zero | Script hasn't reached its first checkpoint yet | Check the log file path; tail the file to see live output |

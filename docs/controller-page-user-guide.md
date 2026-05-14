@@ -6,10 +6,7 @@
 
 ## Overview
 
-The **Controller** page is the main engineering surface for configuring
-and running an arbitrary sonication. It exposes every parameter the
-firmware accepts, lets you load and save full solutions to JSON, and
-drives the device through its `READY → RUNNING → READY` cycle.
+The **Controller** page is the main engineering surface for configuring and running an arbitrary sonication. It exposes every parameter the firmware accepts, lets you load and save full solutions to JSON, and drives the device through its `READY → RUNNING → READY` cycle.
 
 The Controller has limited solution generation capabilities via it's input fields,
 but does not have the full flexibility of the OpenLIFU application. For more complex sonication patterns, users should generate a JSON solution using the SDK and load it into the Controller. Solutions loaded from JSON disable the input fields, and respect the parameters as authoritative — the Controller becomes a live dashboard for monitoring and running the solution, but not editing it.
