@@ -587,6 +587,8 @@ class ControllerMixin:
             self._interface_mutex.unlock()
 
 
+    @pyqtSlot(int)
+    def setHvEnableMode(self, hv_en_mode):
         """Set HV enable mode (0=AUTO, 1=ON, 2=OFF, 3=WHILE_RUNNING)."""
         if hv_en_mode not in HV_EN_MODES:
             logger.warning(f"Invalid HV enable mode: {hv_en_mode}")
