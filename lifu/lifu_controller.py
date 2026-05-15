@@ -189,6 +189,11 @@ class ControllerMixin:
         if not self._txConnected:
             self._emit_device_error("Set Sequence", "No TX device connected.")
             return False
+        # Pause telemetry polling so the 1 Hz poll thread does not inject
+        # temperature / voltage queries between this burst's chunks; see
+        # ``LIFUConnector._pause_polling_during_burst`` for rationale.
+        prev_paused = self._monitoring_paused
+        self._monitoring_paused = True
         self._interface_mutex.lock()
         prev_async = self._async_mode_enabled
         self._set_async_mode(False, reason="directSetSequence")
@@ -238,6 +243,7 @@ class ControllerMixin:
             if prev_async and self._state == RUNNING:
                 self._set_async_mode(True, reason="directSetSequence-restore")
             self._interface_mutex.unlock()
+            self._monitoring_paused = prev_paused
 
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, result=bool)
@@ -246,6 +252,9 @@ class ControllerMixin:
         if not self._txConnected:
             self._emit_device_error("Set Pulse", "No TX device connected.")
             return False
+        # Pause telemetry polling for the duration of the burst.
+        prev_paused = self._monitoring_paused
+        self._monitoring_paused = True
         self._interface_mutex.lock()
         prev_async = self._async_mode_enabled
         self._set_async_mode(False, reason="directSetPulse")
@@ -302,6 +311,7 @@ class ControllerMixin:
             if prev_async and self._state == RUNNING:
                 self._set_async_mode(True, reason="directSetPulse-restore")
             self._interface_mutex.unlock()
+            self._monitoring_paused = prev_paused
 
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
@@ -316,6 +326,13 @@ class ControllerMixin:
             self._emit_device_error("Configure Transmitter", "Failed to build a valid solution.")
             return
 
+        # Pause telemetry polling for the duration of the burst. The
+        # full configure pipeline includes a large set_solution that
+        # chunks into many write_block round-trips; keeping the poll
+        # thread out of the queue during that burst materially reduces
+        # spurious comm timeouts under GUI load.
+        prev_paused = self._monitoring_paused
+        self._monitoring_paused = True
         self._interface_mutex.lock()
         # Async STATUS frames share the TX device's CDC IN endpoint with
         # command responses; large set_solution writes (write_block chunks)
@@ -358,6 +375,7 @@ class ControllerMixin:
             self._handle_lifu_error("Configure Transmitter", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
+            self._monitoring_paused = prev_paused
 
 
     @pyqtSlot()

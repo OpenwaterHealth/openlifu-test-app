@@ -1,5 +1,6 @@
 ﻿from PyQt6.QtCore import QObject, QRecursiveMutex, QThread, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -361,6 +362,29 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def _hv_ready(self) -> bool:
         """Return True if HV is connected and not disabled by the user."""
         return self._hvConnected and self._hv_enable_mode != HV_EN_OFF
+
+    @contextlib.contextmanager
+    def _pause_polling_during_burst(self):
+        """Temporarily pause telemetry polling for the duration of a burst.
+
+        Used around large multi-round-trip SDK operations (set_solution,
+        direct setters, firmware update) so the 1 Hz poll thread cannot
+        inject temperature / voltage / module-count queries between the
+        burst's individual chunks. With polling paused the per-command
+        queue depth stays at 1, which materially reduces the chance that
+        any individual chunk's response is scheduler-starved past the
+        per-command timeout.
+
+        Nestable: if polling is already paused (e.g. by the diagnostics
+        tab) the previous state is restored on exit rather than being
+        force-unpaused.
+        """
+        prev = self._monitoring_paused
+        self._monitoring_paused = True
+        try:
+            yield
+        finally:
+            self._monitoring_paused = prev
 
     def _call_with_comm_retry(self, label, func, *args, **kwargs):
         """Call ``func(*args, **kwargs)`` retrying on transient timeouts.
