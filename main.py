@@ -67,10 +67,11 @@ TAB_DEFINITIONS = {
     "console":      {"label": "Console",     "icon": "\ueaae", "page": "pages/Console.qml"},
     "testing":      {"label": "Verification","icon": "\ueb2f", "page": "pages/Testing.qml"},
     "settings":     {"label": "Settings",    "icon": "\ueabf", "page": "pages/Settings.qml"},
+    "support":      {"label": "Support",     "icon": "\ueaaf", "page": "pages/Support.qml"},
 }
 
 # Engineering tabs shown in the sidebar.
-ENGINEERING_TABS = ["controller", "transmitter", "console", "testing", "settings"]
+ENGINEERING_TABS = ["controller", "transmitter", "console", "testing", "support", "settings"]
 
 
 def build_app_tabs():
