@@ -1,6 +1,5 @@
-from PyQt6.QtCore import QObject, QRecursiveMutex, QThread, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
+﻿from PyQt6.QtCore import QObject, QRecursiveMutex, QThread, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import asyncio
-import contextlib
 import logging
 import os
 import shutil
@@ -15,12 +14,8 @@ def _base_path():
     if getattr(sys, 'frozen', False):
         return sys._MEIPASS
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-import threading
 import time
-from datetime import datetime, timedelta
 import numpy as np
-import re
-import base58
 import json
 import copy
 from plot.plot import generate_ultrasound_plot_from_solution  # Import the function directly
@@ -109,195 +104,10 @@ from lifu.lifu_constants import (
     HV_EN_ON,
     HV_EN_OFF,
     HV_EN_WHILE_RUNNING,
-    HV_EN_MODES,
-    THERMAL_COOLING_THRESHOLD_C,
-    THERMAL_SHUTDOWN_THRESHOLD_C,
     SPEED_OF_SOUND,
     NUM_ELEMENTS_PER_MODULE,
     MAX_TIMEOUT_RETRIES,
-    RUN_LOG_FORMAT,
-    RUN_LOG_DATEFMT,
 )
-
-
-# =============================================================================
-# Run-scoped session logging
-# =============================================================================
-#
-# A run-scoped ``logging.FileHandler`` attached to the root logger captures
-# every module's output (lifu_connector + openlifu_sdk + verification +
-# anything else using ``logging``) for the duration of one run.
-# A small ``logging.Filter`` adds an ``elapsed`` attribute so the format
-# string can include time-since-start without subclassing ``Formatter``.
-# Unhandled exceptions are routed through ``sys.excepthook`` -> ``logger``
-# while a run is active so a stray traceback ends up in the log too.
-
-
-class _SessionLogger:
-    """Persisted session settings + run-scoped log file management."""
-
-    SETTINGS_FILENAME = "session_settings.json"
-    DEFAULT_FOLDER = os.path.join(os.path.expanduser("~"), "openlifu_logs")
-
-    def __init__(self, user_data_root):
-        self._user_data_root = user_data_root
-        self.session_name = ""
-        self.save_logs = True
-        self.log_folder = self.DEFAULT_FOLDER
-        self._handler = None
-        self._start_wall = 0.0
-        self._prev_excepthook = None
-        self._load_settings()
-
-    # ---- settings persistence -------------------------------------------------
-
-    def _settings_path(self):
-        return os.path.join(self._user_data_root, self.SETTINGS_FILENAME)
-
-    def _load_settings(self):
-        try:
-            with open(self._settings_path(), 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except (OSError, ValueError):
-            return
-        if not isinstance(data, dict):
-            return
-        # session_name is intentionally not persisted; users start each
-        # app run with a blank name.
-        if isinstance(data.get("save_logs"), bool):
-            self.save_logs = data["save_logs"]
-        folder = data.get("log_folder")
-        if isinstance(folder, str) and folder.strip():
-            self.log_folder = folder
-
-    def save_settings(self):
-        try:
-            os.makedirs(self._user_data_root, exist_ok=True)
-            with open(self._settings_path(), 'w', encoding='utf-8') as f:
-                json.dump({
-                    "save_logs": self.save_logs,
-                    "log_folder": self.log_folder,
-                }, f, indent=2)
-        except OSError as e:
-            logger.warning(f"Session log: failed to persist settings: {e}")
-
-    @staticmethod
-    def sanitize_id(name):
-        """Snake-case an arbitrary session name; default ``"session"`` if empty."""
-        s = re.sub(r'[^A-Za-z0-9]+', '_', str(name or "").strip()).strip('_').lower()
-        return s if s else "session"
-
-    @property
-    def session_id(self):
-        return self.sanitize_id(self.session_name)
-
-    @property
-    def is_active(self):
-        return self._handler is not None
-
-    @property
-    def current_path(self):
-        return self._handler.baseFilename if self._handler is not None else None
-
-    # ---- run lifecycle --------------------------------------------------------
-
-    def _next_run_number(self, datestr, session_id):
-        """Return the next ``runNN`` index for the given date + session id."""
-        try:
-            entries = os.listdir(self.log_folder)
-        except OSError:
-            return 1
-        prefix = f"{datestr}_{session_id}_run"
-        max_n = 0
-        for entry in entries:
-            if not entry.startswith(prefix):
-                continue
-            m = re.match(r'^(\d+)', entry[len(prefix):])
-            if m:
-                max_n = max(max_n, int(m.group(1)))
-        return max_n + 1
-
-    def begin_run(self):
-        """Attach a file handler to the root logger for this run.
-
-        Returns the absolute log file path, or ``None`` if logging is
-        disabled or the file could not be opened. Idempotent if a run
-        log is already active.
-        """
-        if self.is_active:
-            return self.current_path
-        if not self.save_logs:
-            return None
-        self._start_wall = time.time()
-        wall_dt = datetime.fromtimestamp(self._start_wall)
-        sid = self.session_id
-        try:
-            os.makedirs(self.log_folder, exist_ok=True)
-        except OSError as e:
-            logger.error(f"Session log: cannot create '{self.log_folder}': {e}")
-            return None
-        run_num = self._next_run_number(wall_dt.strftime("%Y%m%d"), sid)
-        filename = (f"{wall_dt.strftime('%Y%m%d')}_{sid}_run{run_num:02d}_"
-                    f"{wall_dt.strftime('%H_%M_%S')}.log")
-        path = os.path.join(self.log_folder, filename)
-        try:
-            handler = logging.FileHandler(path, mode='w', encoding='utf-8')
-        except OSError as e:
-            logger.error(f"Session log: cannot open '{path}': {e}")
-            return None
-        # Inject ``elapsed`` (seconds since run start) onto every record
-        # so the format string can render it without a custom Formatter.
-        # Also gate down third-party SDK chatter to WARNING+ so
-        # openlifu_sdk's verbose DEBUG output doesn't drown out our own
-        # log lines in the file.
-        start_wall = self._start_wall
-        def _run_log_filter(record):
-            if (record.name == "openlifu_sdk"
-                    or record.name.startswith("openlifu_sdk.")):
-                if record.levelno < logging.WARNING:
-                    return False
-            record.elapsed = max(0.0, record.created - start_wall)
-            return True
-        handler.addFilter(_run_log_filter)
-        handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter(RUN_LOG_FORMAT, datefmt=RUN_LOG_DATEFMT))
-        # Make sure the root logger lets DEBUG records through to our
-        # handler (handlers can only see records the logger admits).
-        # Other handlers have their own ``setLevel`` so they aren't
-        # affected by this.
-        root = logging.getLogger()
-        if root.level == logging.NOTSET or root.level > logging.DEBUG:
-            root.setLevel(logging.DEBUG)
-        root.addHandler(handler)
-        self._handler = handler
-        # Route uncaught exceptions through logging while the run is
-        # active so any stray traceback ends up in the file.
-        self._prev_excepthook = sys.excepthook
-        sys.excepthook = self._log_uncaught
-        return path
-
-    def _log_uncaught(self, exc_type, exc_value, exc_tb):
-        if not issubclass(exc_type, KeyboardInterrupt):
-            logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
-        if self._prev_excepthook is not None:
-            self._prev_excepthook(exc_type, exc_value, exc_tb)
-
-    def end_run(self):
-        """Detach and close the file handler. Returns the closed path."""
-        if self._handler is None:
-            return None
-        path = self._handler.baseFilename
-        root = logging.getLogger()
-        try:
-            root.removeHandler(self._handler)
-            self._handler.close()
-        except Exception:
-            pass
-        self._handler = None
-        if self._prev_excepthook is not None:
-            sys.excepthook = self._prev_excepthook
-            self._prev_excepthook = None
-        return path
 
 
 class _Bridge(QObject):
@@ -335,9 +145,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     signalDataReceived = pyqtSignal(str, str)  # (descriptor, data)
 
     stateChanged = pyqtSignal(int)  # Notifies QML when state changes
-    connectionStatusChanged = pyqtSignal()  # 🔹 New signal for connection updates
-    triggerStateChanged = pyqtSignal(bool)  # 🔹 New signal for trigger state change
-    txConfigStateChanged = pyqtSignal(bool)  # 🔹 New signal for tx configured state change
+    connectionStatusChanged = pyqtSignal()  # ðŸ”¹ New signal for connection updates
+    triggerStateChanged = pyqtSignal(bool)  # ðŸ”¹ New signal for trigger state change
+    txConfigStateChanged = pyqtSignal(bool)  # ðŸ”¹ New signal for tx configured state change
 
     # Firmware update signals
     fwUpdateProgress = pyqtSignal(str, int, int)  # (label, written, total)
@@ -376,30 +186,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # prefix for LIFUError subclasses.
     deviceError = pyqtSignal(str, str)  # (title, message)
 
-    # Thermal-management signals.
-    # ``coolingStateChanged`` flips when the TX crosses the cool threshold
-    # in either direction. ``thermalShutdownEvent`` is emitted exactly
-    # once per shutdown trigger so QML can pop a notification.
-    coolingStateChanged = pyqtSignal(bool)
-    thermalShutdownEvent = pyqtSignal(float, float, float)  # (observedTempC, shutdownThresholdC, coolingThresholdC)
-
-    # Run-progress signals (drive the run progress bar). The state
-    # is one of: "idle", "running", "paused", "finished", "aborted".
-    runStateChanged = pyqtSignal(str)
-    # Generic notify that any of the run-progress derived properties may
-    # have changed (delivered trains, block count, elapsed, etc.).
-    runProgressChanged = pyqtSignal()
-
-    # Run-scoped session logging signals.
-    sessionSettingsChanged = pyqtSignal()
-    runLogStarted = pyqtSignal(str)    # absolute log file path
-    runLogFinalized = pyqtSignal(str)  # absolute log file path
-    # Fires when anything that affects ``getScaledVoltage`` changes
-    # (active preset, cached module user_configs). QML bindings can
-    # reference this signal via a notify-property so the displayed
-    # scaled voltage refreshes.
-    presetScalingChanged = pyqtSignal()
-
     def _make_interface(self, hv_test_mode=False):
         """Construct the underlying LIFUInterface.
 
@@ -413,13 +199,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                              sequence_time_selection="stress_test",
                              duty_cycle_selection="stress_test")
 
-    def __init__(self, hv_test_mode=False, context: str | None = None):
+    def __init__(self, hv_test_mode=False):
         super().__init__()
-        # Context name (e.g. "vet", "diathermy") selects which subfolder
-        # under preset_settings/ ships the presets and constants.json.
-        # ``None`` means "engineering mode" -- no presets and no
-        # operator page; getPresets() returns an empty list.
-        self._context = context
         self.interface = self._make_interface(hv_test_mode=hv_test_mode)
         self._txConnected = False
         self._hvConnected = False
@@ -438,12 +219,12 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._tx_poll_failures = 0   # consecutive TX telemetry failures
         self._temp_poll_failures = 0  # consecutive temperature poll failures
         self._monitoring_paused = False  # set True while diagnostics tab is active
-        
+
         # Solution loading state
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
-        
+
         # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
         self._hv_enable_mode = HV_EN_AUTO
 
@@ -456,74 +237,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         # UART timeouts during configuration.
         self._async_mode_enabled = False
 
-        # ------- Thermal management (TX) -------
-        # Page-level UI used to own this state machine; centralizing here
-        # keeps the QML layer thin and means we don't re-evaluate
-        # heuristics on every QML binding tick. ``_cooling_down`` is True
-        # whenever the hottest known TX module is above
-        # ``THERMAL_COOLING_THRESHOLD_C``. Crossing
-        # ``THERMAL_SHUTDOWN_THRESHOLD_C`` triggers a one-shot hard abort
-        # (re-armed when the device cools back below the cool threshold).
-        self._cooling_down = False
-        self._thermal_shutdown_active = False
-        # Latest per-module TX temperatures (mirrors what we emit so the
-        # thermal evaluator and QML can both consult a single source).
-        # Index is the module number; missing modules are NaN.
-        self._tx_temperatures = []
-        # HV enable mode at the moment we forced HV off for cooldown.
-        # -1 means "nothing to restore". Restored on cooldown exit.
-        self._pre_cooldown_hv_mode = -1
-
-        # ------- Run-progress / pause-resume state -------
-        # ``_run_state`` is a UI-friendly state machine that wraps the
-        # device's RUNNING/READY transitions with awareness of pause/
-        # resume "blocks". On a fresh Start we snapshot the original
-        # sequence params here so that pause-shortened reconfigures (via
-        # set_trigger only) don't lose the user's overall total. On Abort
-        # / natural completion we restore the original train count.
-        self._run_state = "idle"
-        self._run_original_train_total = 0
-        self._run_original_duration_s = 0.0
-        self._run_original_pulse_count = 0
-        self._run_trains_delivered_before_block = 0
-        self._run_in_block_total = 0   # current block's trainCount on the device
-        self._run_in_block_current = 0  # latest pt_curr reported for current block
-        self._run_block_count = 0
-        self._run_start_time_ms = 0.0
-        self._run_elapsed_ms = 0.0
-        # Snapshot of the most recent configure_transmitter args so we
-        # can rebuild trigger settings via set_trigger (cheap) instead of
-        # set_solution (slow) for pause/resume/abort transitions.
-        self._last_configure_args = None
-
-        # Active preset (delays/apodizations baked from disk).
-        # When set, get_solution() overrides its computed delays /
-        # apodizations with these so the operator page uses the per-preset
-        # measured values rather than recomputing from element geometry.
-        self._active_preset = None
-
-        # Per-module ``user_config`` dicts (parsed JSON from
-        # ``txdevice.read_config``), keyed by module index. Refreshed
-        # by ``queryNumModules`` whenever the connected count changes.
-        # Used in the Active preset path to scale voltage by the ratio of the
-        # preset's calibration sensitivity to the connected device's
-        # measured sensitivity at the run frequency.
-        self._module_user_configs = {}
-
         self._interface_mutex = QRecursiveMutex()
 
         self._ensure_preset_solutions_seeded()
-
-        # Run-scoped session logger. When running from source the
-        # settings file lives in the repo root (gitignored) so the path
-        # the developer chose persists with the checkout; in a frozen
-        # build it falls back to the user data root since the bundled
-        # _MEIPASS directory is read-only and ephemeral.
-        if getattr(sys, 'frozen', False):
-            session_settings_dir = self._get_user_data_root()
-        else:
-            session_settings_dir = _base_path()
-        self._session_logger = _SessionLogger(session_settings_dir)
 
         self._bridge = _Bridge()
 
@@ -543,14 +259,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._bridge.sig_disconnected.connect(self.on_disconnected)
         self._bridge.sig_data.connect(self.on_data_received)
         self._bridge.sig_error.connect(self.on_error)
-
-        # Internal handlers: drive thermal + run-progress state machines
-        # off the same signals we expose to QML so the policy lives in
-        # one place and QML doesn't have to re-derive it on every binding
-        # tick.
-        self.temperatureTxUpdated.connect(self._on_tx_temperature_for_thermal)
-        self.sonicationProgressUpdated.connect(self._on_progress_for_run_state)
-        self.stateChanged.connect(self._on_state_changed_for_run_state)
 
         # Background telemetry polling thread (temperature + HV voltages).
         # QThread is used (not threading.Thread) so Qt's queued-connection
@@ -597,12 +305,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self.interface.close()
         except Exception as e:
             logger.error(f"Error closing LIFU interface: {e}")
-        # Tear down any in-progress run log so the file is closed and
-        # stderr is restored even on shutdown.
-        try:
-            self._close_run_log(reason="aborted_app_quit")
-        except Exception:
-            pass
 
     def _emit_device_error(self, title: str, message: str):
         """Log a device/communication failure and surface it to QML as a popup."""
@@ -651,7 +353,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         elif self._txConnected:
             self._state = CONNECTED
         else:
-            # HV connected without TX – verification scripts can run.
+            # HV connected without TX â€“ verification scripts can run.
             self._state = TEST_SCRIPT_READY
         self.stateChanged.emit(self._state)
         logger.debug(f"Updated state: {self._state}")
@@ -1012,220 +714,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def _get_default_solution_path(self) -> str:
         return os.path.join(self._get_runtime_preset_solutions_path(), "default_solution.json")
 
-    # ------------------------------------------------------------------
-    # Per-context preset settings (preset_settings/<id>/<id>_settings.json)
-    # ------------------------------------------------------------------
-
-    def _get_preset_settings_path(self) -> str:
-        ctx = self._context or ""
-        return os.path.join(_base_path(), "preset_settings", ctx)
-
-    @pyqtSlot(result="QVariantMap")
-    def getContextConstants(self):
-        """Return UI constants (fixed params, duration choices, ...) for the active context.
-
-        Reads ``preset_settings/<context>/constants.json``. Returns an
-        empty dict when no context is active or the file is missing /
-        unreadable so QML can fall back to its own defaults.
-        """
-        if not self._context:
-            return {}
-        path = os.path.join(self._get_preset_settings_path(), "constants.json")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError) as e:
-            logger.warning("getContextConstants: cannot read %s: %s", path, e)
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def _load_preset_file(self, preset_id: str):
-        """Load and return the parsed JSON for a preset, or None on error."""
-        if not preset_id:
-            return None
-        json_path = os.path.join(
-            self._get_preset_settings_path(), preset_id, f"{preset_id}_settings.json"
-        )
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError) as e:
-            logger.error("Failed to load Active preset '%s': %s", preset_id, e)
-            return None
-
-    @pyqtSlot(result="QVariantList")
-    def getPresets(self):
-        """Return UI-facing metadata for every preset in preset_settings/.
-
-        Each entry contains the parameters needed to drive the operator page
-        ComboBox plus the per-preset analysis dict and the absolute
-        path to the intensity plot PNG (as a file:// URL for QML Image).
-        Delays/apodizations are intentionally NOT included here -- they
-        are loaded on demand via setActivePreset() to avoid pushing
-        large arrays through the QML/Qt variant layer.
-        """
-        root = self._get_preset_settings_path()
-        presets = []
-        if not self._context:
-            return presets
-        if not os.path.isdir(root):
-            logger.warning("preset_settings folder not found at %s", root)
-            return presets
-        for preset_id in sorted(os.listdir(root)):
-            preset_dir = os.path.join(root, preset_id)
-            if not os.path.isdir(preset_dir):
-                continue
-            data = self._load_preset_file(preset_id)
-            if data is None:
-                continue
-            png_path = os.path.join(preset_dir, f"{preset_id}_intensity_plot.png")
-            png_url = ""
-            if os.path.isfile(png_path):
-                # QML Image accepts a file:// URL.
-                png_url = "file:///" + png_path.replace("\\", "/").lstrip("/")
-            presets.append({
-                "id": preset_id,
-                "label": data.get("label", preset_id),
-                "voltage": float(data.get("voltage", 0.0)),
-                "frequency_khz": float(data.get("frequency_khz", 0.0)),
-                "pulse_length_us": float(data.get("pulse_length_us", 0.0)),
-                "pulse_interval_ms": float(data.get("pulse_interval_ms", 0.0)),
-                "pulse_count": int(data.get("pulse_count", 1)),
-                "pulse_train_interval_s": float(data.get("pulse_train_interval_s", 0)),
-                "depth_mm": float(data.get("depth_mm", 0.0)),
-                "analysis": data.get("analysis", {}) or {},
-                "intensityPlotUrl": png_url,
-            })
-        return presets
-
-    @pyqtSlot(str, result=bool)
-    def setActivePreset(self, preset_id):
-        """Make the named preset's delays/apodizations active for get_solution()."""
-        data = self._load_preset_file(preset_id)
-        if data is None:
-            self._active_preset = None
-            return False
-        self._active_preset = {
-            "id": preset_id,
-            "delays": data.get("delays", []),
-            "apodizations": data.get("apodization", data.get("apodizations", [])),
-            # Calibration sensitivity used by the preset's voltage
-            # number; we compare against the connected device's
-            # ``user_config['module']['sensitivity']`` to compute a
-            # per-run voltage scale factor.
-            "sensitivity": data.get("sensitivity"),
-            "frequency_khz": float(data.get("frequency_khz", 0.0)),
-            "voltage": float(data.get("voltage", 0.0)),
-        }
-        logger.info(
-            "Active Active preset set to '%s' (calib_sens=%s @ %.1fkHz, calib_voltage=%.2fV)",
-            preset_id, self._active_preset["sensitivity"],
-            self._active_preset["frequency_khz"],
-            self._active_preset["voltage"],
-        )
-        self.presetScalingChanged.emit()
-        return True
-
-    @pyqtSlot()
-    def clearActivePreset(self):
-        self._active_preset = None
-        self.presetScalingChanged.emit()
-
-    # ------------------------------------------------------------------
-    # Run-scoped session-logging settings (persist across app runs)
-    # ------------------------------------------------------------------
-
-    @pyqtSlot(result="QVariantMap")
-    def getSessionSettings(self):
-        """Return the persisted session settings for the operator page."""
-        s = self._session_logger
-        return {
-            "sessionName": s.session_name,
-            "sessionId": s.session_id,
-            "saveLogs": s.save_logs,
-            "logFolder": s.log_folder,
-        }
-
-    @pyqtSlot(str, result=str)
-    def sanitizeSessionId(self, name):
-        """Snake-case a session name. Used by the QML id preview field."""
-        return _SessionLogger.sanitize_id(name)
-
-    @pyqtSlot(str)
-    def setSessionName(self, name):
-        s = self._session_logger
-        new_name = str(name or "")
-        if new_name == s.session_name:
-            return
-        s.session_name = new_name
-        # Not persisted across runs; just emit so the QML preview
-        # filename refreshes.
-        self.sessionSettingsChanged.emit()
-
-    @pyqtSlot(bool)
-    def setSessionSaveLogs(self, enabled):
-        s = self._session_logger
-        new_val = bool(enabled)
-        if new_val == s.save_logs:
-            return
-        s.save_logs = new_val
-        s.save_settings()
-        self.sessionSettingsChanged.emit()
-
-    @pyqtSlot(str)
-    def setSessionLogFolder(self, folder):
-        s = self._session_logger
-        # QML's FolderDialog returns a QUrl-style ``file:///...`` string.
-        new_folder = str(folder or "").strip()
-        if new_folder.lower().startswith("file:///"):
-            # Strip the URL prefix and unquote percent-encoded characters.
-            from urllib.parse import urlparse, unquote
-            parsed = urlparse(new_folder)
-            new_folder = unquote(parsed.path)
-            # On Windows urlparse leaves a leading "/" before drive letter.
-            if sys.platform == "win32" and re.match(r"^/[A-Za-z]:", new_folder):
-                new_folder = new_folder[1:]
-        elif new_folder.lower().startswith("file://"):
-            new_folder = new_folder[7:]
-        new_folder = os.path.normpath(new_folder) if new_folder else ""
-        if not new_folder or new_folder == s.log_folder:
-            return
-        s.log_folder = new_folder
-        s.save_settings()
-        self.sessionSettingsChanged.emit()
-
-    @pyqtSlot()
-    def openLogFolder(self):
-        """Open the configured log folder in the OS file browser."""
-        path = self._session_logger.log_folder
-        try:
-            os.makedirs(path, exist_ok=True)
-        except OSError as e:
-            self._emit_device_error("Open Log Folder", f"Could not create '{path}': {e}")
-            return
-        try:
-            if sys.platform == "win32":
-                os.startfile(path)  # noqa: S606 - intentional shell exec on user folder
-            elif sys.platform == "darwin":
-                import subprocess
-                subprocess.Popen(["open", path])
-            else:
-                import subprocess
-                subprocess.Popen(["xdg-open", path])
-        except Exception as e:
-            self._emit_device_error("Open Log Folder", f"Could not open '{path}': {e}")
-
-    @pyqtSlot(result=str)
-    def previewLogName(self):
-        """Return the full path of the next projected run-log file."""
-        s = self._session_logger
-        now = datetime.now()
-        datestr = now.strftime("%Y%m%d")
-        run_num = s._next_run_number(datestr, s.session_id)
-        filename = (f"{datestr}_{s.session_id}_run{run_num:02d}_"
-                    f"{now.strftime('%H_%M_%S')}.log")
-        return os.path.join(s.log_folder, filename)
-
     def _extract_solution_settings(self, data):
         """Extract UI-editable settings from a solution-like dict."""
         target = data.get('target', {})
@@ -1407,453 +895,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self.solutionSaveStatus.emit(False, message)
             return False
 
-    def _max_tx_temperature(self):
-        """Return the hottest known TX module temperature, or NaN if none."""
-        max_t = float('nan')
-        for t in self._tx_temperatures:
-            if isinstance(t, (int, float)) and not (t != t):  # not NaN
-                if max_t != max_t or t > max_t:  # NaN-safe
-                    max_t = float(t)
-        return max_t
-
-    def _on_tx_temperature_for_thermal(self, module, tx_temp, amb_temp):
-        """Latch latest temperature and run the cooldown/shutdown state
-        machine. Called for every emission of ``temperatureTxUpdated``
-        (both polled queries and STATUS-frame parses)."""
-        # Latch latest per-module reading.
-        if isinstance(tx_temp, (int, float)) and not (tx_temp != tx_temp):
-            while len(self._tx_temperatures) <= module:
-                self._tx_temperatures.append(float('nan'))
-            self._tx_temperatures[module] = float(tx_temp)
-        self._evaluate_thermal_state()
-
-    def _evaluate_thermal_state(self):
-        """Cooldown/shutdown state machine. Mirrors what OperatorInterface.qml used to
-        do, but applied centrally so policy lives next to the device
-        controls rather than in the page."""
-        t = self._max_tx_temperature()
-        if t != t:  # NaN -- no telemetry yet, don't latch cooling
-            if self._cooling_down:
-                self._cooling_down = False
-                self.coolingStateChanged.emit(False)
-            return
-
-        # While running, only the >=75C hard-shutdown path may act.
-        # Crossing 50C mid-run must NOT flip into cooldown (which would
-        # try to toggle HV enable mode -- something setHvEnableMode
-        # rejects with a "cannot change while running" warning).
-        if self._state == RUNNING:
-            if t >= THERMAL_SHUTDOWN_THRESHOLD_C:
-                self._trigger_thermal_shutdown(t)
-            return
-
-        was_cooling = self._cooling_down
-        now_cooling = (t > THERMAL_COOLING_THRESHOLD_C)
-
-        if t >= THERMAL_SHUTDOWN_THRESHOLD_C:
-            self._trigger_thermal_shutdown(t)
-            now_cooling = True
-
-        if now_cooling and not was_cooling:
-            # Entering cooldown: force HV off, stash previous mode so
-            # we can restore it once the device cools.
-            if self._hv_enable_mode != HV_EN_OFF and self._pre_cooldown_hv_mode < 0:
-                self._pre_cooldown_hv_mode = self._hv_enable_mode
-            if self._hv_enable_mode != HV_EN_OFF:
-                self.setHvEnableMode(HV_EN_OFF)
-
-        if (not now_cooling) and was_cooling:
-            # Just dropped below cool threshold. Re-arm the shutdown
-            # one-shot and restore the previous HV mode so Start is
-            # available again immediately.
-            self._thermal_shutdown_active = False
-            if self._pre_cooldown_hv_mode >= 0 and self._pre_cooldown_hv_mode != HV_EN_OFF:
-                self.setHvEnableMode(self._pre_cooldown_hv_mode)
-            self._pre_cooldown_hv_mode = -1
-
-        if now_cooling != was_cooling:
-            self._cooling_down = now_cooling
-            self.coolingStateChanged.emit(now_cooling)
-
-    def _trigger_thermal_shutdown(self, observed_temp):
-        """One-shot hard abort on >=shutdown threshold. Idempotent until
-        the device cools back below the cool threshold."""
-        if self._thermal_shutdown_active:
-            return
-        self._thermal_shutdown_active = True
-        # If we were running or paused, mark the run aborted (and stop
-        # the trigger if it's still going). Skip the paused intermediate
-        # state -- thermal shutdown is a hard abort.
-        if self._run_state in ("running", "paused"):
-            self._abort_run_internal(emit_state=True)
-        if self._state == RUNNING:
-            try:
-                # Mirror stop_sonication's HV policy.
-                turn_hv_off = (self._hv_enable_mode == HV_EN_WHILE_RUNNING)
-                self._call_with_comm_retry(
-                    "Thermal shutdown stop",
-                    self.interface.stop_sonication,
-                    turn_hv_off=turn_hv_off,
-                )
-            except Exception as e:
-                logger.warning(f"Thermal shutdown stop_sonication failed: {e}")
-            self._async_mode_enabled = False
-            self._state = READY
-            self.stateChanged.emit(self._state)
-        # Force HV off regardless of current enable mode. Stash previous
-        # mode (if not already stashed) so cooldown-exit can restore it.
-        if self._hv_enable_mode != HV_EN_OFF and self._pre_cooldown_hv_mode < 0:
-            self._pre_cooldown_hv_mode = self._hv_enable_mode
-        if self._hv_enable_mode != HV_EN_OFF:
-            self.setHvEnableMode(HV_EN_OFF)
-        logger.warning(f"[THERMAL] Shutdown triggered: TX {observed_temp:.1f} C >= "
-                       f"{THERMAL_SHUTDOWN_THRESHOLD_C:.1f} C; HV forced off")
-        self.thermalShutdownEvent.emit(float(observed_temp),
-                                       float(THERMAL_SHUTDOWN_THRESHOLD_C),
-                                       float(THERMAL_COOLING_THRESHOLD_C))
-
-    # =====================================================================
-    # Run-progress / pause-resume state machine
-    # =====================================================================
-
-    def _open_run_log(self):
-        """Open the per-run log file (no-op if save-logs is disabled).
-
-        The connector logs an opening banner via the regular logger so
-        the message is also visible on the console handler. After
-        ``begin_run`` returns, every ``logger.*`` call from any module
-        is mirrored into the file until ``_close_run_log``.
-        """
-        path = self._session_logger.begin_run()
-        # Banner first so it's the first thing in the file (and console).
-        if path:
-            logger.info("=" * 70)
-            logger.info(
-                "[SESSION] Run log opened: session='%s' id='%s' file='%s'",
-                self._session_logger.session_name or "(unspecified)",
-                self._session_logger.session_id,
-                path,
-            )
-            self._log_run_summary(prefix="[CONFIG]")
-            logger.info("=" * 70)
-            self.runLogStarted.emit(path)
-        elif not self._session_logger.save_logs:
-            logger.info("[SESSION] Run started (logging disabled)")
-
-    def _close_run_log(self, reason):
-        """Close the per-run log file (no-op if no log is open)."""
-        if not self._session_logger.is_active:
-            return
-        # Footer/summary first so it lands inside the still-attached file.
-        delivered_trains = min(self._run_trains_delivered_before_block,
-                               self._run_original_train_total)
-        delivered_pulses = delivered_trains * self._run_original_pulse_count
-        elapsed_s = self._run_elapsed_ms / 1000.0
-        logger.info("=" * 70)
-        logger.info(
-            "[SESSION] Run ended: reason=%s trains=%d/%d pulses=%d blocks=%d elapsed=%.3fs",
-            reason.upper(),
-            delivered_trains,
-            self._run_original_train_total,
-            delivered_pulses,
-            self._run_block_count,
-            elapsed_s,
-        )
-        logger.info("=" * 70)
-        path = self._session_logger.end_run()
-        if path:
-            self.runLogFinalized.emit(path)
-
-    def _log_run_summary(self, prefix="[CONFIG]"):
-        """Log the parameters that this run was configured with."""
-        a = self._last_configure_args or {}
-        preset_id = (self._active_preset or {}).get("id", "(none)")
-        logger.info(
-            "%s preset=%s voltage=%sV freq=%skHz focus=(%s,%s,%s)mm",
-            prefix, preset_id, a.get("voltage", "?"), a.get("freq", "?"),
-            a.get("x", "?"), a.get("y", "?"), a.get("z", "?"),
-        )
-        logger.info(
-            "%s pulse_len=%sus pulse_int=%sms pulses=%s train_int=%ss trains=%s mode=%s",
-            prefix, a.get("durationUs", "?"), a.get("pulseInterval", "?"),
-            a.get("pulseCount", "?"), a.get("trainInterval", "?"),
-            a.get("trainCount", "?"), a.get("mode", "?"),
-        )
-        logger.info(
-            "%s total_duration=%.3fs total_trains=%d hv_mode=%s tx_modules=%s",
-            prefix, self._run_original_duration_s, self._run_original_train_total,
-            HV_EN_MODES.get(self._hv_enable_mode, "?"),
-            self._num_modules_connected if self._num_modules_connected > 0
-            else 1,
-        )
-        # Compact per-module transducer info. One line per module so a
-        # multi-module run still yields only a few lines, but the full
-        # user_config is still recoverable from these fields.
-        for idx in sorted(self._module_user_configs.keys()):
-            cfg = self._module_user_configs[idx]
-            mod = cfg.get("module") or {}
-            sens = mod.get("sensitivity") or []
-            sens_str = ",".join(f"{int(f/1000)}k:{int(v)}" for f, v in sens) if sens else "(none)"
-            logger.info(
-                "%s tx[%d] sn=%s hwid=%s hw=%s fw=%s sdk=%s freq=%skHz "
-                "module=%s name='%s' nx=%s ny=%s pitch=%s kerf=%s "
-                "xt=%s/%s sens[%s]",
-                prefix, idx,
-                cfg.get("sn", "?"), cfg.get("hwid", "?"),
-                cfg.get("hw_ver", "?"), cfg.get("fw_ver", "?"),
-                cfg.get("sdk_ver", "?"), cfg.get("freq", "?"),
-                mod.get("id", "?"), mod.get("name", "?"),
-                mod.get("nx", "?"), mod.get("ny", "?"),
-                mod.get("pitch", "?"), mod.get("kerf", "?"),
-                mod.get("crosstalk_frac", "?"), mod.get("crosstalk_dist", "?"),
-                sens_str,
-            )
-
-    def _set_run_state(self, new_state):
-        if new_state == self._run_state:
-            return
-        self._run_state = new_state
-        self.runStateChanged.emit(new_state)
-        self.runProgressChanged.emit()
-        # Finalize the log on terminal transitions (after emitting the
-        # state change so any handlers logging from the slot still hit
-        # the file).
-        if new_state in ("finished", "aborted"):
-            self._close_run_log(reason=new_state)
-
-    def _reset_run_state(self):
-        """Clear all run-progress bookkeeping back to idle."""
-        self._run_original_train_total = 0
-        self._run_original_duration_s = 0.0
-        self._run_original_pulse_count = 0
-        self._run_trains_delivered_before_block = 0
-        self._run_in_block_total = 0
-        self._run_in_block_current = 0
-        self._run_block_count = 0
-        self._run_start_time_ms = 0.0
-        self._run_elapsed_ms = 0.0
-        self._set_run_state("idle")
-
-    def _snapshot_original_sequence(self):
-        """Capture original sequence parameters from the last
-        configure_transmitter args. Called on a fresh Start so pause/
-        resume can shorten the device-side trainCount while the UI
-        keeps reporting against the original total."""
-        a = self._last_configure_args
-        if not a:
-            return
-        try:
-            train_count = int(float(a.get("trainCount", 0)))
-        except (ValueError, TypeError):
-            train_count = 0
-        try:
-            pulse_count = int(float(a.get("pulseCount", 0)))
-        except (ValueError, TypeError):
-            pulse_count = 0
-        # Derive original duration from train_count * train_period (as the
-        # firmware sees it).
-        try:
-            pulse_interval_s = float(a.get("pulseInterval", 0)) * 1e-3
-            train_interval_s = float(a.get("trainInterval", 0))
-        except (ValueError, TypeError):
-            pulse_interval_s = 0.0
-            train_interval_s = 0.0
-        if train_interval_s <= 0:
-            train_interval_s = max(0.0, pulse_count * pulse_interval_s)
-        self._run_original_train_total = max(0, train_count)
-        self._run_original_pulse_count = max(0, pulse_count)
-        self._run_original_duration_s = max(0.0, train_count * train_interval_s)
-
-    def _apply_train_count(self, train_count):
-        """Push a new pulse_train_count to the device via set_trigger
-        only (cheap), reusing the rest of the sequence parameters from
-        the last configure_transmitter snapshot. Returns True on
-        success."""
-        a = self._last_configure_args
-        if not a:
-            return False
-        try:
-            pulse_interval_s = float(a.get("pulseInterval", 0)) * 1e-3
-            pulse_count = int(float(a.get("pulseCount", 0)))
-            train_interval_s = float(a.get("trainInterval", 0))
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Cannot apply train count -- bad cached args: {e}")
-            return False
-        if train_interval_s == 0:
-            train_interval_s = pulse_count * pulse_interval_s
-        trigger_mode = str(a.get("mode", "Sequence")).lower()
-        prev_async = self._async_mode_enabled
-        self._interface_mutex.lock()
-        self._set_async_mode(False, reason="apply_train_count")
-        try:
-            result = self.interface.txdevice.set_trigger(
-                pulse_interval=pulse_interval_s,
-                pulse_count=pulse_count,
-                pulse_train_interval=train_interval_s,
-                pulse_train_count=int(train_count),
-                trigger_mode=trigger_mode,
-            )
-            self._update_trigger_state(result)
-            return True
-        except LIFUError as e:
-            self._handle_lifu_error("Update Trigger", e)
-            return False
-        except Exception as e:
-            self._handle_lifu_error("Update Trigger", e, context="Unexpected error")
-            return False
-        finally:
-            if prev_async and self._state == RUNNING:
-                self._set_async_mode(True, reason="apply_train_count-restore")
-            self._interface_mutex.unlock()
-
-    def _on_progress_for_run_state(self, pt_curr, pt_total, p_curr, p_total):
-        """Drive ``_run_state`` from STATUS-frame progress."""
-        if self._run_state != "running":
-            return
-        if pt_total > 0 and pt_curr >= pt_total:
-            # Current block finished. Roll into running total.
-            delivered = self._run_in_block_total if self._run_in_block_total > 0 else pt_curr
-            self._run_trains_delivered_before_block += delivered
-            self._run_in_block_current = 0
-            self._run_in_block_total = 0
-            if self._run_trains_delivered_before_block >= self._run_original_train_total:
-                # Natural completion of the full sequence.
-                self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
-                logger.info(f"[FINISH] Run completed: delivered "
-                            f"{self._run_trains_delivered_before_block} trains "
-                            f"in {self._run_elapsed_ms/1000.0:.2f} s "
-                            f"(original total: {self._run_original_train_total} trains, "
-                            f"{self._run_original_duration_s:.3f} s)")
-                self._set_run_state("finished")
-                # Restore original train count for the next run; safe to
-                # do now since the device is finishing on its own.
-                self._restore_original_trigger_async()
-            else:
-                # Block ended mid-sequence (shouldn't normally happen
-                # outside a pause). Just refresh the UI.
-                self.runProgressChanged.emit()
-            return
-        # Mid-block tick.
-        self._run_in_block_current = pt_curr + 1
-        if (self._run_in_block_total > 0
-                and self._run_in_block_current > self._run_in_block_total):
-            self._run_in_block_current = self._run_in_block_total
-        self.runProgressChanged.emit()
-
-    def _on_state_changed_for_run_state(self, state):
-        """When the device naturally finishes, the SDK transitions
-        RUNNING -> READY (via stop_sonication in queryTxTemperature).
-        We've already finalized in ``_on_progress_for_run_state``; this
-        handler just makes sure terminal states clean up if the progress
-        signal didn't catch the boundary (e.g. firmware quirks).
-
-        IMPORTANT: ``stateChanged`` is emitted synchronously from
-        ``stop_sonication`` (and our own pause/abort paths). Pause/abort
-        therefore flip ``_run_state`` to a non-"running" sentinel BEFORE
-        invoking stop_sonication so this handler sees the new state and
-        won't mis-mark the run as finished. Only the natural-completion
-        path (firmware ran out of trains by itself, the SDK silently
-        flips to READY in queryTxTemperature) reaches the body of this
-        handler with ``_run_state == "running"``.
-        """
-        if state != RUNNING and self._run_state == "running":
-            # Natural completion: only mark finished if the firmware
-            # actually advanced the in-block counter to its full block
-            # total. This avoids spurious "finished" transitions when
-            # the device drops to READY for some other reason and the
-            # block delivered count happens to coincide with the
-            # original total.
-            inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
-            block_complete = (self._run_in_block_total > 0
-                              and inblock >= self._run_in_block_total)
-            total_delivered = self._run_trains_delivered_before_block + inblock
-            if (block_complete
-                    and total_delivered >= self._run_original_train_total > 0):
-                self._run_trains_delivered_before_block = self._run_original_train_total
-                self._run_in_block_current = 0
-                self._run_in_block_total = 0
-                self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
-                logger.info(f"[FINISH] Run completed (via state change): delivered "
-                            f"{total_delivered} trains "
-                            f"in {self._run_elapsed_ms/1000.0:.2f} s "
-                            f"(original total: {self._run_original_train_total} trains, "
-                            f"{self._run_original_duration_s:.3f} s)")
-                self._set_run_state("finished")
-                self._restore_original_trigger_async()
-
-    def _restore_original_trigger_async(self):
-        """Reapply the originally-programmed trainCount via set_trigger.
-        Safe to call any time the device is not actively running."""
-        if self._state == RUNNING:
-            return
-        if not self._last_configure_args:
-            return
-        try:
-            orig_count = int(float(self._last_configure_args.get("trainCount", 0)))
-        except (ValueError, TypeError):
-            return
-        if orig_count <= 0:
-            return
-        self._apply_train_count(orig_count)
-
-    def _abort_run_internal(self, emit_state=True):
-        """Finalize the run as aborted using whatever has been delivered
-        so far. Caller is responsible for stopping the trigger and any
-        HV cleanup; this just updates the run-progress bookkeeping."""
-        if self._run_state == "running":
-            inblock = self._run_in_block_current if self._run_in_block_total > 0 else 0
-            self._run_trains_delivered_before_block += inblock
-        self._run_in_block_current = 0
-        self._run_in_block_total = 0
-        if self._run_start_time_ms > 0 and self._run_elapsed_ms <= 0:
-            self._run_elapsed_ms = (time.monotonic() * 1000.0) - self._run_start_time_ms
-        if emit_state:
-            self._set_run_state("aborted")
-        else:
-            self._run_state = "aborted"
-        # Restoring the original trigger after an abort happens via the
-        # caller (after stop_sonication has settled) since set_trigger
-        # cannot run while RUNNING.
-
-    @pyqtSlot()
-    def begin_run_progress(self):
-        """Start the run-progress state machine on a fresh Start. Should
-        be called by the UI immediately before ``start_sonication()`` so
-        the run-state transitions to ``"running"`` synchronously."""
-        if self._run_state in ("running", "paused"):
-            return
-        self._snapshot_original_sequence()
-        self._run_trains_delivered_before_block = 0
-        self._run_in_block_total = self._run_original_train_total
-        self._run_in_block_current = 0
-        self._run_block_count = 1
-        self._run_start_time_ms = time.monotonic() * 1000.0
-        self._run_elapsed_ms = 0.0
-        # Open the per-run log file BEFORE flipping run-state so the
-        # state-change banner ends up in the file too.
-        self._open_run_log()
-        self._set_run_state("running")
-
-    @pyqtSlot()
-    def clear_run_progress(self):
-        """Reset the run-progress state machine back to idle. Used by
-        the UI when the user mutates parameters that invalidate the
-        previous run's status (e.g. switching presets or changing the
-        total duration via directSetSequence)."""
-        if self._run_state in ("running", "paused"):
-            return
-        self._reset_run_state()
-
-    @pyqtProperty(bool, notify=connectionStatusChanged)
-    def txConnected(self):
-        """Expose TX connection status to QML."""
-        return self._txConnected
-
-    @pyqtProperty(bool, notify=connectionStatusChanged)
-    def hvConnected(self):
-        """Expose HV connection status to QML."""
-        return self._hvConnected
-
     @pyqtProperty(int, notify=stateChanged)
     def state(self):
         """Expose state as a QML property."""
@@ -1889,71 +930,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         """Expose HV enable mode to QML."""
         return self._hv_enable_mode
 
-    # ---- Thermal / cooldown properties (read-only to QML) ----
-    @pyqtProperty(bool, notify=coolingStateChanged)
-    def coolingDown(self):
-        """True while the hottest TX module is above the cool threshold."""
-        return self._cooling_down
-
-    @pyqtProperty(float, constant=True)
-    def coolingThresholdC(self):
-        return float(THERMAL_COOLING_THRESHOLD_C)
-
-    @pyqtProperty(float, constant=True)
-    def shutdownThresholdC(self):
-        return float(THERMAL_SHUTDOWN_THRESHOLD_C)
-
-    # ---- Run-progress properties (read-only to QML) ----
-    @pyqtProperty(str, notify=runStateChanged)
-    def runState(self):
-        """One of "idle", "running", "paused", "finished", "aborted"."""
-        return self._run_state
-
-    @pyqtProperty(int, notify=runProgressChanged)
-    def runOriginalTrainTotal(self):
-        return int(self._run_original_train_total)
-
-    @pyqtProperty(float, notify=runProgressChanged)
-    def runOriginalDurationS(self):
-        return float(self._run_original_duration_s)
-
-    @pyqtProperty(int, notify=runProgressChanged)
-    def runOriginalPulseCount(self):
-        return int(self._run_original_pulse_count)
-
-    @pyqtProperty(int, notify=runProgressChanged)
-    def runOverallDeliveredTrains(self):
-        if self._run_state == "finished":
-            return int(self._run_original_train_total)
-        inblock = max(0, min(self._run_in_block_current,
-                             self._run_in_block_total))
-        return int(min(self._run_original_train_total,
-                       self._run_trains_delivered_before_block + inblock))
-
-    @pyqtProperty(float, notify=runProgressChanged)
-    def runOverallFraction(self):
-        if self._run_state == "idle":
-            return 0.0
-        if self._run_state == "finished":
-            return 1.0
-        if self._run_original_train_total <= 0:
-            return 0.0
-        return max(0.0, min(1.0,
-                            float(self.runOverallDeliveredTrains)
-                            / float(self._run_original_train_total)))
-
-    @pyqtProperty(int, notify=runProgressChanged)
-    def runBlockCount(self):
-        return int(self._run_block_count)
-
-    @pyqtProperty(float, notify=runProgressChanged)
-    def runElapsedSeconds(self):
-        if self._run_elapsed_ms > 0:
-            return float(self._run_elapsed_ms) / 1000.0
-        if self._run_start_time_ms > 0 and self._run_state in ("running", "paused"):
-            return ((time.monotonic() * 1000.0) - self._run_start_time_ms) / 1000.0
-        return 0.0
-    
     @pyqtProperty(int, notify=numModulesUpdated)
     def queryNumModulesConnected(self):
         """Fetch and emit number of connected TX modules."""

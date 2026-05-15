@@ -16,10 +16,9 @@ Signals consumed (defined on ``LIFUConnector``):
     - ``userConfigRead`` (str, str)
     - ``userConfigStatus`` (str, bool, str)
     - ``testReportLoaded`` (bool, str)
-    - ``presetScalingChanged`` ()
 
 Instance attributes consumed (initialized in ``LIFUConnector.__init__``):
-    - ``interface``, ``_interface_mutex``, ``_module_user_configs``
+    - ``interface``, ``_interface_mutex``
     - ``_txConnected``
 """
 
@@ -209,13 +208,6 @@ class SettingsMixin:
                 config = self.interface.txdevice.read_config(module=module)
                 json_str = config.get_json_str()
                 logger.info(f"User config read from {target}: {json_str}")
-                # Refresh the cached copy so subsequent solution
-                # generation uses the freshly-read sensitivity table.
-                try:
-                    self._module_user_configs[module] = json.loads(json_str)
-                    self.presetScalingChanged.emit()
-                except ValueError:
-                    pass
                 self.userConfigRead.emit(target, json_str)
             except LIFUError as e:
                 msg = f"{str(e)}"

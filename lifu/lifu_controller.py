@@ -26,21 +26,18 @@ import numpy as np
 
 from PyQt6.QtCore import pyqtSlot
 
-from openlifu_sdk.io import LIFUInterface, LIFUInterfaceStatus
 from openlifu_sdk.io.exceptions import (
     LIFUError,
     LIFUCommunicationError,
-    LIFUDeviceError,
+    LIFUSolutionError,
+    LIFUHVSettleError
 )
 
 from plot.plot import generate_ultrasound_plot_from_solution
 
 from lifu.lifu_constants import (
-    DISCONNECTED,
-    CONNECTED,
     READY,
     RUNNING,
-    TEST_SCRIPT_READY,
     HV_EN_AUTO,
     HV_EN_ON,
     HV_EN_OFF,
@@ -116,50 +113,15 @@ class ControllerMixin:
                     }
             focus = np.array([float(xInput), float(yInput), float(zInput)])
 
-            # When a Active preset is active its measured delays/apodizations
-            # fully replace the geometric ones, so we can skip loading
-            # the pinmap (and avoid touching disk for it) entirely.
-            preset = self._active_preset
-            preset_delays = None
-            preset_apod = None
-            if preset is not None:
-                preset_delays = np.array(preset.get("delays", []), dtype=float).reshape(-1)
-                preset_apod = np.array(preset.get("apodizations", []), dtype=float).reshape(-1)
-                expected = num_modules * NUM_ELEMENTS_PER_MODULE
-                if (preset_delays.size != expected
-                        or preset_apod.size != expected):
-                    logger.warning(
-                        "Active Active preset '%s' has %d delays / %d apodizations, "
-                        "expected %d; falling back to pinmap-derived values.",
-                        preset.get("id", "?"), preset_delays.size,
-                        preset_apod.size, expected,
-                    )
-                    preset_delays = None
-                    preset_apod = None
-
-            if preset_delays is not None:
-                # Active preset path: no pinmap needed.
-                delays = preset_delays
-                apodizations = preset_apod
-                numelements = delays.size
-                # Minimal transducer dict â€“ downstream consumers only
-                # read ``elements`` (for plotting) and ``module_invert``;
-                # neither is needed when using preset path.
-                transducer_dummy = {
-                    "id": preset.get("id", ""),
-                    "name": preset.get("name", preset.get("id", "")),
-                    "elements": [],
-                }
-            else:
-                pinmap_data = self._load_pinmap_data(num_modules)
-                element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
-                numelements = element_positions.shape[0]
-                logger.debug(f"{num_modules}x config file loaded")
-                distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
-                tof = distances*1e-3 / SPEED_OF_SOUND
-                delays = tof.max() - tof
-                apodizations = np.ones(numelements)
-                transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
+            pinmap_data = self._load_pinmap_data(num_modules)
+            element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
+            numelements = element_positions.shape[0]
+            logger.debug(f"{num_modules}x config file loaded")
+            distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
+            tof = distances*1e-3 / SPEED_OF_SOUND
+            delays = tof.max() - tof
+            apodizations = np.ones(numelements)
+            transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
 
             pulse_count = int(pulseCount)
             pulse_train_interval = float(trainInterval)
@@ -169,12 +131,6 @@ class ControllerMixin:
                         "pulse_count": pulse_count,
                         "pulse_train_interval": pulse_train_interval,
                         "pulse_train_count": int(trainCount)}
-            # NOTE: voltage is NOT scaled here. The operator page applies the
-            # sensitivity scaling once via getScaledVoltage() before
-            # calling configure_transmitter / directSetVoltage, so the
-            # ``voltage`` argument we receive is already the
-            # device-corrected value. Scaling again here would compound
-            # the correction.
             solution = {
                 "id": "solution",
                 "name": "Solution",
@@ -254,22 +210,6 @@ class ControllerMixin:
                 trigger_mode=trigger_mode,
             )
             self._update_trigger_state(result)
-            # Mirror the new values into the cached configure args so a
-            # fresh Start (which snapshots from _last_configure_args)
-            # uses these settings rather than the previous configure's.
-            if self._last_configure_args is None:
-                self._last_configure_args = {}
-            self._last_configure_args.update({
-                "pulseInterval": str(pulseInterval),
-                "pulseCount": str(pulseCount),
-                "trainInterval": str(trainInterval),
-                "trainCount": str(trainCount),
-                "mode": str(mode),
-            })
-            # Run-progress bookkeeping was sized to the previous
-            # trainCount; clear it so begin_run_progress re-snapshots
-            # against the new values on the next Start.
-            self._reset_run_state()
             logger.info(
                 "Sequence settings directly updated "
                 "(pulse_int=%sms pulses=%s train_int=%ss trains=%s mode=%s)",
@@ -333,25 +273,6 @@ class ControllerMixin:
                 sequence=solution['sequence'],
                 trigger_mode=str(mode).lower(),
             )
-            # Mirror the new values into the cached configure args so a
-            # fresh Start (which snapshots from _last_configure_args)
-            # uses these settings rather than the previous configure's.
-            if self._last_configure_args is None:
-                self._last_configure_args = {}
-            self._last_configure_args.update({
-                "x": str(xInput), "y": str(yInput), "z": str(zInput),
-                "freq": str(freq), "voltage": str(voltage),
-                "pulseInterval": str(pulseInterval),
-                "pulseCount": str(pulseCount),
-                "trainInterval": str(trainInterval),
-                "trainCount": str(trainCount),
-                "durationUs": str(durationS),
-                "mode": str(mode),
-            })
-            # Run-progress bookkeeping was sized to the previous
-            # trainCount; clear it so begin_run_progress re-snapshots
-            # against the new values on the next Start.
-            self._reset_run_state()
             logger.info(
                 "Pulse settings directly updated "
                 "(voltage=%sV freq=%skHz focus=(%s,%s,%s)mm "
@@ -409,28 +330,10 @@ class ControllerMixin:
                 trigger_mode=mode,
             )
             self._configured = True
-            # Snapshot the args used so pause/resume can rebuild the
-            # trigger via set_trigger only (cheap) instead of redoing the
-            # full set_solution write. Stored as a dict of strings to
-            # match the QML-facing slot signature.
-            self._last_configure_args = {
-                "x": str(xInput), "y": str(yInput), "z": str(zInput),
-                "freq": str(freq), "voltage": str(voltage),
-                "pulseInterval": str(pulseInterval),
-                "pulseCount": str(pulseCount),
-                "trainInterval": str(trainInterval),
-                "trainCount": str(trainCount),
-                "durationUs": str(durationS),
-                "mode": str(mode),
-            }
-            # Reset run-progress bookkeeping -- a fresh Configure
-            # invalidates any in-progress run state.
-            self._reset_run_state()
             self.update_state()
             self._apply_auto_hv_for_state()
-            preset_id = (self._active_preset or {}).get("id", "(none)")
             logger.info(
-                f"[CONFIGURE] Transmitter configured: preset={preset_id} "
+                f"[CONFIGURE] Transmitter configured: "
                 f"voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm "
                 f"pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} "
                 f"train_int={trainInterval}s trains={trainCount} mode={mode}"
@@ -474,10 +377,6 @@ class ControllerMixin:
             self._solution_name = ""
             self.solutionStateChanged.emit()
             logger.info(f"Released loaded solution '{released}' on reset")
-        # Drop any cached configure args + run-progress state.
-        self._last_configure_args = None
-        self._active_preset = None
-        self._reset_run_state()
         self.update_state()
         self._apply_auto_hv_for_state()
         logger.info("Configuration reset")
