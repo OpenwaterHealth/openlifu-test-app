@@ -715,7 +715,7 @@ Rectangle {
                         id: runAllArea
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: isEnabled
+                        enabled: parent.isEnabled
                         onClicked: {
                             supportPage.testResults = []
                             supportPage.testSummary = {passed:0, failed:0, skipped:0}
