@@ -125,6 +125,12 @@ class SettingsMixin:
     def updateConsoleFirmware(self, firmware_path: str) -> None:
         """Update the console (HV) firmware using DFU.  Runs in a background thread."""
         def _run():
+            # The DFU sequence reboots the device into the bootloader; any
+            # polling round-trip in flight against the soon-to-disappear
+            # CDC interface causes spurious comm timeouts. Pause polling
+            # for the duration of the update.
+            prev_paused = self._monitoring_paused
+            self._monitoring_paused = True
             try:
                 from openlifu_sdk.io.LIFUDFU import LIFUDFUManager
 
@@ -151,6 +157,8 @@ class SettingsMixin:
                 msg = f"Console update failed: {e}"
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
+            finally:
+                self._monitoring_paused = prev_paused
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -158,6 +166,10 @@ class SettingsMixin:
     def updateTransmitterFirmware(self, firmware_path: str, module: int) -> None:
         """Update the transmitter firmware for a specific module. Runs in a background thread."""
         def _run():
+            # Pause polling for the duration -- see updateConsoleFirmware
+            # for rationale.
+            prev_paused = self._monitoring_paused
+            self._monitoring_paused = True
             self._interface_mutex.lock()
             try:
                 def _progress(written: int, total: int, label: str) -> None:
@@ -183,6 +195,7 @@ class SettingsMixin:
                 self.fwUpdateStatus.emit("transmitter", False, msg)
             finally:
                 self._interface_mutex.unlock()
+                self._monitoring_paused = prev_paused
 
         threading.Thread(target=_run, daemon=True).start()
 
