@@ -119,53 +119,15 @@ class TransmitterMixin:
         self._interface_mutex.lock()
         try:
             count = self.interface.txdevice.get_tx_module_count()
-            prev_count = self._num_modules_connected
             self._num_modules_connected = count
             self.numModulesUpdated.emit()
             logger.debug(f"Number of connected TX modules: {self._num_modules_connected}")
-            # Refresh the cached per-module ``user_config`` whenever
-            # the connected count changes (or when we go from 0 to N).
-            # Best-effort: failures are logged at warning and the
-            # cache is simply left empty for that module.
-            if count != prev_count:
-                self._refresh_module_user_configs_locked(count)
         except LIFUError as e:
             self._handle_lifu_error("TX Modules", e)
         except Exception as e:
             self._handle_lifu_error("TX Modules", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
-
-    def _refresh_module_user_configs_locked(self, count):
-        """Read ``user_config`` from each connected module.
-
-        Caller is responsible for holding ``_interface_mutex``.
-        """
-        self._module_user_configs = {}
-        if count <= 0:
-            self.presetScalingChanged.emit()
-            return
-        for module_idx in range(count):
-            try:
-                config = self.interface.txdevice.read_config(module=module_idx)
-                cfg_dict = json.loads(config.get_json_str())
-            except (LIFUError, ValueError, OSError) as e:
-                logger.warning(
-                    "Module %d: failed to read user_config: %s", module_idx, e,
-                )
-                continue
-            self._module_user_configs[module_idx] = cfg_dict
-            sn = cfg_dict.get("sn", "?")
-            mod = cfg_dict.get("module", {}) or {}
-            sens = mod.get("sensitivity") or []
-            logger.info(
-                "Module %d user_config: sn=%s hw=%s fw=%s freq=%skHz "
-                "module_id=%s sensitivity_pts=%d",
-                module_idx, sn, cfg_dict.get("hw_ver", "?"),
-                cfg_dict.get("fw_ver", "?"), cfg_dict.get("freq", "?"),
-                mod.get("id", "?"), len(sens),
-            )
-        self.presetScalingChanged.emit()
 
     @pyqtSlot(str, result=bool)
     def setTrigger(self, triggerjson: str):

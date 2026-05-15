@@ -18,7 +18,7 @@ three supported drive frequencies (100 kHz, 200 kHz, 400 kHz).
 > the [Support](support-page-user-guide.md) page's Diagnostics tab.
 
 Navigate to the Transmitter page by clicking the transmitter icon in
-the left sidebar. The page is hidden in `--simulate` and `--context=<name>` modes.
+the left sidebar. The page is hidden in `--simulate` mode.
 
 ![Transmitter tab — full layout](transmitter_tab.png)
 

@@ -17,7 +17,7 @@ indicator hardware without running a full sonication.
 > a PDF report.
 
 Navigate to the Console page by clicking the console icon in the left
-sidebar. The page is hidden in `--simulate` and `--context=<name>` modes.
+sidebar. The page is hidden in `--simulate` mode.
 
 ![Console tab — full layout](console_tab.png)
 

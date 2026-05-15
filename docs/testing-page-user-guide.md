@@ -22,7 +22,7 @@ regulatory evidence.
 > a connected Console + Transmitter.
 
 Navigate to the Verification page by clicking the verification icon in
-the left sidebar. The page is hidden in `--simulate` and `--context=<name>` modes.
+the left sidebar. The page is hidden in `--simulate` mode.
 
 ![Verification tab — full layout](testing_tab.png)
 

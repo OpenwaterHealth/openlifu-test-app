@@ -20,7 +20,7 @@ The **Settings** page covers two distinct engineering workflows:
 > to Settings while `state == RUNNING`.
 
 Navigate to the Settings page by clicking the gear icon in the left
-sidebar. The page is hidden in `--simulate` and `--context=<name>` modes.
+sidebar. The page is hidden in `--simulate` mode.
 
 ![Settings tab — full layout](settings_tab.png)
 
