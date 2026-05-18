@@ -1,6 +1,6 @@
 # Support Page — User Guide
 
-**Open-LIFU Engineering App · App v1.0.15 · SDK v1.0.7**
+**Open-LIFU Test App · App v1.0.15 · SDK v1.0.7**
 
 ---
 
@@ -29,7 +29,7 @@ The System Information card at the top of the page shows a snapshot of the curre
 
 | Field | Description |
 |-------|-------------|
-| App Version | Installed version of the Open-LIFU Engineering App |
+| App Version | Installed version of the Open-LIFU Test App |
 | SDK Version | Version of the underlying OpenLIFU SDK |
 | App State | Current state machine state: `DISCONNECTED`, `CONNECTED`, `READY`, `RUNNING`, or `TEST_SCRIPT_READY` |
 
