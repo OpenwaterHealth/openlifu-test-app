@@ -45,13 +45,29 @@ from openlifu_verification.prodreqs_tx_short_verification_test import Transmitte
 from openlifu_verification.prodreqs_run_indefinitely_test import TransmitterIndefiniteRun
 
 
-# Set up logging
+# Set up logging.
+#
+# We attach the StreamHandler to the ``lifu`` package logger (not to
+# ``lifu.lifu_connector``) so every module in this package -- including
+# the controller/settings/transmitter/console/support/testing mixins
+# split out of the connector -- inherits the same console handler via
+# the normal logger propagation chain. Without this, only this module's
+# own ``logger.info(...)`` calls would print; everything from
+# ``lifu.lifu_controller`` etc. would silently disappear into the
+# default (handler-less) root logger.
+pkg_logger = logging.getLogger("lifu")
+pkg_logger.setLevel(logging.INFO)
+if not any(getattr(h, "_lifu_app_console", False) for h in pkg_logger.handlers):
+    ch = logging.StreamHandler()
+    ch._lifu_app_console = True  # marker for idempotent re-imports
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
+    pkg_logger.addHandler(ch)
+else:
+    ch = next(h for h in pkg_logger.handlers if getattr(h, "_lifu_app_console", False))
+
+# Module logger; uses the handler attached to the parent ``lifu`` logger.
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-ch = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
 
 # Uncomment to activate logging from the sdk
 #sdklogger = logging.getLogger('openlifu_sdk.io')
