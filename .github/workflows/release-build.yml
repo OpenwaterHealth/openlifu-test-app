@@ -1,7 +1,7 @@
 name: Build & Release
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   push:
     branches: [main, next]
     tags:
@@ -22,48 +22,26 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── conda environment "olifu" ──────────────────────────────
-      - name: Set up Miniconda
-        uses: conda-incubator/setup-miniconda@v3
+      # ── Python + dependencies (PyPI) ─────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          auto-update-conda: true
           python-version: "3.12"
-          activate-environment: olifu
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies into olifu
-        shell: bash -el {0}
+      - name: Install dependencies
+        shell: bash
         run: |
-          conda activate olifu
           python -m pip install --upgrade pip
-
-          # Fetch latest openmotion-sdk wheel from GitHub Releases
-          WHL_URL=$(python -c "
-          import json, urllib.request
-          url = 'https://api.github.com/repos/OpenwaterHealth/openlifu-sdk/releases/latest'
-          try:
-            data = json.load(urllib.request.urlopen(url))
-            for a in data.get('assets', []):
-              if a.get('name','').endswith('.whl'):
-                print(a.get('browser_download_url'))
-                break
-          except Exception:
-            pass
-          ")
-
-          if [ -n "$WHL_URL" ]; then
-            echo "Installing pylib wheel: $WHL_URL"
-            pip install "$WHL_URL"
-          else
-            echo "No wheel found – falling back to source install"
-            pip install git+https://github.com/OpenwaterHealth/openlifu-sdk.git
-          fi
-
-          # Install project and build tooling from pyproject.toml
+          # Install project + build tooling. openlifu-sdk and all
+          # other runtime deps are pinned in pyproject.toml and pulled
+          # from PyPI -- no special bootstrap step needed.
           pip install ".[dev]"
 
       # ── build ────────────────────────────────────────────────────
       - name: Stamp version from git tag
-        shell: bash -el {0}
+        shell: bash
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
@@ -77,9 +55,8 @@ jobs:
           sed -i "s/^_FALLBACK_VERSION = .*/_FALLBACK_VERSION = \"${VER}\"/" version.py
 
       - name: Build with PyInstaller
-        shell: bash -el {0}
+        shell: bash
         run: |
-          conda activate olifu
           python -m PyInstaller -y OpenLIFU-TestApp.spec
 
       # ── package ──────────────────────────────────────────────────

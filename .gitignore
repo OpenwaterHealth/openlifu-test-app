@@ -87,4 +87,10 @@ junit/
 preset_solutions/*.json
 !preset_solutions/.gitkeep
 
+# Operator-mode session logger persisted settings (folder/save-toggle/name).
+# Lives in the per-user data dir at runtime, but explicitly ignored
+# here in case anyone runs the app out of the workspace.
+session_settings.json
+openlifu_logs/
+
 local_notes.md

@@ -7,8 +7,8 @@ import argparse
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
-from lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
-from lifu_support import LIFUSupportConnector
+from lifu.lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
+from lifu.lifu_support import LIFUSupportConnector
 from pathlib import Path
 
 from version import get_version
@@ -20,9 +20,6 @@ APP_VERSION = get_version()
 # python main.py --hv-test-mode 
 
 logger = logging.getLogger(__name__)
-
-# Suppress PyQt6 DeprecationWarnings related to SIP
-warnings.simplefilter("ignore", DeprecationWarning)
 
 def resource_path(rel: str) -> str:
     import sys, os
@@ -37,10 +34,72 @@ def parse_arguments():
         action="store_true",
         help="Enable HV test mode for LIFUConnector",
     )
+    parser.add_argument(
+        "--simulate",
+        nargs="?",
+        type=int,
+        const=1,
+        default=None,
+        metavar="N",
+        help=(
+            "Run against an in-memory simulated device instead of real "
+            "hardware. Optional N specifies the number of simulated TX "
+            "modules (default 1)."
+        ),
+    )
+    parser.add_argument(
+        "--loglevel",
+        default="info",
+        type=str,
+        help=(
+            "Logging level for the lifu_connector logger "
+            "(debug, info, warning, error, critical). Default: info."
+        ),
+    )
     return parser.parse_args()
+
+
+# Tab id -> visible label, icon glyph, and QML page path. Consumed by
+# SidebarMenu.qml via the appTabs context property.
+TAB_DEFINITIONS = {
+    "controller":   {"label": "Controller",  "icon": "\ueb34", "page": "pages/Controller.qml"},
+    "transmitter":  {"label": "Transmitter", "icon": "\ueab9", "page": "pages/Transmitter.qml"},
+    "console":      {"label": "Console",     "icon": "\ueaae", "page": "pages/Console.qml"},
+    "testing":      {"label": "Verification","icon": "\ueb2f", "page": "pages/Testing.qml"},
+    "settings":     {"label": "Settings",    "icon": "\ueabf", "page": "pages/Settings.qml"},
+    "support":      {"label": "Support",     "icon": "\ueaaf", "page": "pages/Support.qml"},
+}
+
+# Engineering tabs shown in the sidebar.
+ENGINEERING_TABS = ["controller", "transmitter", "console", "testing", "support", "settings"]
+
+
+def build_app_tabs():
+    """Return a list of tab dicts suitable for QML."""
+    return [
+        {"id": tid, **TAB_DEFINITIONS[tid]}
+        for tid in ENGINEERING_TABS
+        if tid in TAB_DEFINITIONS
+    ]
 
 def main():
     args = parse_arguments()
+
+    # Apply the requested log level to the lifu package logger before
+    # any of its modules log anything interesting. The handler is
+    # attached to the ``lifu`` package logger in ``lifu_connector.py``
+    # so every submodule (lifu.lifu_controller, lifu.lifu_settings,
+    # lifu.lifu_transmitter, ...) inherits it; setting the level here
+    # at the package level controls all of them at once.
+    level_name = str(args.loglevel).upper()
+    level = logging.getLevelName(level_name)
+    if not isinstance(level, int):
+        print(
+            f"WARNING: invalid --loglevel '{args.loglevel}', falling back to INFO.",
+            file=sys.stderr,
+        )
+        level = logging.INFO
+    logging.getLogger("lifu").setLevel(level)
 
     # Tell Windows to treat this as its own app (not python.exe) so the
     # taskbar shows our icon instead of the Python icon.
@@ -91,14 +150,26 @@ def main():
 
     engine = QQmlApplicationEngine()
 
-    # Initialize LIFUConnector with hv_test_mode from command-line argument
-    lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
+    # Initialize the connector. --simulate swaps in an in-memory fake of
+    # LIFUInterface so the rest of the app exercises real code paths
+    # without requiring USB hardware.
+    simulating = args.simulate is not None
+    if simulating:
+        from lifu.simulated_lifu_connector import SimulatedLIFUConnector
+        sim_modules = args.simulate
+        print(f"Initializing simulated connector with {sim_modules} module(s)...")
+
+        lifu_connector = SimulatedLIFUConnector(num_modules=sim_modules)
+    else:
+        lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
     lifu_support_connector = LIFUSupportConnector(interface=lifu_connector.interface)
 
     # Expose to QML
     engine.rootContext().setContextProperty("LIFUConnector", lifu_connector)
     engine.rootContext().setContextProperty("LIFUSupportConnector", lifu_support_connector)
     engine.rootContext().setContextProperty("appVersion", APP_VERSION)
+    engine.rootContext().setContextProperty("appSimulate", simulating)
+    engine.rootContext().setContextProperty("appTabs", build_app_tabs())
     app.setProperty("appVersion", APP_VERSION)
 
     engine.load(resource_path("main.qml"))
