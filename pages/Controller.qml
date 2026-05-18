@@ -326,6 +326,34 @@ Rectangle {
         busyActionTimer.start()
     }
 
+    // Lighter-weight variant for direct-edit commits (no button to
+    // depress, just the page-wide BusyOverlay). Used by the
+    // onEditingFinished handlers so the user gets a brief spinner
+    // while directSet calls block the GUI thread.
+    function runBusy(action) {
+        if (!action || busyActionTimer.running) {
+            return
+        }
+        controllerPage.busy = true
+        busyActionTimer.pendingButton = null
+        busyActionTimer.pendingAction = action
+        busyActionTimer.start()
+    }
+
+    // Standard onEditingFinished handler for the parameter TextFields:
+    // if the field is dirty, run the matching commit through the busy
+    // timer and clear dirty on success.
+    function commitDirtyField(field, commitFn) {
+        if (!field || !field.dirty) {
+            return
+        }
+        runBusy(function() {
+            if (commitFn()) {
+                field.dirty = false
+            }
+        })
+    }
+
     Timer {
         id: busyActionTimer
         interval: 50
@@ -876,11 +904,7 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: {
-                                if (dirty && commitVoltage()) {
-                                    dirty = false
-                                }
-                            }
+                            onEditingFinished: commitDirtyField(voltage, commitVoltage)
                         }
                     }
                 }
@@ -981,11 +1005,7 @@ Rectangle {
                             }
                             onTextChanged: updateTrainIntervalValidation()
                             onTextEdited: dirty = true
-                            onEditingFinished: {
-                                if (dirty && commitSequence()) {
-                                    dirty = false
-                                }
-                            }
+                            onEditingFinished: commitDirtyField(triggerPulseInterval, commitSequence)
                         }
 
                         Text { 
@@ -1021,11 +1041,7 @@ Rectangle {
                             }
                             onTextChanged: updateTrainIntervalValidation()
                             onTextEdited: dirty = true
-                            onEditingFinished: {
-                                if (dirty && commitSequence()) {
-                                    dirty = false
-                                }
-                            }
+                            onEditingFinished: commitDirtyField(triggerPulseCount, commitSequence)
                         }
 
                         Text { 
@@ -1061,11 +1077,7 @@ Rectangle {
                             }
                             onTextChanged: updateTrainIntervalValidation()
                             onTextEdited: dirty = true
-                            onEditingFinished: {
-                                if (dirty && commitSequence()) {
-                                    dirty = false
-                                }
-                            }
+                            onEditingFinished: commitDirtyField(triggerPulseTrainInterval, commitSequence)
                         }
 
                         Text { 
@@ -1100,11 +1112,7 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: {
-                                if (dirty && commitSequence()) {
-                                    dirty = false
-                                }
-                            }
+                            onEditingFinished: commitDirtyField(triggerPulseTrainCount, commitSequence)
                         }
                     }
                 }
@@ -1161,11 +1169,7 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: {
-                                if (dirty && commitPulse()) {
-                                    dirty = false
-                                }
-                            }
+                            onEditingFinished: commitDirtyField(frequencyInput, commitPulse)
                         }
 
                         Text { 
@@ -1200,11 +1204,7 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: {
-                                if (dirty && commitPulse()) {
-                                    dirty = false
-                                }
-                            }
+                            onEditingFinished: commitDirtyField(durationInput, commitPulse)
                         }
 
                         // Beam Focus spans the full grid width below the Frequency/Duration rows.
@@ -1248,11 +1248,7 @@ Rectangle {
                                         radius: 4
                                     }
                                     onTextEdited: dirty = true
-                                    onEditingFinished: {
-                                        if (dirty && commitPulse()) {
-                                            dirty = false
-                                        }
-                                    }
+                                    onEditingFinished: commitDirtyField(xInput, commitPulse)
                                 }
                             }
 
@@ -1290,11 +1286,7 @@ Rectangle {
                                         radius: 4
                                     }
                                     onTextEdited: dirty = true
-                                    onEditingFinished: {
-                                        if (dirty && commitPulse()) {
-                                            dirty = false
-                                        }
-                                    }
+                                    onEditingFinished: commitDirtyField(yInput, commitPulse)
                                 }
                             }
 
@@ -1332,11 +1324,7 @@ Rectangle {
                                         radius: 4
                                     }
                                     onTextEdited: dirty = true
-                                    onEditingFinished: {
-                                        if (dirty && commitPulse()) {
-                                            dirty = false
-                                        }
-                                    }
+                                    onEditingFinished: commitDirtyField(zInput, commitPulse)
                                 }
                             }
                         }
