@@ -1662,7 +1662,6 @@ Rectangle {
                             onClicked: {
                                 runWithButtonFeedback(configureButton, function() {
                                     resetProgressIdle()
-                                    var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
                                     LIFUConnector.configure_transmitter(xInput.text, yInput.text,
                                         zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
                                         triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
