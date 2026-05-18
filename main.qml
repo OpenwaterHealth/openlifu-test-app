@@ -35,7 +35,7 @@ Window {
             anchors.right: parent.right
 
             // Set title and logo dynamically
-            titleText: "OpenLIFU"
+            titleText: "Open-LIFU Engineering App"
             logoSource: "../assets/images/OpenwaterLogo.png" // Correct relative path
             appVerText: appVersion
             sdkVerText: LIFUConnector.sdkVersion
@@ -51,17 +51,11 @@ Window {
             spacing: 20
             Layout.fillHeight: true
 
-            // Sidebar Menu.
+            // Sidebar Menu
             SidebarMenu {
                 Layout.alignment: Qt.AlignLeft
                 Layout.fillHeight: true
                 color: "#1C1C1E" // Dark sidebar background
-                visible: (typeof appTabs !== "undefined" && appTabs && appTabs.length > 1)
-
-                // Keep highlighted tab in sync with whichever tab is
-                // actually showing (so blocked navigations don't visually
-                // jump the highlight ahead of the page).
-                activeButtonIndex: window.activeMenu
 
                 // Explicitly pass the signal parameter to the function
                 onButtonClicked: {
@@ -75,24 +69,16 @@ Window {
                 Layout.fillHeight: true
                 spacing: 20
 
-                // StackLayout (instead of a single dynamic Loader) so each
-                // tab's page is instantiated once and its state survives
-                // tab switches. This makes the sonication progress UI on
-                // Controller persist when the user pops over to Transmitter or
-                // Console and returns.
-                StackLayout {
+                Loader {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    currentIndex: activeMenu
+                    source: activeMenu === 0 ? "pages/Demo.qml"
+                        : activeMenu === 1 ? "pages/Transmitter.qml"
+                        : activeMenu === 2 ? "pages/Console.qml"
+                        : activeMenu === 3 ? "pages/Testing.qml"
+                        : activeMenu === 4 ? "pages/Support.qml"
+                        : "pages/Settings.qml"
 
-                    Repeater {
-                        model: (typeof appTabs !== "undefined" && appTabs) ? appTabs : []
-
-                        Loader {
-                            active: true
-                            source: modelData.page
-                        }
-                    }
                 }
             }
         }
@@ -100,34 +86,8 @@ Window {
 
     // JavaScript function to handle sidebar button clicks
     function handleSidebarClick(index) {
-        if (!appTabs || index < 0 || index >= appTabs.length) return
-        var targetId = appTabs[index].id
-        var currentId = (activeMenu >= 0 && activeMenu < appTabs.length)
-                        ? appTabs[activeMenu].id : ""
-
-        // Block switching to Settings while sonication is running. The
-        // user must Stop first.
-        if (targetId === "settings" && LIFUConnector.state === 3) {
-            console.log("Cannot switch to Settings while sonication is running.")
-            return
-        }
-
-        // Switching from the Controller (sonication) page to Settings while
-        // configured (or having been stopped/finished): force a Reset so
-        // the user has to re-Program/Configure before the next run, and
-        // make sure HV is dropped.
-        if (targetId === "settings"
-            && currentId === "controller"
-            && LIFUConnector.state >= 2
-            && LIFUConnector.state !== 3) {
-            if (LIFUConnector.hvEnableMode === 1) {
-                LIFUConnector.setHvEnableMode(2)
-            }
-            LIFUConnector.reset_configuration()
-        }
-
-        activeMenu = index
-        console.log("Tab selected:", targetId, "(index", index + ")")
+        activeMenu = index; // Update the activeMenu property
+        console.log("Button clicked with index:", index);
     }
 
     // Global device-error popup.  Shown whenever LIFUConnector.deviceError is

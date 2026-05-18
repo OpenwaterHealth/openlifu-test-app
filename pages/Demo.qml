@@ -2,10 +2,9 @@ import QtQuick 6.0
 import QtQuick.Controls 6.0
 import QtQuick.Layouts 6.0
 import QtQuick.Dialogs
-import "../components"
 
 Rectangle {
-    id: controllerPage
+    id: demoPage
     width: parent.width
     height: parent.height
     color: "#29292B"
@@ -34,10 +33,6 @@ Rectangle {
     // "ON" mode lights up the LED even when the system isn't transmitting.
     property bool hvOn: false
     property string statusOverrideText: ""
-    // True while a runWithButtonFeedback action is executing. Drives the
-    // BusyOverlay so users get a visible "working" cue when the GUI
-    // thread is blocked by a synchronous device-comms slot.
-    property bool busy: false
     property int configuredModuleCount: 0
     property int previousConnectorState: LIFUConnector.state
     
@@ -160,6 +155,13 @@ Rectangle {
         triggerPulseCount.text = settings.pulseCount.toString()
         triggerPulseTrainInterval.text = settings.trainInterval.toString()
         triggerPulseTrainCount.text = settings.trainCount.toString()
+
+        if (!LIFUConnector.txConnected && settings.numModules && settings.numModules > 0) {
+            var idx = numModulesComboBox.model.indexOf(settings.numModules)
+            if (idx >= 0) {
+                numModulesComboBox.currentIndex = idx
+            }
+        }
 
         updateTrainIntervalValidation()
     }
@@ -303,75 +305,20 @@ Rectangle {
         }
     }
 
-    // Keep a button visually depressed while its click work executes,
-    // and raise a page-wide BusyOverlay so the rest of the UI shows a
-    // visible "working" cue (and is non-interactive) while the
-    // synchronous device-comms action runs.
-    //
-    // We deliberately use a Timer rather than Qt.callLater here:
-    // Qt.callLater fires inside the same event-loop tick BEFORE the
-    // scene graph paints, so the overlay would never actually appear
-    // before the synchronous action blocks the GUI thread. A short
-    // Timer interval (~50 ms) gives Qt at least one render frame to
-    // paint the overlay first.
+    // Keep a button visually depressed while its click work executes.
     function runWithButtonFeedback(button, action) {
-        if (!button || !action || button.visualPressed || busyActionTimer.running) {
+        if (!button || !action || button.visualPressed) {
             return
         }
 
         button.visualPressed = true
-        controllerPage.busy = true
-        busyActionTimer.pendingButton = button
-        busyActionTimer.pendingAction = action
-        busyActionTimer.start()
-    }
-
-    // Lighter-weight variant for direct-edit commits (no button to
-    // depress, just the page-wide BusyOverlay). Used by the
-    // onEditingFinished handlers so the user gets a brief spinner
-    // while directSet calls block the GUI thread.
-    function runBusy(action) {
-        if (!action || busyActionTimer.running) {
-            return
-        }
-        controllerPage.busy = true
-        busyActionTimer.pendingButton = null
-        busyActionTimer.pendingAction = action
-        busyActionTimer.start()
-    }
-
-    // Standard onEditingFinished handler for the parameter TextFields:
-    // if the field is dirty, run the matching commit through the busy
-    // timer and clear dirty on success.
-    function commitDirtyField(field, commitFn) {
-        if (!field || !field.dirty) {
-            return
-        }
-        runBusy(function() {
-            if (commitFn()) {
-                field.dirty = false
+        Qt.callLater(function() {
+            try {
+                action()
+            } finally {
+                button.visualPressed = false
             }
         })
-    }
-
-    Timer {
-        id: busyActionTimer
-        interval: 50
-        repeat: false
-        property var pendingAction: null
-        property var pendingButton: null
-        onTriggered: {
-            var act = pendingAction
-            var btn = pendingButton
-            pendingAction = null
-            pendingButton = null
-            try {
-                if (act) act()
-            } finally {
-                if (btn) btn.visualPressed = false
-                controllerPage.busy = false
-            }
-        }
     }
 
     function getTXIndicatorColor() {
@@ -381,10 +328,7 @@ Rectangle {
         if (LIFUConnector.state === 3) {
             return "#269cf6"  // blue: sonication running
         }
-        if (LIFUConnector.state < 2) {
-            return "#0f5d24"  // dark green: connected, not yet configured
-        }
-        return "#1f963d"  // green: configured / ready
+        return "#1f963d"  // green: connected
     }
 
     function getHVIndicatorColor() {
@@ -393,9 +337,6 @@ Rectangle {
         }
         if (hvOn) {
             return "#269cf6"  // blue: HV rail energized
-        }
-        if (LIFUConnector.state < 2) {
-            return "#0f5d24"  // dark green: connected, not yet configured
         }
         return "#1f963d"  // green: connected, rail off
     }
@@ -508,8 +449,8 @@ Rectangle {
         width: 480
         height: 200
         property string errorMessage: ""
-        x: (controllerPage.width - width) / 2
-        y: (controllerPage.height - height) / 2
+        x: (demoPage.width - width) / 2
+        y: (demoPage.height - height) / 2
 
         background: Rectangle {
             color: "#1E1E20"
@@ -543,13 +484,13 @@ Rectangle {
 
     Dialog {
         id: loadPresetDialog
-        title: "Load Solution"
+        title: "Load Preset"
         modal: true
         focus: true
         width: 420
         height: 230
-        x: (controllerPage.width - width) / 2
-        y: (controllerPage.height - height) / 2
+        x: (demoPage.width - width) / 2
+        y: (demoPage.height - height) / 2
 
         background: Rectangle {
             color: "#1E1E20"
@@ -668,8 +609,8 @@ Rectangle {
         focus: true
         width: 520
         height: 380
-        x: (controllerPage.width - width) / 2
-        y: (controllerPage.height - height) / 2
+        x: (demoPage.width - width) / 2
+        y: (demoPage.height - height) / 2
 
         background: Rectangle {
             color: "#1E1E20"
@@ -758,13 +699,13 @@ Rectangle {
 
                 Button {
                     text: "Save as Default"
-                    enabled: LIFUConnector.queryNumModulesConnected > 0
+                    enabled: numModulesComboBox.currentValue > 0
                     onClicked: {
                         var saveDefaultOk = LIFUConnector.saveSolutionToFile(
                             "default_solution",
                             saveSolutionNameField.text.trim().length > 0 ? saveSolutionNameField.text : "Default Solution",
                             LIFUConnector.getDefaultSolutionFilePath(),
-                            LIFUConnector.queryNumModulesConnected.toString(),
+                            numModulesComboBox.currentValue.toString(),
                             xInput.text, yInput.text, zInput.text,
                             frequencyInput.text, voltage.text,
                             triggerPulseInterval.text, triggerPulseCount.text,
@@ -784,13 +725,13 @@ Rectangle {
 
                 Button {
                     text: "Save"
-                    enabled: saveSolutionIdField.text.trim().length > 0 && saveSolutionPath.trim().length > 0 && LIFUConnector.queryNumModulesConnected > 0
+                    enabled: saveSolutionIdField.text.trim().length > 0 && saveSolutionPath.trim().length > 0 && numModulesComboBox.currentValue > 0
                     onClicked: {
                         var saveOk = LIFUConnector.saveSolutionToFile(
                             saveSolutionIdField.text,
                             saveSolutionNameField.text,
                             saveSolutionPath,
-                            LIFUConnector.queryNumModulesConnected.toString(),
+                            numModulesComboBox.currentValue.toString(),
                             xInput.text, yInput.text, zInput.text,
                             frequencyInput.text, voltage.text,
                             triggerPulseInterval.text, triggerPulseCount.text,
@@ -815,7 +756,7 @@ Rectangle {
 
     // HEADER
     Text {
-        text: "Device Controller"
+        text: "Focused Ultrasound Demo"
         font.pixelSize: 18
         font.weight: Font.Bold
         color: "white"
@@ -904,7 +845,11 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: commitDirtyField(voltage, commitVoltage)
+                            onEditingFinished: {
+                                if (dirty && commitVoltage()) {
+                                    dirty = false
+                                }
+                            }
                         }
                     }
                 }
@@ -1005,7 +950,11 @@ Rectangle {
                             }
                             onTextChanged: updateTrainIntervalValidation()
                             onTextEdited: dirty = true
-                            onEditingFinished: commitDirtyField(triggerPulseInterval, commitSequence)
+                            onEditingFinished: {
+                                if (dirty && commitSequence()) {
+                                    dirty = false
+                                }
+                            }
                         }
 
                         Text { 
@@ -1041,7 +990,11 @@ Rectangle {
                             }
                             onTextChanged: updateTrainIntervalValidation()
                             onTextEdited: dirty = true
-                            onEditingFinished: commitDirtyField(triggerPulseCount, commitSequence)
+                            onEditingFinished: {
+                                if (dirty && commitSequence()) {
+                                    dirty = false
+                                }
+                            }
                         }
 
                         Text { 
@@ -1077,7 +1030,11 @@ Rectangle {
                             }
                             onTextChanged: updateTrainIntervalValidation()
                             onTextEdited: dirty = true
-                            onEditingFinished: commitDirtyField(triggerPulseTrainInterval, commitSequence)
+                            onEditingFinished: {
+                                if (dirty && commitSequence()) {
+                                    dirty = false
+                                }
+                            }
                         }
 
                         Text { 
@@ -1112,7 +1069,11 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: commitDirtyField(triggerPulseTrainCount, commitSequence)
+                            onEditingFinished: {
+                                if (dirty && commitSequence()) {
+                                    dirty = false
+                                }
+                            }
                         }
                     }
                 }
@@ -1169,7 +1130,11 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: commitDirtyField(frequencyInput, commitPulse)
+                            onEditingFinished: {
+                                if (dirty && commitPulse()) {
+                                    dirty = false
+                                }
+                            }
                         }
 
                         Text { 
@@ -1204,7 +1169,11 @@ Rectangle {
                                 radius: 4
                             }
                             onTextEdited: dirty = true
-                            onEditingFinished: commitDirtyField(durationInput, commitPulse)
+                            onEditingFinished: {
+                                if (dirty && commitPulse()) {
+                                    dirty = false
+                                }
+                            }
                         }
 
                         // Beam Focus spans the full grid width below the Frequency/Duration rows.
@@ -1248,7 +1217,11 @@ Rectangle {
                                         radius: 4
                                     }
                                     onTextEdited: dirty = true
-                                    onEditingFinished: commitDirtyField(xInput, commitPulse)
+                                    onEditingFinished: {
+                                        if (dirty && commitPulse()) {
+                                            dirty = false
+                                        }
+                                    }
                                 }
                             }
 
@@ -1286,7 +1259,11 @@ Rectangle {
                                         radius: 4
                                     }
                                     onTextEdited: dirty = true
-                                    onEditingFinished: commitDirtyField(yInput, commitPulse)
+                                    onEditingFinished: {
+                                        if (dirty && commitPulse()) {
+                                            dirty = false
+                                        }
+                                    }
                                 }
                             }
 
@@ -1324,7 +1301,11 @@ Rectangle {
                                         radius: 4
                                     }
                                     onTextEdited: dirty = true
-                                    onEditingFinished: commitDirtyField(zInput, commitPulse)
+                                    onEditingFinished: {
+                                        if (dirty && commitPulse()) {
+                                            dirty = false
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1490,12 +1471,27 @@ Rectangle {
                         }
 
                         Text {
-                            text: "Modules: " + LIFUConnector.queryNumModulesConnected
+                            text: "Modules:"
                             font.pixelSize: 12
                             color: "#BDC3C7"
                             verticalAlignment: Text.AlignVCenter
                         }
 
+                        ComboBox {
+                            id: numModulesComboBox
+                            model: [1, 2]
+                            currentIndex: 0
+                            enabled: !LIFUConnector.txConnected && !solutionLoaded
+                            implicitWidth: 68
+                            implicitHeight: 26
+                            font.pixelSize: 12
+                            background: Rectangle {
+                                color: "#222"
+                                border.color: numModulesComboBox.enabled ? "#999" : "#555"
+                                radius: 4
+                            }
+                            onCurrentValueChanged: LIFUConnector.setManualNumModules(currentValue)
+                        }
                         
                         Text {
                             text: "HV Enable:"
@@ -1673,7 +1669,7 @@ Rectangle {
                             // device is not actively transmitting. Re-clicking
                             // re-pushes the current field values as the active
                             // solution.
-                            enabled: LIFUConnector.txConnected && LIFUConnector.state <2 && !visualPressed
+                            enabled: LIFUConnector.txConnected && LIFUConnector.state !== 3 && !visualPressed
                             background: Rectangle {
                                 color: (configureButton.down || configureButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
@@ -1682,6 +1678,7 @@ Rectangle {
                             onClicked: {
                                 runWithButtonFeedback(configureButton, function() {
                                     resetProgressIdle()
+                                    var frequency = (1.0 / parseFloat(triggerPulseInterval.text)).toString()
                                     LIFUConnector.configure_transmitter(xInput.text, yInput.text,
                                         zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
                                         triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
@@ -1835,6 +1832,7 @@ Rectangle {
         }
 
         function onPlotGenerated(imageData) {
+            console.log("Received image data for display.");
             ultrasoundGraph.updateImage("data:image/png;base64," + imageData);
             statusOverrideText = "";
         }
@@ -1931,6 +1929,9 @@ Rectangle {
 
         function onNumModulesUpdated() {
             configuredModuleCount = LIFUConnector.queryNumModulesConnected
+            var hwModules = LIFUConnector.queryNumModulesConnected
+            numModulesComboBox.currentIndex = numModulesComboBox.model.indexOf(hwModules) >= 0
+                ? numModulesComboBox.model.indexOf(hwModules) : 0
         }
 
         function onMonVoltagesReceived(voltages) {
@@ -1966,16 +1967,6 @@ Rectangle {
                 everConfigured = true
             } else {
                 everConfigured = false
-                // Dropping below CONFIGURED (e.g. after Reset) stops the
-                // backend telemetry polling, so blank the cached readings
-                // rather than leaving stale values on screen.
-                if (previousConnectorState >= 2) {
-                    clearStatusTelemetry();
-                    // Also clear the progress UI so a navigation-triggered
-                    // reset (e.g. switching to Settings) doesn't leave a
-                    // stale "stopped" / "finished" banner behind.
-                    resetProgressIdle()
-                }
             }
             if (crossedConfiguredBoundary) {
                 clearAllDirty()
@@ -1994,10 +1985,5 @@ Rectangle {
 
     Component.onDestruction: {
         console.log("Closing UI, clearing LIFUConnector...");
-    }
-
-    BusyOverlay {
-        id: busyOverlay
-        visible: controllerPage.busy
     }
 }

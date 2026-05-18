@@ -137,6 +137,7 @@ Rectangle {
     }
 
     function updateStates() {
+        console.log("Updating all states...")
         LIFUConnector.queryHvInfo()
         LIFUConnector.queryHvTemperature()
         LIFUConnector.queryPowerStatus() // Query power status
@@ -156,6 +157,7 @@ Rectangle {
         interval: 500   // Delay to ensure HV is stable before fetching info
         running: false
         onTriggered: {
+            console.log("Fetching Firmware Version and Device ID...")
             updateStates()
         }
     }
@@ -168,6 +170,7 @@ Rectangle {
             if (LIFUConnector.hvConnected) {
                 infoTimer.start()          // One-time info fetch
             } else {
+                console.log("HV Disconnected - Clearing Data...")
                 firmwareVersion = "N/A"
                 deviceId = "N/A"
                 temperature1 = 0.0
