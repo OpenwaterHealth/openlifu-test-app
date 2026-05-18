@@ -9,7 +9,10 @@ Rectangle {
     radius: 0
     color: "#2C3E50" // Dark sidebar background
 
-    // Current active button index
+    // Current active button index. The parent owns this value (binds it
+    // from its own active-tab state); we just emit buttonClicked and let
+    // the parent decide whether to honor the click. Don't reassign this
+    // property internally or the binding will break.
     property int activeButtonIndex: 0
 
     // Signal to handle button clicks
@@ -17,7 +20,6 @@ Rectangle {
 
     // Reusable function for button handling
     function handleButtonClick(index) {
-        activeButtonIndex = index;
         buttonClicked(index);
     }
 
@@ -26,76 +28,17 @@ Rectangle {
         spacing: 20
         Layout.alignment: Qt.AlignVCenter
 
-        // Demo Button
-        IconButton {
-            buttonIcon: "\ueb34"
-            buttonText: "Demo"
-            Layout.alignment: Qt.AlignHCenter
-            backgroundColor: sidebarMenu.activeButtonIndex === 0 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 0 ? "#2C3E50" : "#BDC3C7"
-            onClicked: {
-                sidebarMenu.handleButtonClick(0); // Call the global function
-            }
-        }
+        Repeater {
+            model: (typeof appTabs !== "undefined" && appTabs) ? appTabs : []
 
-        // Test Button
-        IconButton {
-            buttonIcon: "\ueab9"
-            buttonText: "Transmitter"
-            enabled: true
-            Layout.alignment: Qt.AlignHCenter
-            backgroundColor: sidebarMenu.activeButtonIndex === 1 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 1 ? "#2C3E50" : "#BDC3C7"
-            onClicked: {
-                sidebarMenu.handleButtonClick(1); // Call the global function
-            }
-        }
-
-        // Console Button
-        IconButton {
-            buttonIcon: "\ueaae"
-            buttonText: "Console"
-            enabled: true
-            Layout.alignment: Qt.AlignHCenter
-            backgroundColor: sidebarMenu.activeButtonIndex === 2 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 2 ? "#2C3E50" : "#BDC3C7"
-            onClicked: {
-                sidebarMenu.handleButtonClick(2); // Call the global function
-            }
-        }
-        
-        IconButton {
-            buttonIcon: "\ueb21"
-            buttonText: "Verification"
-            Layout.alignment: Qt.AlignHCenter
-            backgroundColor: sidebarMenu.activeButtonIndex === 3 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 3 ? "#2C3E50" : "#BDC3C7"
-            onClicked: {
-                sidebarMenu.handleButtonClick(3); // Call the global function
-            }
-        }
-        
-        IconButton {
-            buttonIcon: "\ueb2f"
-            buttonText: "Support"
-            Layout.alignment: Qt.AlignHCenter
-            backgroundColor: sidebarMenu.activeButtonIndex === 4 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 4 ? "#2C3E50" : "#BDC3C7"
-            onClicked: {
-                sidebarMenu.handleButtonClick(4); // Call the global function
-            }
-        }
-
-        // Settings Button
-        IconButton {
-            buttonIcon: "\ueabf"
-            buttonText: "Settings"
-            enabled: true
-            Layout.alignment: Qt.AlignHCenter
-            backgroundColor: sidebarMenu.activeButtonIndex === 5 ? "white" : "transparent"
-            iconColor: sidebarMenu.activeButtonIndex === 5 ? "#2C3E50" : "#BDC3C7"
-            onClicked: {
-                sidebarMenu.handleButtonClick(5); // Call the global function
+            IconButton {
+                buttonIcon: modelData.icon
+                buttonText: modelData.label
+                enabled: true
+                Layout.alignment: Qt.AlignHCenter
+                backgroundColor: sidebarMenu.activeButtonIndex === index ? "white" : "transparent"
+                iconColor: sidebarMenu.activeButtonIndex === index ? "#2C3E50" : "#BDC3C7"
+                onClicked: sidebarMenu.handleButtonClick(index)
             }
         }
     }
