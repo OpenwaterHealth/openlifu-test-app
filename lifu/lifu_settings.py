@@ -80,10 +80,18 @@ class SettingsMixin:
 
     @pyqtSlot(result=str)
     def readHvFirmwareVersion(self) -> str:
-        """Read and return the current console (HV) firmware version."""
+        """Read and return the current console (HV) firmware version.
+
+        Cached after first call; cleared on HV disconnect or after a
+        successful console firmware update.
+        """
+        if self._cached_hv_fw_version is not None:
+            self.fwVersionRead.emit("console", self._cached_hv_fw_version)
+            return self._cached_hv_fw_version
         self._interface_mutex.lock()
         try:
             version = self.interface.hvcontroller.get_version()
+            self._cached_hv_fw_version = version
             self.fwVersionRead.emit("console", version)
             logger.info(f"Console firmware version: {version}")
             return version
@@ -101,10 +109,19 @@ class SettingsMixin:
 
     @pyqtSlot(int, result=str)
     def readTxFirmwareVersion(self, module: int) -> str:
-        """Read and return the current transmitter firmware version for a given module."""
+        """Read and return the current transmitter firmware version for a given module.
+
+        Cached per-module after first call; cleared on TX disconnect or
+        after a successful transmitter firmware update.
+        """
+        cached = self._cached_tx_fw_version.get(module)
+        if cached is not None:
+            self.fwVersionRead.emit(f"transmitter_{module}", cached)
+            return cached
         self._interface_mutex.lock()
         try:
             version = self.interface.txdevice.get_version(module=module)
+            self._cached_tx_fw_version[module] = version
             self.fwVersionRead.emit(f"transmitter_{module}", version)
             logger.info(f"Transmitter module {module} firmware version: {version}")
             return version
@@ -153,6 +170,8 @@ class SettingsMixin:
                 )
                 self.fwUpdateStatus.emit("console", True, "Console firmware update complete.")
                 logger.info("Console firmware update complete.")
+                # New firmware -> cached version/HWID is stale.
+                self._invalidate_device_caches("HV")
             except Exception as e:
                 msg = f"Console update failed: {e}"
                 logger.error(msg)
@@ -189,6 +208,8 @@ class SettingsMixin:
                 )
                 self.fwUpdateStatus.emit("transmitter", True, f"Transmitter module {module} firmware update complete.")
                 logger.info(f"Transmitter module {module} firmware update complete.")
+                # New firmware -> cached per-module FW/HWID is stale.
+                self._invalidate_device_caches("TX")
             except Exception as e:
                 msg = f"Transmitter module {module} update failed: {e}"
                 logger.error(msg)

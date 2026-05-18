@@ -31,7 +31,15 @@ class ConsoleMixin:
 
     @pyqtSlot()
     def queryHvInfo(self):
-        """Fetch and emit device information."""
+        """Fetch and emit console firmware/HWID. Cached after first call;
+        subsequent calls just re-emit the cached values so QML pages that
+        bind to ``hvDeviceInfoReceived`` still update on page-load without
+        triggering a duplicate UART round-trip. Cache is cleared on
+        disconnect (see ``LIFUConnector.on_disconnected``)."""
+        if self._cached_hv_info is not None:
+            fw_version, device_id = self._cached_hv_info
+            self.hvDeviceInfoReceived.emit(fw_version, device_id)
+            return
         self._interface_mutex.lock()
         try:
             fw_version = self.interface.hvcontroller.get_version()
@@ -42,6 +50,7 @@ class ConsoleMixin:
                 device_id = hw_id
             else:
                 device_id = 'N/A'
+            self._cached_hv_info = (fw_version, device_id)
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
             logger.info(f"Console - Firmware Version: {fw_version}, HWID: {device_id}")
         except LIFUError as e:
@@ -78,6 +87,9 @@ class ConsoleMixin:
                 self._emit_device_error("Set RGB State", f"Invalid RGB state value: {state}")
                 return
             self.interface.hvcontroller.set_rgb_led(state)
+            # Cached value is now stale; clear so the next queryRGBState()
+            # re-reads from the device (the firmware may clamp/remap).
+            self._cached_rgb_state = None
             logger.info(f"RGB state set to: {state}")
         except LIFUError as e:
             self._handle_lifu_error("Set RGB State", e)
@@ -91,11 +103,17 @@ class ConsoleMixin:
 
     @pyqtSlot()
     def queryRGBState(self):
-        """Fetch and emit RGB state."""
+        """Fetch and emit RGB state. Cached after first call; ``setRGBState``
+        invalidates the cache so a subsequent query re-reads the device."""
+        if self._cached_rgb_state is not None:
+            state, state_text = self._cached_rgb_state
+            self.rgbStateReceived.emit(state, state_text)
+            return
         self._interface_mutex.lock()
         try:
             state = self.interface.hvcontroller.get_rgb_led()
             state_text = {0: "Off", 1: "Red", 2: "Green", 3: "Blue"}.get(state, "Unknown")
+            self._cached_rgb_state = (state, state_text)
             logger.info(f"RGB State: {state_text}")
             self.rgbStateReceived.emit(state, state_text)
         except LIFUError as e:
