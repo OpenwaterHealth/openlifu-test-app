@@ -55,9 +55,9 @@ Python example UI for OPEN LIFU used for Hardware Testing and Basic Usage
    python main.py
    ```
 
-## Controller Input Units
+## Demo Input Units
 
-The Controller page displays a few timing and frequency fields in operator-friendly units. Internally, solution data and device configuration still use SI base units.
+The Demo page displays a few timing and frequency fields in operator-friendly units. Internally, solution data and device configuration still use SI base units.
 
 - **Frequency** in the UI is shown in **kHz**.
    - Example: `400` in the UI is stored/sent as `400000` Hz.
