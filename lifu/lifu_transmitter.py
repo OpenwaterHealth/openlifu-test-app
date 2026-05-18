@@ -33,7 +33,15 @@ class TransmitterMixin:
 
     @pyqtSlot()
     def queryTxInfo(self):
-        """Fetch and emit device information for all TX modules as a list."""
+        """Fetch and emit device information for all TX modules as a list.
+
+        Cached after first call; cleared on TX disconnect or after a
+        successful transmitter firmware update so a re-flashed module's
+        new version replaces the cached entry.
+        """
+        if self._cached_tx_info is not None:
+            self.txDeviceInfoReceived.emit(self._cached_tx_info)
+            return
         self._interface_mutex.lock()
         try:
             module_count = self.interface.txdevice.get_module_count()
@@ -55,12 +63,15 @@ class TransmitterMixin:
                     device_id = hw_id
                 else:
                     device_id = 'N/A'
-                logger.info(f"Module {module_idx} - Firmware Version: {fw_version}, HWID: {device_id}")
+                logger.info(
+                    f"Module {module_idx} - Firmware Version: {fw_version}, HWID: {device_id}"
+                )
                 modules_info.append({
                     "module": module_idx,
                     "firmwareVersion": fw_version,
                     "deviceId": device_id
                 })
+            self._cached_tx_info = modules_info
             self.txDeviceInfoReceived.emit(modules_info)
         except LIFUError as e:
             self._handle_lifu_error("TX Info", e)

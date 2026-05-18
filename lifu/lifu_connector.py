@@ -237,6 +237,24 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._temp_poll_failures = 0  # consecutive temperature poll failures
         self._monitoring_paused = False  # set True while diagnostics tab is active
 
+        # ----- Cached static device-info -----
+        # Each ``queryXxxInfo`` / ``readXxxFirmwareVersion`` slot is
+        # invoked by every QML page on its own ``Component.onCompleted``
+        # (Console, Settings, Transmitter, Support all need the same
+        # firmware/HWID strings to populate their headers). Without a
+        # cache, every page triggers an independent UART round-trip and
+        # logs the same line again. With these caches the first call
+        # after connect hits the device and emits + logs; subsequent
+        # calls just re-emit the cached values so QML signal handlers
+        # still fire. Caches are cleared in ``on_disconnected`` (and on
+        # firmware-update completion) so a fresh device or new firmware
+        # is picked up the next time a page asks.
+        self._cached_hv_info: tuple[str, str] | None = None         # (fw, hwid)
+        self._cached_hv_fw_version: str | None = None
+        self._cached_rgb_state: tuple[int, str] | None = None        # (code, label)
+        self._cached_tx_info: list[dict] | None = None              # per-module dicts
+        self._cached_tx_fw_version: dict[int, str] = {}             # module -> version
+
         # Solution loading state
         self._solution_loaded = False
         self._loaded_solution_data = None
@@ -330,6 +348,22 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self.deviceError.emit(title, message)
         except Exception as e:
             logger.error(f"Failed to emit deviceError signal: {e}")
+
+    def _invalidate_device_caches(self, side: str) -> None:
+        """Drop cached device-info so the next query slot re-fetches from
+        the hardware. Called on disconnect (so a freshly plugged-in
+        device shows its true firmware/HWID) and after firmware updates
+        complete (so the new version replaces the cached old one).
+
+        ``side`` is ``"HV"``, ``"TX"`` or ``"all"``.
+        """
+        if side in ("HV", "all"):
+            self._cached_hv_info = None
+            self._cached_hv_fw_version = None
+            self._cached_rgb_state = None
+        if side in ("TX", "all"):
+            self._cached_tx_info = None
+            self._cached_tx_fw_version = {}
 
     def _handle_lifu_error(self, title: str, exc: BaseException, context: str = ""):
         """Format a caught LIFUError (or other exception) and emit a popup.
@@ -580,9 +614,11 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             # The unsolicited STATUS stream is gone with the TX port; clear
             # our tracker so a future reconnect doesn't think it's still on.
             self._async_mode_enabled = False
+            self._invalidate_device_caches("TX")
         elif descriptor == "HV":
             self._hvConnected = False
             self._hv_poll_failures = 0
+            self._invalidate_device_caches("HV")
             # If HV was set to "ON" mode, automatically switch to "OFF" when disconnected
             if self._hv_enable_mode == HV_EN_ON:  # ON mode
                 self._hv_enable_mode = HV_EN_OFF  # Switch to OFF
