@@ -2,6 +2,7 @@ import QtQuick 6.0
 import QtQuick.Controls 6.0
 import QtQuick.Layouts 6.0
 import QtQuick.Dialogs
+import "../components"
 
 Rectangle {
     id: controllerPage
@@ -33,6 +34,10 @@ Rectangle {
     // "ON" mode lights up the LED even when the system isn't transmitting.
     property bool hvOn: false
     property string statusOverrideText: ""
+    // True while a runWithButtonFeedback action is executing. Drives the
+    // BusyOverlay so users get a visible "working" cue when the GUI
+    // thread is blocked by a synchronous device-comms slot.
+    property bool busy: false
     property int configuredModuleCount: 0
     property int previousConnectorState: LIFUConnector.state
     
@@ -298,20 +303,47 @@ Rectangle {
         }
     }
 
-    // Keep a button visually depressed while its click work executes.
+    // Keep a button visually depressed while its click work executes,
+    // and raise a page-wide BusyOverlay so the rest of the UI shows a
+    // visible "working" cue (and is non-interactive) while the
+    // synchronous device-comms action runs.
+    //
+    // We deliberately use a Timer rather than Qt.callLater here:
+    // Qt.callLater fires inside the same event-loop tick BEFORE the
+    // scene graph paints, so the overlay would never actually appear
+    // before the synchronous action blocks the GUI thread. A short
+    // Timer interval (~50 ms) gives Qt at least one render frame to
+    // paint the overlay first.
     function runWithButtonFeedback(button, action) {
-        if (!button || !action || button.visualPressed) {
+        if (!button || !action || button.visualPressed || busyActionTimer.running) {
             return
         }
 
         button.visualPressed = true
-        Qt.callLater(function() {
+        controllerPage.busy = true
+        busyActionTimer.pendingButton = button
+        busyActionTimer.pendingAction = action
+        busyActionTimer.start()
+    }
+
+    Timer {
+        id: busyActionTimer
+        interval: 50
+        repeat: false
+        property var pendingAction: null
+        property var pendingButton: null
+        onTriggered: {
+            var act = pendingAction
+            var btn = pendingButton
+            pendingAction = null
+            pendingButton = null
             try {
-                action()
+                if (act) act()
             } finally {
-                button.visualPressed = false
+                if (btn) btn.visualPressed = false
+                controllerPage.busy = false
             }
-        })
+        }
     }
 
     function getTXIndicatorColor() {
@@ -1815,7 +1847,6 @@ Rectangle {
         }
 
         function onPlotGenerated(imageData) {
-            console.log("Received image data for display.");
             ultrasoundGraph.updateImage("data:image/png;base64," + imageData);
             statusOverrideText = "";
         }
@@ -1975,5 +2006,10 @@ Rectangle {
 
     Component.onDestruction: {
         console.log("Closing UI, clearing LIFUConnector...");
+    }
+
+    BusyOverlay {
+        id: busyOverlay
+        visible: controllerPage.busy
     }
 }

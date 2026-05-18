@@ -85,10 +85,12 @@ def build_app_tabs():
 def main():
     args = parse_arguments()
 
-    # Apply the requested log level to the lifu connector's logger
-    # before any of its modules log anything interesting. The module
-    # lives at ``lifu/lifu_connector.py`` so its ``__name__`` (and
-    # therefore the logger name) is ``lifu.lifu_connector``.
+    # Apply the requested log level to the lifu package logger before
+    # any of its modules log anything interesting. The handler is
+    # attached to the ``lifu`` package logger in ``lifu_connector.py``
+    # so every submodule (lifu.lifu_controller, lifu.lifu_settings,
+    # lifu.lifu_transmitter, ...) inherits it; setting the level here
+    # at the package level controls all of them at once.
     level_name = str(args.loglevel).upper()
     level = logging.getLevelName(level_name)
     if not isinstance(level, int):
@@ -97,7 +99,7 @@ def main():
             file=sys.stderr,
         )
         level = logging.INFO
-    logging.getLogger("lifu.lifu_connector").setLevel(level)
+    logging.getLogger("lifu").setLevel(level)
 
     # Tell Windows to treat this as its own app (not python.exe) so the
     # taskbar shows our icon instead of the Python icon.

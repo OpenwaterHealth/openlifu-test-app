@@ -17,7 +17,6 @@ Rectangle {
     property bool loading: false
 
     function updateStates() {
-        console.log("Updating all states...")
         loading = true
         queryTimer.start()
     }
@@ -35,7 +34,6 @@ Rectangle {
         interval: 1500   // Delay to ensure TX is stable before fetching info
         running: false
         onTriggered: {
-            console.log("Fetching Firmware Version and Device ID...")
             updateStates()
         }
     }
