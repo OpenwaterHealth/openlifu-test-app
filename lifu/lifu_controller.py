@@ -144,6 +144,7 @@ class ControllerMixin:
 
     @pyqtSlot(str, result=bool)
     def directSetVoltage(self, voltage_str):
+        logger.info(f"Directly setting voltage to {voltage_str} V")
         """Directly set the HV rail voltage without reconfiguring the solution."""
         if not self._hvConnected:
             logger.error("Cannot set voltage: No HV device connected")
@@ -157,7 +158,7 @@ class ControllerMixin:
                 voltage=voltage,
             )
             if ok:
-                logger.info(f"Voltage directly set to {voltage} V")
+                logger.info(f"Voltage set to {voltage} V")
                 return True
             logger.error("Failed to directly set voltage")
             return False
@@ -186,6 +187,7 @@ class ControllerMixin:
     @pyqtSlot(str, str, str, str, str, result=bool)
     def directSetSequence(self, pulseInterval, pulseCount, trainInterval, trainCount, mode):
         """Directly update trigger/sequence parameters without re-running the full configuration."""
+        logger.info(f"Directly setting sequence parameters: pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
             self._emit_device_error("Set Sequence", "No TX device connected.")
             return False
@@ -215,11 +217,7 @@ class ControllerMixin:
                 trigger_mode=trigger_mode,
             )
             self._update_trigger_state(result)
-            logger.info(
-                "Sequence settings directly updated "
-                "(pulse_int=%sms pulses=%s train_int=%ss trains=%s mode=%s)",
-                pulseInterval, pulseCount, trainInterval, trainCount, mode,
-            )
+            logger.info("Sequence settings updated.")
             return True
         except LIFUCommunicationError as e:
             # All retries exhausted. The on-device trigger config is
@@ -249,6 +247,7 @@ class ControllerMixin:
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, result=bool)
     def directSetPulse(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
         """Directly update pulse/transducer settings without touching the HV controller."""
+        logger.info(f"Directly setting pulse parameters: voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
             self._emit_device_error("Set Pulse", "No TX device connected.")
             return False
@@ -282,15 +281,7 @@ class ControllerMixin:
                 sequence=solution['sequence'],
                 trigger_mode=str(mode).lower(),
             )
-            logger.info(
-                "Pulse settings directly updated "
-                "(voltage=%sV freq=%skHz focus=(%s,%s,%s)mm "
-                "pulse_len=%sus pulse_int=%sms pulses=%s "
-                "train_int=%ss trains=%s mode=%s)",
-                voltage, freq, xInput, yInput, zInput,
-                durationS, pulseInterval, pulseCount,
-                trainInterval, trainCount, mode,
-            )
+            logger.info("Pulse settings directly updated.")
             return True
         except LIFUCommunicationError as e:
             # All retries exhausted. The on-device pulse/solution is
@@ -317,6 +308,10 @@ class ControllerMixin:
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
         """Simulate configuring the transmitter."""
+        logger.info("Configuring transmitter with parameters: "
+                    f"voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm "
+                    f"pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} "
+                    f"train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
             self._emit_device_error("Configure Transmitter", "No TX device connected.")
             return
@@ -349,12 +344,7 @@ class ControllerMixin:
             self._configured = True
             self.update_state()
             self._apply_auto_hv_for_state()
-            logger.info(
-                f"[CONFIGURE] Transmitter configured: "
-                f"voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm "
-                f"pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} "
-                f"train_int={trainInterval}s trains={trainCount} mode={mode}"
-            )
+            logger.info(f"[CONFIGURE] Transmitter configured successfully")
         except LIFUCommunicationError as e:
             self._configured = False
             self.update_state()
