@@ -545,18 +545,22 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self.queryTxTemperature()
         if self._tx_poll_failures >= self._TX_POLL_FAIL_LIMIT:
             logger.warning(
-                "TX: %d consecutive poll failures - closing interface and triggering disconnect",
+                "TX: %d consecutive poll failures - dropping port and triggering disconnect",
                 self._TX_POLL_FAIL_LIMIT,
             )
             self._tx_poll_failures = 0
-            # Close the underlying TX port so the SDK actually drops the
-            # connection; on_disconnected only updates flags/signals and
-            # would leave the SDK in a still-connected (but failing)
-            # state otherwise.
+            # Drop the underlying TX serial port so the SDK actually releases
+            # the connection; on_disconnected only updates flags/signals and
+            # would leave the SDK in a still-connected (but failing) state
+            # otherwise. IMPORTANT: use disconnect() (not close()) so the
+            # SDK's USB monitor thread keeps running and can auto-reconnect
+            # when the device returns after e.g. a power cycle. close()
+            # would stop the monitor thread and leave the port permanently
+            # unwatched.
             try:
-                self.interface.txdevice.close()
+                self.interface.txdevice.disconnect()
             except Exception as close_exc:
-                logger.debug("TX close during failure recovery: %s", close_exc)
+                logger.debug("TX disconnect during failure recovery: %s", close_exc)
             self.on_disconnected("TX", "")
 
     def poll_hv_tick(self):
@@ -570,14 +574,19 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self.queryPowerStatus()
         if self._hv_poll_failures >= self._HV_POLL_FAIL_LIMIT:
             logger.warning(
-                "HV: %d consecutive poll failures - closing interface and triggering disconnect",
+                "HV: %d consecutive poll failures - dropping port and triggering disconnect",
                 self._HV_POLL_FAIL_LIMIT,
             )
             self._hv_poll_failures = 0
+            # Drop the underlying HV serial port (don't call close(), which
+            # would also stop the SDK's USB monitor thread and prevent
+            # auto-reconnect after a console power cycle). disconnect()
+            # closes the serial handle but leaves the monitor running so
+            # signal_connected fires again when the device returns.
             try:
-                self.interface.hvcontroller.close()
+                self.interface.hvcontroller.disconnect()
             except Exception as close_exc:
-                logger.debug("HV close during failure recovery: %s", close_exc)
+                logger.debug("HV disconnect during failure recovery: %s", close_exc)
             self.on_disconnected("HV", "")
             return
         self.getMonitorVoltages()
@@ -614,10 +623,22 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             # The unsolicited STATUS stream is gone with the TX port; clear
             # our tracker so a future reconnect doesn't think it's still on.
             self._async_mode_enabled = False
+            # The TX firmware loses its RAM state on power cycle, so any
+            # previously programmed solution (delays, apodizations, pulse,
+            # trigger) is gone. Re-enumerate modules and drop the
+            # "configured" flag so the UI returns to CONNECTED (not READY)
+            # on reconnect and the operator is forced to re-configure.
+            self._num_modules_connected = 0
+            self._configured = False
             self._invalidate_device_caches("TX")
         elif descriptor == "HV":
             self._hvConnected = False
             self._hv_poll_failures = 0
+            # HV firmware loses its voltage setting on power cycle, so any
+            # configured solution is no longer valid. Drop the configured
+            # flag for the same reason as above; otherwise a power cycle
+            # while configured leaves the UI in a stale READY state.
+            self._configured = False
             self._invalidate_device_caches("HV")
             # If HV was set to "ON" mode, automatically switch to "OFF" when disconnected
             if self._hv_enable_mode == HV_EN_ON:  # ON mode
