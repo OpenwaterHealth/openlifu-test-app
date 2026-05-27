@@ -315,6 +315,304 @@ Rectangle {
     }
 
     // ----------------------------------------------------------------
+    // Add Device Configuration dialog
+    //
+    // Prompts the operator for the array-level ``name`` and ``id`` fields,
+    // shows the computed ``template`` and per-module HWID list as read-only
+    // values, and on accept merges the resulting blob into the lead module's
+    // (TX 0) user_config under the ``device`` key.
+    //
+    // ``template`` is derived from (txModuleCount, freq) where ``freq`` is
+    // pulled from the user_config currently in the editor. The mapping
+    // matches openlifu.xdc.transducerarray._DEFAULT_TEMPLATE_IDS:
+    //   (1, 155) -> openlifu_1x155
+    //   (1, 400) -> openlifu_1x400
+    //   (2, 155) -> openlifu_2x155
+    //   (2, 400) -> openlifu_2x400
+    // anything else falls through to "(unsupported)" and disables OK.
+    //
+    // ``modules`` are the base58-encoded HWIDs already cached on the page
+    // via ``onTxDeviceInfoReceived`` (Settings.qml populates ``modules[i].deviceId``).
+    // ----------------------------------------------------------------
+    Popup {
+        id: addDeviceConfigDialog
+        anchors.centerIn: Overlay.overlay
+        width: 520
+        padding: 20
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+
+        // Last successfully parsed editor JSON; merged on accept.
+        property var parsedConfig: ({})
+        // Resolved values
+        property string templateId: ""
+        property var moduleHwids: []
+        property string errorText: ""
+
+        function _resolveTemplateId(parsed) {
+            // Pull freq from the user_config. The python pipeline keys on the
+            // top-level "freq" field of the user_config (see
+            // openlifu.xdc.transducerarray._DEFAULT_TEMPLATE_IDS).
+            var freq = parsed && parsed.freq
+            if (freq === undefined || freq === null) return ""
+            var nMod = settingsPage.txModuleCount
+            var key = nMod + "x" + Math.round(Number(freq))
+            var supported = {
+                "1x155": "openlifu_1x155",
+                "1x400": "openlifu_1x400",
+                "2x155": "openlifu_2x155",
+                "2x400": "openlifu_2x400",
+            }
+            return supported[key] || ""
+        }
+
+        function _collectModuleHwids() {
+            var ids = []
+            for (var i = 0; i < settingsPage.modules.length; ++i) {
+                var m = settingsPage.modules[i]
+                if (m && m.deviceId) ids.push(m.deviceId)
+            }
+            return ids
+        }
+
+        function openForCurrentConfig() {
+            errorText = ""
+            // Parse the editor text. If it fails, surface the error inside
+            // the dialog so the user can fix it.
+            try {
+                parsedConfig = JSON.parse(userConfigEditor.text)
+            } catch (e) {
+                parsedConfig = {}
+                errorText = "Editor does not contain valid JSON: " + e
+            }
+            // Prepopulate name + id from an existing device block if present.
+            var existing = (parsedConfig && parsedConfig.device) || {}
+            nameField.text = existing.name || ""
+            idField.text = existing.id || ""
+            // Compute read-only values.
+            templateId = _resolveTemplateId(parsedConfig)
+            moduleHwids = _collectModuleHwids()
+            open()
+        }
+
+        background: Rectangle {
+            color: "#1E1E20"
+            radius: 12
+            border.color: "#3E4E6F"
+            border.width: 2
+        }
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 14
+
+            Text {
+                text: "Add Device Configuration"
+                font.pixelSize: 16
+                font.weight: Font.Bold
+                color: "white"
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Text {
+                text: addDeviceConfigDialog.errorText
+                color: "#E74C3C"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+                visible: addDeviceConfigDialog.errorText.length > 0
+            }
+
+            // Name (editable)
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                Text {
+                    text: "Name"
+                    color: "#BDC3C7"
+                    font.pixelSize: 12
+                }
+                TextField {
+                    id: nameField
+                    Layout.fillWidth: true
+                    color: "white"
+                    placeholderText: "e.g. OpenLIFU 2x 400kHz"
+                    placeholderTextColor: "#7F8C8D"
+                    background: Rectangle {
+                        color: "#2A2F3B"
+                        radius: 4
+                        border.color: "#3E4E6F"
+                    }
+                }
+            }
+
+            // ID (editable)
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                Text {
+                    text: "ID"
+                    color: "#BDC3C7"
+                    font.pixelSize: 12
+                }
+                TextField {
+                    id: idField
+                    Layout.fillWidth: true
+                    color: "white"
+                    placeholderText: "e.g. openlifu_2x400_evt1"
+                    placeholderTextColor: "#7F8C8D"
+                    background: Rectangle {
+                        color: "#2A2F3B"
+                        radius: 4
+                        border.color: "#3E4E6F"
+                    }
+                }
+            }
+
+            // Template (read-only)
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                Text {
+                    text: "Template (auto)"
+                    color: "#BDC3C7"
+                    font.pixelSize: 12
+                }
+                TextField {
+                    id: templateField
+                    Layout.fillWidth: true
+                    readOnly: true
+                    color: addDeviceConfigDialog.templateId.length > 0 ? "#2ECC71" : "#E74C3C"
+                    text: addDeviceConfigDialog.templateId.length > 0
+                        ? addDeviceConfigDialog.templateId
+                        : "(unsupported: need 1 or 2 modules @ 155 or 400 kHz)"
+                    background: Rectangle {
+                        color: "#23272F"
+                        radius: 4
+                        border.color: "#3E4E6F"
+                    }
+                }
+            }
+
+            // Modules (read-only list)
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                Text {
+                    text: "Modules (HWIDs)"
+                    color: "#BDC3C7"
+                    font.pixelSize: 12
+                }
+                TextArea {
+                    id: modulesField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 60
+                    readOnly: true
+                    color: "white"
+                    font.family: "Courier New"
+                    font.pixelSize: 12
+                    wrapMode: TextArea.Wrap
+                    text: addDeviceConfigDialog.moduleHwids.length > 0
+                        ? addDeviceConfigDialog.moduleHwids.join("\n")
+                        : "(no modules)"
+                    background: Rectangle {
+                        color: "#23272F"
+                        radius: 4
+                        border.color: "#3E4E6F"
+                    }
+                }
+            }
+
+            // OK / Cancel
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+
+                Button {
+                    text: "Cancel"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 36
+                    hoverEnabled: true
+                    contentItem: Text {
+                        text: parent.text
+                        color: "#BDC3C7"
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        font.pixelSize: 14
+                    }
+                    background: Rectangle {
+                        color: parent.hovered ? "#C0392B" : "#3A3F4B"
+                        radius: 6
+                        border.color: parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                    }
+                    onClicked: addDeviceConfigDialog.close()
+                }
+
+                Button {
+                    id: addDeviceConfigOkButton
+                    text: "OK"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 36
+                    hoverEnabled: true
+                    // OK requires: parsed config, a resolved template,
+                    // non-empty id (name can be defaulted from id).
+                    enabled:
+                        addDeviceConfigDialog.errorText.length === 0 &&
+                        addDeviceConfigDialog.templateId.length > 0 &&
+                        idField.text.trim().length > 0
+                    contentItem: Text {
+                        text: parent.text
+                        color: parent.enabled ? "white" : "#7F8C8D"
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        font.pixelSize: 14
+                        font.weight: Font.Bold
+                    }
+                    background: Rectangle {
+                        color: !parent.enabled
+                            ? "#2A2F3B"
+                            : (parent.hovered ? "#27AE60" : "#3A3F4B")
+                        radius: 6
+                        border.color: !parent.enabled
+                            ? "#7F8C8D"
+                            : (parent.hovered ? "#FFFFFF" : "#BDC3C7")
+                    }
+                    onClicked: {
+                        // Build the device blob. We mirror the schema produced
+                        // by openlifu.xdc.TransducerArray.to_device_config():
+                        //   { id, name, modules: [{hwid: ...}, ...], attrs: {} }
+                        // The "transform" per module is left to the consumer
+                        // (transducerarray.from_module_user_configs falls back
+                        // to the template's per-module transform when no
+                        // explicit transform is given here).
+                        var modulesBlob = []
+                        for (var i = 0; i < addDeviceConfigDialog.moduleHwids.length; ++i) {
+                            modulesBlob.push({ "hwid": addDeviceConfigDialog.moduleHwids[i] })
+                        }
+                        var deviceBlob = {
+                            "id": idField.text.trim(),
+                            "name": nameField.text.trim() || idField.text.trim(),
+                            "template": addDeviceConfigDialog.templateId,
+                            "modules": modulesBlob,
+                            "attrs": {}
+                        }
+                        // Merge into the editor JSON, preserving existing keys.
+                        var current = {}
+                        try {
+                            current = JSON.parse(userConfigEditor.text)
+                        } catch (e) {
+                            current = addDeviceConfigDialog.parsedConfig || {}
+                        }
+                        current.device = deviceBlob
+                        userConfigEditor.text = JSON.stringify(current, null, 2)
+                        addDeviceConfigDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
     // Layout
     // ----------------------------------------------------------------
     ColumnLayout {
@@ -329,11 +627,18 @@ Rectangle {
             spacing: 16
 
             // ============================================
-            // USER CONFIG CARD (row 1 – full width, 50% height)
+            // USER CONFIG CARD (row 1 – full width)
             // ============================================
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                // Give the User Config row more vertical space than the
+                // firmware row, which has empty space at the bottom of
+                // both its cards. ``preferredHeight`` (with both rows
+                // filling height) acts as the relative weight when the
+                // parent ColumnLayout distributes leftover space.
+                Layout.preferredHeight: 650
+                Layout.minimumHeight: 300
                 color: "#1E1E20"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -557,6 +862,56 @@ Rectangle {
                             Behavior on color { ColorAnimation { duration: 150 } }
                         }
 
+                        // Add Device Configuration
+                        //
+                        // Lifts the array-level "device" block (id/name/template/modules)
+                        // into the lead module's (TX 0) user_config. Only enabled when:
+                        //   * a TX device is connected,
+                        //   * the target component is "TX 0" (the lead module),
+                        //   * the editor holds something parseable.
+                        // The actual prompt + merge happens in addDeviceConfigDialog.
+                        Rectangle {
+                            id: addDeviceConfigButton
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            // Editor non-empty?
+                            property bool editorHasContent: userConfigEditor.text.trim().length > 0
+                            // Target is TX 0 specifically?
+                            property bool targetIsLeadModule:
+                                configTargetSelector.enabled &&
+                                configTargetSelector.currentText === "TX 0"
+                            property bool canUse:
+                                LIFUConnector.txConnected &&
+                                targetIsLeadModule &&
+                                editorHasContent
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : (addDeviceConfigArea.containsMouse ? "#8E44AD" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (addDeviceConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Add Device Configuration"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: addDeviceConfigArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: addDeviceConfigButton.canUse
+                                onClicked: addDeviceConfigDialog.openForCurrentConfig()
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
                         // Load Test Report
                         Rectangle {
                             Layout.fillWidth: true
@@ -651,6 +1006,11 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                // Counterpart to the User Config row's preferred size; the
+                // firmware row gets a smaller share of leftover vertical
+                // space.
+                Layout.preferredHeight: 300
+                Layout.minimumHeight: 200
                 spacing: 16
 
                 // ============================================
