@@ -2,9 +2,27 @@
 
 **Open-LIFU Test App**
 
+**Docs Navigation:** [README](../README.md) | [Launch Options](launch-options.md) | [Controller](controller-page-user-guide.md) | [Transmitter](transmitter-page-user-guide.md) | [Console](console-page-user-guide.md) | [Settings](settings-page-user-guide.md) | [Support](support-page-user-guide.md)
+
+<a id="in-this-page"></a>
+
+## In This Page
+
+- [Overview](#overview)
+- [Page layout](#page-layout)
+- [Test sequences](#test-sequences)
+- [Right column - Device info and temperatures](#right-column-device-info-and-temperatures)
+- [Test Progress section](#test-progress-section)
+- [Typical workflow](#typical-workflow)
+- [Troubleshooting](#troubleshooting)
+
 ---
 
+<a id="overview"></a>
+
 ## Overview
+
+**[Back to top](#in-this-page)**
 
 The **Verification** page (labelled *"Verification"* in the sidebar,
 backed by `pages/Testing.qml`) hosts the long-running, automated PRD
@@ -28,7 +46,11 @@ the left sidebar. The page is hidden in `--simulate` mode.
 
 ---
 
+<a id="page-layout"></a>
+
 ## Page layout
+
+**[Back to top](#in-this-page)**
 
 | Region | Purpose |
 |--------|---------|
@@ -38,7 +60,11 @@ the left sidebar. The page is hidden in `--simulate` mode.
 
 ---
 
+<a id="test-sequences"></a>
+
 ## Test sequences
+
+**[Back to top](#in-this-page)**
 
 Pick one of the four scripts from the **Test Sequence** dropdown:
 
@@ -69,7 +95,11 @@ log path until you start a new run.
 
 ---
 
+<a id="right-column-device-info-and-temperatures"></a>
+
 ## Right column — Device info & temperatures
+
+**[Back to top](#in-this-page)**
 
 | Field | Description |
 |-------|-------------|
@@ -83,7 +113,11 @@ manually.
 
 ---
 
+<a id="test-progress-section"></a>
+
 ## Test Progress section
+
+**[Back to top](#in-this-page)**
 
 The bottom panel updates live as a script runs.
 
@@ -106,7 +140,11 @@ Status colour coding (case bar):
 
 ---
 
+<a id="typical-workflow"></a>
+
 ## Typical workflow
+
+**[Back to top](#in-this-page)**
 
 1. Connect the Console and Transmitter; confirm the right-column LED is
    green.
@@ -119,7 +157,11 @@ Status colour coding (case bar):
 
 ---
 
+<a id="troubleshooting"></a>
+
 ## Troubleshooting
+
+**[Back to top](#in-this-page)**
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
@@ -128,3 +170,8 @@ Status colour coding (case bar):
 | Stop appears to do nothing | Script is between two long-running steps | Allow a few seconds for the abort to be honoured |
 | Progress bar stays at zero | Script hasn't reached its first checkpoint yet | Check the log file path; tail the file to see live output |
 | Log file path is empty | Script crashed before opening its log | Check the application log (run with `--loglevel debug`) |
+
+---
+
+**Previous:** [Console Page - User Guide](console-page-user-guide.md)  
+**Next:** [Settings Page - User Guide](settings-page-user-guide.md)

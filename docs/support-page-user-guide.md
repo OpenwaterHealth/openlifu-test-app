@@ -2,9 +2,25 @@
 
 **Open-LIFU Test App · App v1.0.15 · SDK v1.0.7**
 
+**Docs Navigation:** [README](../README.md) | [Launch Options](launch-options.md) | [Controller](controller-page-user-guide.md) | [Transmitter](transmitter-page-user-guide.md) | [Console](console-page-user-guide.md) | [Verification](testing-page-user-guide.md) | [Settings](settings-page-user-guide.md)
+
+<a id="in-this-page"></a>
+
+## In This Page
+
+- [Overview](#overview)
+- [Hardware Monitor Tab](#hardware-monitor-tab)
+- [Diagnostics Tab](#diagnostics-tab)
+- [Connection Behaviour](#connection-behaviour)
+- [Troubleshooting](#troubleshooting)
+
 ---
 
+<a id="overview"></a>
+
 ## Overview
+
+**[Back to top](#in-this-page)**
 
 The **Support Diagnostics** page provides real-time hardware monitoring and an automated diagnostic test suite for the Open-LIFU system. It is split into two tabs:
 
@@ -17,7 +33,11 @@ Navigate to the Support page by clicking the wrench icon in the left sidebar.
 
 ---
 
+<a id="hardware-monitor-tab"></a>
+
 ## Hardware Monitor Tab
+
+**[Back to top](#in-this-page)**
 
 ![Hardware Monitor tab showing System Information, Console, and Transmitter cards](support_tab_hw_mon.png)
 
@@ -81,7 +101,11 @@ Click **Refresh All** (top-right of the Hardware Monitor tab) to re-query all co
 
 ---
 
+<a id="diagnostics-tab"></a>
+
 ## Diagnostics Tab
+
+**[Back to top](#in-this-page)**
 
 The Diagnostics tab runs a structured test suite against connected hardware and provides a pass/fail report that can be exported as a PDF.
 
@@ -176,7 +200,11 @@ For reference, see an [example diagnostic report](openlifu-diag-2026-05-06_21-38
 
 ---
 
+<a id="connection-behaviour"></a>
+
 ## Connection Behaviour
+
+**[Back to top](#in-this-page)**
 
 The Support page responds automatically to device connect and disconnect events:
 
@@ -186,7 +214,11 @@ The Support page responds automatically to device connect and disconnect events:
 
 ---
 
+<a id="troubleshooting"></a>
+
 ## Troubleshooting
+
+**[Back to top](#in-this-page)**
 
 | Symptom | Likely cause | Action |
 |---------|-------------|--------|
@@ -196,3 +228,8 @@ The Support page responds automatically to device connect and disconnect events:
 | `SKIP` result for a test | Device disconnected mid-run | Reconnect and run again |
 | `FAIL` on a voltage monitor test | Rail out of expected range | Check power supply and cabling; contact support with the saved PDF report |
 | PDF save error | Invalid path or permissions | Leave the PDF Path field blank to use the default Documents folder |
+
+---
+
+**Previous:** [Settings Page - User Guide](settings-page-user-guide.md)  
+**Back to start:** [Launch Options](launch-options.md)

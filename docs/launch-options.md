@@ -2,6 +2,18 @@
 
 **Open-LIFU Test App**
 
+**Docs Navigation:** [README](../README.md) | [Controller](controller-page-user-guide.md) | [Transmitter](transmitter-page-user-guide.md) | [Console](console-page-user-guide.md) | [Verification](testing-page-user-guide.md) | [Settings](settings-page-user-guide.md) | [Support](support-page-user-guide.md)
+
+<a id="in-this-page"></a>
+
+## In This Page
+
+- [Simulated hardware (`--simulate`)](#simulated-hardware)
+- [High-voltage test mode (`--hv-test-mode`)](#high-voltage-test-mode)
+- [Logging level (`--loglevel`)](#logging-level)
+- [SDK version check](#sdk-version-check)
+- [Common invocations](#common-invocations)
+
 The Open-LIFU Test App is launched from `main.py` (or the packaged
 `TestApp.exe`). A handful of command-line flags control whether real
 hardware is required and how verbose the log output is.
@@ -17,7 +29,11 @@ live in the separate `openlifu-operator-interface` repository.
 
 ---
 
+<a id="simulated-hardware"></a>
+
 ## Simulated hardware (`--simulate`)
+
+**[Back to top](#in-this-page)**
 
 ```bash
 python main.py --simulate                  # 2 simulated TX modules
@@ -49,7 +65,11 @@ Behaviour:
 
 ---
 
+<a id="high-voltage-test-mode"></a>
+
 ## High-voltage test mode (`--hv-test-mode`)
+
+**[Back to top](#in-this-page)**
 
 ```bash
 python main.py --hv-test-mode
@@ -65,7 +85,11 @@ This flag is intended for engineering bring-up only.
 
 ---
 
+<a id="logging-level"></a>
+
 ## Logging level (`--loglevel`)
+
+**[Back to top](#in-this-page)**
 
 ```bash
 python main.py --loglevel debug
@@ -86,7 +110,11 @@ Notes:
 
 ---
 
+<a id="sdk-version-check"></a>
+
 ## SDK version check
+
+**[Back to top](#in-this-page)**
 
 Every launch verifies the installed `openlifu-sdk` package against the
 minimum pinned in `lifu/lifu_connector.py` (`MIN_SDK_VERSION`). If the
@@ -99,7 +127,11 @@ pip install --upgrade "openlifu-sdk>=<min_version>"
 
 ---
 
+<a id="common-invocations"></a>
+
 ## Common invocations
+
+**[Back to top](#in-this-page)**
 
 | Situation | Command |
 |-----------|---------|
@@ -107,3 +139,7 @@ pip install --upgrade "openlifu-sdk>=<min_version>"
 | UI demo or training, no hardware | `python main.py --simulate` |
 | Bench bring-up with external HV supply | `python main.py --hv-test-mode --loglevel debug` |
 | Debugging a specific issue with verbose logs | `python main.py --loglevel debug` |
+
+---
+
+**Next:** [Controller Page - User Guide](controller-page-user-guide.md)
