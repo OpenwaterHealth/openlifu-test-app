@@ -9,7 +9,6 @@
 ## In This Page
 
 - [Overview](#overview)
-- [Page layout](#page-layout)
 - [Inputs Panel](#panel-inputs)
 - [Plot Panel](#panel-plot)
 - [Status and Actions Panel](#panel-status-and-actions)
@@ -33,21 +32,6 @@ left sidebar.
 
 ![Controller tab — full layout](controller_tab.png)
 
----
-
-<a id="page-layout"></a>
-
-## Page layout
-
-**[Back to top](#in-this-page)**
-
-The Controller is split into three columns:
-
-| Column | Purpose |
-|--------|---------|
-| **Left — Inputs** | All sonication parameters: voltage, sequence, pulse, focus point, trigger settings, as well as Loading/saving from presets and files |
-| **Top Right — Plot** | Graphical depiction of the timing and delays |
-| **Lower Right — Status & Actions** | Connection LEDs, telemetry, Configure / Start / Stop |
 
 ---
 
