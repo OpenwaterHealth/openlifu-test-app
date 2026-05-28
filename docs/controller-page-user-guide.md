@@ -2,9 +2,25 @@
 
 **Open-LIFU Test App**
 
+**Docs Navigation:** [README](../README.md) | [Launch Options](launch-options.md) | [Transmitter](transmitter-page-user-guide.md) | [Console](console-page-user-guide.md) | [Verification](testing-page-user-guide.md) | [Settings](settings-page-user-guide.md) | [Support](support-page-user-guide.md)
+
+<a id="in-this-page"></a>
+
+## In This Page
+
+- [Overview](#overview)
+- [Inputs Panel](#panel-inputs)
+- [Plot Panel](#panel-plot)
+- [Status and Actions Panel](#panel-status-and-actions)
+- [Typical workflow](#typical-workflow)
+
 ---
 
-## Overview
+<a id="overview"></a>
+
+## Overview 
+
+**[Back to top](#in-this-page)**
 
 The **Controller** page is the main engineering surface for configuring and running an arbitrary sonication. It exposes every parameter the firmware accepts, lets you load and save full solutions to JSON, and drives the device through its `READY → RUNNING → READY` cycle.
 
@@ -16,21 +32,14 @@ left sidebar.
 
 ![Controller tab — full layout](controller_tab.png)
 
----
-
-## Page layout
-
-The Controller is split into three columns:
-
-| Column | Purpose |
-|--------|---------|
-| **Left — Inputs** | All sonication parameters: voltage, sequence, pulse, focus point, trigger settings, as well as Loading/saving from presets and files |
-| **Top Right — Plot** | Graphical depiction of the timing and delays |
-| **Lower Right — Status & Actions** | Connection LEDs, telemetry, Configure / Start / Stop |
 
 ---
 
-## Left column — Inputs
+<a id="panel-inputs"></a>
+
+## Inputs Panel
+
+**[Back to top](#in-this-page)**
 
 ### Voltage
 
@@ -113,13 +122,21 @@ Clicking **Edit Solution** after loading a solution from JSON will drop the load
 
 ---
 
-## Top Right panel — Plot
+<a id="panel-plot"></a>
+
+## Plot Panel
+
+**[Back to top](#in-this-page)**
 
 The plot shows the pulse to be generated, the envelope of the pulse train, and a representation of the time delays applied to each element. The depiction of the time delays uses a fixed approximation of the element position based on whether or not there are 1 or 2 modules connected. 
 
 ---
 
-## Bottom Right panel — Status & Actions
+<a id="panel-status-and-actions"></a>
+
+## Status and Actions Panel
+
+**[Back to top](#in-this-page)**
 
 ### Connection / status header
 
@@ -170,7 +187,11 @@ firmware, so the bar advances even when the app is not actively polling.
 
 ---
 
+<a id="typical-workflow"></a>
+
 ## Typical workflow
+
+**[Back to top](#in-this-page)**
 
 1. Connect the Console and Transmitter — the **TX** and **HV** LEDs go
    green.
@@ -186,3 +207,6 @@ firmware, so the bar advances even when the app is not actively polling.
    file).
 
 ---
+
+**Previous:** [Launch Options](launch-options.md)  
+**Next:** [Transmitter Page - User Guide](transmitter-page-user-guide.md)

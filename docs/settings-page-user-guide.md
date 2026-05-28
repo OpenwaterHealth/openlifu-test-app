@@ -2,9 +2,27 @@
 
 **Open-LIFU Test App**
 
+**Docs Navigation:** [README](../README.md) | [Launch Options](launch-options.md) | [Controller](controller-page-user-guide.md) | [Transmitter](transmitter-page-user-guide.md) | [Console](console-page-user-guide.md) | [Verification](testing-page-user-guide.md) | [Support](support-page-user-guide.md)
+
+<a id="in-this-page"></a>
+
+## In This Page
+
+- [Overview](#overview)
+- [Page layout](#page-layout)
+- [User Config card](#user-config-card)
+- [Console Firmware card](#console-firmware-card)
+- [Transmitter Firmware card](#transmitter-firmware-card)
+- [Connection behaviour](#connection-behaviour)
+- [Troubleshooting](#troubleshooting)
+
 ---
 
+<a id="overview"></a>
+
 ## Overview
+
+**[Back to top](#in-this-page)**
 
 The **Settings** page covers two distinct engineering workflows:
 
@@ -26,7 +44,11 @@ sidebar. The page is hidden in `--simulate` mode.
 
 ---
 
+<a id="page-layout"></a>
+
 ## Page layout
+
+**[Back to top](#in-this-page)**
 
 | Region | Purpose |
 |--------|---------|
@@ -40,7 +62,11 @@ transmitter modules…"*.
 
 ---
 
+<a id="user-config-card"></a>
+
 ## User Config card
+
+**[Back to top](#in-this-page)**
 
 ### Target component
 
@@ -105,7 +131,11 @@ calibration pressure.
 
 ---
 
+<a id="console-firmware-card"></a>
+
 ## Console Firmware card
+
+**[Back to top](#in-this-page)**
 
 | Element | Behaviour |
 |---------|-----------|
@@ -120,7 +150,11 @@ flash finishes (or fails) and you click **Close**.
 
 ---
 
+<a id="transmitter-firmware-card"></a>
+
 ## Transmitter Firmware card
+
+**[Back to top](#in-this-page)**
 
 | Element | Behaviour |
 |---------|-----------|
@@ -134,7 +168,11 @@ here.
 
 ---
 
+<a id="connection-behaviour"></a>
+
 ## Connection behaviour
+
+**[Back to top](#in-this-page)**
 
 - On HV connect, the page waits ~500 ms then queries the Console
   firmware version.
@@ -148,7 +186,11 @@ here.
 
 ---
 
+<a id="troubleshooting"></a>
+
 ## Troubleshooting
+
+**[Back to top](#in-this-page)**
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
@@ -157,4 +199,9 @@ here.
 | **Load Test Report** flashes red with a serial mismatch | The selected report does not belong to the selected device | Pick the correct report (or switch the **Target Component** dropdown) |
 | **Update Firmware** is greyed out | Path empty, or device not connected, or another update in progress | Check all three preconditions |
 | Update dialog shows an error mid-flash | USB drop, cable issue, or wrong firmware image | Power-cycle the device. Use a known-good signed `.bin`. Do not interrupt the next attempt |
-| Cannot navigate to Settings | A sonication is currently running | Stop the run from the [Controller](controller-page-user-guide.md) or [Operator](operator-interface-user-guide.md) page first |
+| Cannot navigate to Settings | A sonication is currently running | Stop the run from the [Controller](controller-page-user-guide.md) or Operator Interface app first |
+
+---
+
+**Previous:** [Verification Page - User Guide](testing-page-user-guide.md)  
+**Next:** [Support Page - User Guide](support-page-user-guide.md)

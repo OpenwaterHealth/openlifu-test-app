@@ -2,9 +2,27 @@
 
 **Open-LIFU Test App**
 
+**Docs Navigation:** [README](../README.md) | [Launch Options](launch-options.md) | [Controller](controller-page-user-guide.md) | [Transmitter](transmitter-page-user-guide.md) | [Verification](testing-page-user-guide.md) | [Settings](settings-page-user-guide.md) | [Support](support-page-user-guide.md)
+
+<a id="in-this-page"></a>
+
+## In This Page
+
+- [Overview](#overview)
+- [Page layout](#page-layout)
+- [Communication Tests](#communication-tests)
+- [Power Tests](#power-tests)
+- [Right column - Device info and temperatures](#right-column-device-info-and-temperatures)
+- [Connection behaviour](#connection-behaviour)
+- [Troubleshooting](#troubleshooting)
+
 ---
 
+<a id="overview"></a>
+
 ## Overview
+
+**[Back to top](#in-this-page)**
 
 The **Console** page is a low-level unit-test surface for the HV
 Controller (a.k.a. Console) board. It exercises individual firmware
@@ -23,7 +41,11 @@ sidebar. The page is hidden in `--simulate` mode.
 
 ---
 
+<a id="page-layout"></a>
+
 ## Page layout
+
+**[Back to top](#in-this-page)**
 
 The page is split into a left column of test groups and a right column
 showing device info and live temperatures.
@@ -36,7 +58,11 @@ showing device info and live temperatures.
 
 ---
 
+<a id="communication-tests"></a>
+
 ## Communication Tests
+
+**[Back to top](#in-this-page)**
 
 | Control | Behaviour |
 |---------|-----------|
@@ -49,7 +75,11 @@ All four controls are disabled until the HV controller is connected.
 
 ---
 
+<a id="power-tests"></a>
+
 ## Power Tests
+
+**[Back to top](#in-this-page)**
 
 ### HV rail control
 
@@ -87,7 +117,11 @@ re-poll all eight channels immediately.
 
 ---
 
+<a id="right-column-device-info-and-temperatures"></a>
+
 ## Right column — Device info & temperatures
+
+**[Back to top](#in-this-page)**
 
 | Field | Description |
 |-------|-------------|
@@ -102,7 +136,11 @@ manually. Otherwise the values are fetched once on connect (after a
 
 ---
 
+<a id="connection-behaviour"></a>
+
 ## Connection behaviour
+
+**[Back to top](#in-this-page)**
 
 - On HV controller connect, the page waits ~500 ms then queries device
   info, temperatures, power status, and RGB state.
@@ -110,7 +148,11 @@ manually. Otherwise the values are fetched once on connect (after a
 
 ---
 
+<a id="troubleshooting"></a>
+
 ## Troubleshooting
+
+**[Back to top](#in-this-page)**
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
@@ -118,3 +160,8 @@ manually. Otherwise the values are fetched once on connect (after a
 | `Ping FAILED` | USB stall or firmware hang | Power-cycle the Console |
 | Voltage readings stuck at `0.00 V` | HV not enabled, or page hasn't refreshed | Click the refresh button next to Power Tests |
 | RGB dropdown does nothing | Old firmware that pre-dates the RGB API | Update the Console firmware from the [Settings](settings-page-user-guide.md) page |
+
+---
+
+**Previous:** [Transmitter Page - User Guide](transmitter-page-user-guide.md)  
+**Next:** [Verification Page - User Guide](testing-page-user-guide.md)

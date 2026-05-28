@@ -2,9 +2,28 @@
 
 **Open-LIFU Test App**
 
+**Docs Navigation:** [README](../README.md) | [Launch Options](launch-options.md) | [Controller](controller-page-user-guide.md) | [Console](console-page-user-guide.md) | [Verification](testing-page-user-guide.md) | [Settings](settings-page-user-guide.md) | [Support](support-page-user-guide.md)
+
+<a id="in-this-page"></a>
+
+## In This Page
+
+- [Overview](#overview)
+- [Page layout](#page-layout)
+- [Module selector](#module-selector)
+- [Communication Tests](#communication-tests)
+- [Trigger and TX Output Tests](#trigger-and-tx-output-tests)
+- [Right column - Device info and temperatures](#right-column-device-info-and-temperatures)
+- [Connection behaviour](#connection-behaviour)
+- [Troubleshooting](#troubleshooting)
+
 ---
 
+<a id="overview"></a>
+
 ## Overview
+
+**[Back to top](#in-this-page)**
 
 The **Transmitter** page is the engineering bring-up surface for the
 TX device. It exposes per-module communication tests, a low-level
@@ -13,8 +32,10 @@ three supported drive frequencies (100 kHz, 200 kHz, 400 kHz).
 
 > **Note:** The Transmitter page is for engineering bring-up. End-to-end
 > sonication should use the [Controller](controller-page-user-guide.md)
-> page (full solution interface) or the [Operator](operator-interface-user-guide.md)
-> page (preset-driven kiosk). Routine hardware health checks should use
+> page (full solution interface) or the Operator Interface app
+> (preset-driven kiosk):
+> [openlifu-operator-interface](https://github.com/OpenwaterHealth/openlifu-operator-interface).
+> Routine hardware health checks should use
 > the [Support](support-page-user-guide.md) page's Diagnostics tab.
 
 Navigate to the Transmitter page by clicking the transmitter icon in
@@ -24,7 +45,11 @@ the left sidebar. The page is hidden in `--simulate` mode.
 
 ---
 
+<a id="page-layout"></a>
+
 ## Page layout
+
+**[Back to top](#in-this-page)**
 
 | Region | Purpose |
 |--------|---------|
@@ -38,7 +63,11 @@ the label *"Querying transmitter modules…"*.
 
 ---
 
+<a id="module-selector"></a>
+
 ## Module selector
+
+**[Back to top](#in-this-page)**
 
 If multiple TX modules are connected, the tab bar at the top of the
 page lets you target each one individually. Every Ping / Echo / LED /
@@ -48,7 +77,11 @@ temperature widgets also follow the active tab.
 
 ---
 
+<a id="communication-tests"></a>
+
 ## Communication Tests
+
+**[Back to top](#in-this-page)**
 
 | Control | Behaviour |
 |---------|-----------|
@@ -60,7 +93,11 @@ All three controls are disabled until the TX device is connected.
 
 ---
 
+<a id="trigger-and-tx-output-tests"></a>
+
 ## Trigger and TX Output Tests
+
+**[Back to top](#in-this-page)**
 
 This box lets you exercise the trigger generator directly without going
 through the full solution layer.
@@ -96,7 +133,11 @@ through the full solution layer.
 
 ---
 
+<a id="right-column-device-info-and-temperatures"></a>
+
 ## Right column — Device info & temperatures
+
+**[Back to top](#in-this-page)**
 
 | Field | Description |
 |-------|-------------|
@@ -112,7 +153,11 @@ connect (after a ~1.5 s settle delay).
 
 ---
 
+<a id="connection-behaviour"></a>
+
 ## Connection behaviour
+
+**[Back to top](#in-this-page)**
 
 - On TX connect, the page waits ~1.5 s then queries module count,
   device info, temperatures, and trigger status.
@@ -121,7 +166,11 @@ connect (after a ~1.5 s settle delay).
 
 ---
 
+<a id="troubleshooting"></a>
+
 ## Troubleshooting
+
+**[Back to top](#in-this-page)**
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
@@ -130,3 +179,8 @@ connect (after a ~1.5 s settle delay).
 | `Ping FAILED` on one module only | That module is not responding | Power-cycle; check the cable to that module |
 | Temperatures stuck at `0.0` | Page hasn't refreshed since connect | Click the **↻** in the right column |
 | `Set TX Config` reports `NOT Configured` | Trigger was running and refused the new config | The button stops the trigger automatically before configuring; if it still fails check the firmware log |
+
+---
+
+**Previous:** [Controller Page - User Guide](controller-page-user-guide.md)  
+**Next:** [Console Page - User Guide](console-page-user-guide.md)
