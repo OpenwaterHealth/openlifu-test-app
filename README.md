@@ -1,48 +1,63 @@
 # OpenLIFU Test Application
 
-Python example UI for OPEN LIFU used for Hardware Testing and Basic Usage
+Python/QML engineering UI for OpenLIFU hardware testing, bring-up, and basic sonication workflows.
 
 ![App Image](docs/app_image.png)
 
-## Installation
+## What This App Is For
+
+OpenLIFU Test App is an engineering-first interface with dedicated pages for:
+
+- Full sonication setup and execution (`Controller`)
+- Low-level console and transmitter bring-up (`Console`, `Transmitter`)
+- Automated verification scripts (`Verification`)
+- Device config and firmware updates (`Settings`)
+- Fast diagnostics and PDF reporting (`Support`)
+
+## Quick Start
 
 ### Prerequisites
-- **Python 3.10 or later**: Make sure you have Python 3.10 or later installed on your system. You can download it from the [official Python website](https://www.python.org/downloads/).
 
-### Steps to Set Up the Project
-1. **Clone the repository**:
+- Python 3.10+
+- Local checkout of `openlifu-sdk` and `OpenLIFU-python` (or installed package equivalents)
+
+### Install
+#### Windows Executable
+From the [Releases](https://github.com/OpenwaterHealth/openlifu-test-app/releases) page, download the latest `OpenLifu-TestApp*.zip` asset, extract it, and run `TestApp.exe` or `TestApp_console.exe` (to view console output).
+
+#### Python
+1. Clone this repository.
+
    ```bash
    git clone https://github.com/OpenwaterHealth/OpenLIFU-TestAPP.git
    cd OpenLIFU-TestAPP
    ```
 
-2. **Create and activate a virtual environment** (recommended):
+2. Create and activate a virtual environment.
+
    ```bash
    python -m venv .venv
-   
-   # On Windows:
+
+   # Windows
    .venv\Scripts\activate
-   
-   # On macOS/Linux:
+
+   # macOS/Linux
    source .venv/bin/activate
    ```
 
-3. **Install the application with dependencies**:
+3. Install dependencies.
+
    ```bash
-   # Install base dependencies
    pip install -e .
-   
-   # Or install with development tools
+
+   # Optional extras
    pip install -e .[dev]
-   
-   # Or install with test dependencies
    pip install -e .[test]
-   
-   # Or install everything
    pip install -e .[dev,test]
    ```
 
-4. **Install OpenLIFU Python**:
+4. Install OpenLIFU Python.
+
    ```bash
    git clone https://github.com/OpenwaterHealth/OpenLIFU-python.git
    cd OpenLIFU-python
@@ -50,54 +65,48 @@ Python example UI for OPEN LIFU used for Hardware Testing and Basic Usage
    cd ..
    ```
 
-5. **Run the application**:
+5. Launch the app.
+
    ```bash
    python main.py
    ```
 
-## Controller Input Units
+## Documentation Index
+| Guide | When to use it |
+|-------|----------------|
+| [Launch Options](docs/launch-options.md) | Start the app in real, simulated, or HV test mode |
+| [Controller Page Guide](docs/controller-page-user-guide.md) | Build/load a sonication solution, configure, run, monitor progress |
+| [Transmitter Page Guide](docs/transmitter-page-user-guide.md) | Run per-module TX bring-up tests and trigger/TX quick configs |
+| [Console Page Guide](docs/console-page-user-guide.md) | Exercise HV controller communication, rails, LEDs, and monitor channels |
+| [Verification Page Guide](docs/testing-page-user-guide.md) | Run long-form PRD verification scripts and inspect run logs |
+| [Settings Page Guide](docs/settings-page-user-guide.md) | Read/write user config JSON and update firmware on Console/TX |
+| [Support Page Guide](docs/support-page-user-guide.md) | Run rapid diagnostics and export pass/fail PDF reports |
 
-The Controller page displays a few timing and frequency fields in operator-friendly units. Internally, solution data and device configuration still use SI base units.
-
-- **Frequency** in the UI is shown in **kHz**.
-   - Example: `400` in the UI is stored/sent as `400000` Hz.
-- **Duration** in the UI is shown in **uS**.
-   - Example: `200` in the UI is stored/sent as `0.0002` s.
-- **Pulse Interval** in the UI is shown in **ms**.
-   - Example: `100` in the UI is stored/sent as `0.1` s.
-
-Additional notes:
-- **Pulse Train Interval** remains in seconds in the UI.
-- Loading a solution from JSON converts SI values back to UI units for these fields.
-- Sending a solution to configuration/plot paths converts those displayed values back to SI units.
-
-## Building Executable
+## Build Executable
 
 ### Quick Build (Windows)
-Simply double-click `build.bat` or run it from command prompt:
+
 ```cmd
 build.bat
 ```
 
 ### Manual Build
-1. **Install development dependencies**:
+
+1. Install development dependencies.
+
    ```bash
    pip install -e .[dev]
    ```
 
-2. **Run the build script**:
+2. Run the build script.
+
    ```bash
-   python build.py
+   python -m PyInstaller OpenLIFU-TestApp.spec
    ```
 
-3. **Find your executable**:
-   - Executable location: `dist/OpenLIFU-TestApp/`
-   - Use the launcher: `dist/OpenLIFU-TestApp/launch.bat`
+3. Find the packaged app.
 
-### Build Options
-The build script automatically:
-- Cleans previous builds
-- Creates a one-folder distribution
-- Includes all QML files and assets  
-- Creates a Windows launcher script
-- Handles PyQt6 and other dependencies
+- Folder: `dist/TestApp/`
+- Launcher: `dist/TestApp/TestApp.exe`
+
+The build step cleans previous outputs, packages QML/assets, and generates a one-folder Windows distribution.
