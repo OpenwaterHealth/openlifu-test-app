@@ -32,7 +32,6 @@ left sidebar.
 
 ![Controller tab — full layout](controller_tab.png)
 
-
 ---
 
 <a id="panel-inputs"></a>
