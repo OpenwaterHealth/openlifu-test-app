@@ -4,6 +4,7 @@ import asyncio
 import warnings
 import logging
 import argparse
+from PyQt6.QtCore import QtMsgType, qInstallMessageHandler
 from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
 from qasync import QEventLoop
@@ -52,8 +53,26 @@ def parse_arguments():
         default="info",
         type=str,
         help=(
-            "Logging level for the lifu_connector logger "
-            "(debug, info, warning, error, critical). Default: info."
+            "Logging level for the application's own loggers "
+            "(``lifu.*`` and ``qt``): debug, info, warning, error, "
+            "critical. Default: info."
+        ),
+    )
+    parser.add_argument(
+        "--sdk-loglevel",
+        default="derive",
+        type=str,
+        help=(
+            "Logging level for the openlifu_sdk transport logger. "
+            "The SDK is a low-level component whose ``info`` and "
+            "``debug`` levels are much more verbose per unit of "
+            "operator-visible value than the app's own levels, so by "
+            "default it is configured one step quieter than --loglevel "
+            "(floored at WARNING). Pass an explicit level (debug, "
+            "info, warning, error, critical) to override -- e.g. "
+            "``--loglevel=info --sdk-loglevel=debug`` for a deep dive "
+            "into UART traffic while keeping the app's own logs at "
+            "INFO. Default: derive."
         ),
     )
     return parser.parse_args()
@@ -99,7 +118,91 @@ def main():
             file=sys.stderr,
         )
         level = logging.INFO
+
+    # Resolve --sdk-loglevel. ``derive`` (default) keeps the SDK one
+    # step quieter than the app's level, with a floor of WARNING so
+    # routine operation stays uncluttered even if the app is at DEBUG.
+    # An explicit value (debug/info/warning/error/critical) bypasses
+    # the derivation -- useful for targeted UART traces.
+    sdk_arg = str(args.sdk_loglevel).lower()
+    if sdk_arg == "derive":
+        # One step quieter than the app, floored at WARNING.
+        # logging level numbers go up as severity goes up (DEBUG=10,
+        # INFO=20, WARNING=30), so "one step quieter" = +10.
+        sdk_level = max(level + 10, logging.WARNING)
+    else:
+        sdk_level = logging.getLevelName(sdk_arg.upper())
+        if not isinstance(sdk_level, int):
+            print(
+                f"WARNING: invalid --sdk-loglevel '{args.sdk_loglevel}', "
+                "falling back to derive.",
+                file=sys.stderr,
+            )
+            sdk_level = max(level + 10, logging.WARNING)
+
+    # Root logging configuration. Without this, library loggers (e.g.
+    # ``openlifu_sdk.io.uart`` -- the source of "TX id=... timed out"
+    # WARNINGs) fall through to Python's "last resort" handler which
+    # emits records as bare "LEVEL:logger:message" with no timestamp.
+    # Configure root once, with a timestamped format, so every logger in
+    # the process (ours + the SDK) is timestamped and consistently
+    # formatted. ``force=True`` replaces any handler a prior import may
+    # have installed (basicConfig is a no-op if root already has one).
+    #
+    # Root threshold is the most permissive of the configured levels so
+    # the handler does not silently drop records that a per-logger
+    # level would otherwise allow through.
+    root_level = min(level, sdk_level)
+    logging.basicConfig(
+        level=root_level,
+        format="%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s [%(threadName)s] %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+        force=True,
+    )
+    # Per-package levels: app code at --loglevel, SDK at --sdk-loglevel
+    # (or its derived default). This decoupling matters because the
+    # SDK's INFO/DEBUG is much more verbose per unit of operator-visible
+    # value than the app's own levels -- so e.g. --loglevel=info should
+    # not flood stderr with per-packet framing chatter from the
+    # transport layer.
     logging.getLogger("lifu").setLevel(level)
+    logging.getLogger("openlifu_sdk").setLevel(sdk_level)
+    # Tame known-noisy third-party libraries that would otherwise drown
+    # the operator at INFO/DEBUG (Qt internals, PIL, matplotlib, etc.).
+    for noisy in ("PIL", "matplotlib", "asyncio", "qasync"):
+        logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
+
+    # Replace Qt's default message handler. Two goals:
+    #   1. Drop QML ``console.log(...)`` (QtDebugMsg) entirely -- it's
+    #      unstructured developer-trace clutter that gets emitted with a
+    #      ``qml:`` prefix bypassing Python's logging config (no
+    #      timestamps, no level filtering). Any QML-side event worth
+    #      surfacing has an equivalent Python-side INFO log in
+    #      lifu_connector.* mixins.
+    #   2. Funnel real Qt warnings/criticals through the Python logging
+    #      pipeline so they pick up timestamps and the same formatting
+    #      as everything else (and are searchable in log files).
+    _qt_logger = logging.getLogger("qt")
+    _QT_LEVEL_MAP = {
+        QtMsgType.QtDebugMsg: None,      # drop entirely
+        QtMsgType.QtInfoMsg: logging.INFO,
+        QtMsgType.QtWarningMsg: logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg: logging.CRITICAL,
+    }
+    def _qt_message_handler(mode, ctx, msg):
+        py_level = _QT_LEVEL_MAP.get(mode)
+        if py_level is None:
+            return  # silently drop QML console.log noise
+        # Include the Qt logging category if present (e.g. ``qt.qpa.*``)
+        # so filterable categories remain visible.
+        category = getattr(ctx, "category", None) or ""
+        if category and category != "default":
+            _qt_logger.log(py_level, "[%s] %s", category, msg)
+        else:
+            _qt_logger.log(py_level, "%s", msg)
+    qInstallMessageHandler(_qt_message_handler)
 
     # Tell Windows to treat this as its own app (not python.exe) so the
     # taskbar shows our icon instead of the Python icon.

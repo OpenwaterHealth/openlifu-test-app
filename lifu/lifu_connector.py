@@ -47,32 +47,17 @@ from openlifu_verification.prodreqs_run_indefinitely_test import TransmitterInde
 
 # Set up logging.
 #
-# We attach the StreamHandler to the ``lifu`` package logger (not to
-# ``lifu.lifu_connector``) so every module in this package -- including
-# the controller/settings/transmitter/console/support/testing mixins
-# split out of the connector -- inherits the same console handler via
-# the normal logger propagation chain. Without this, only this module's
-# own ``logger.info(...)`` calls would print; everything from
-# ``lifu.lifu_controller`` etc. would silently disappear into the
-# default (handler-less) root logger.
-pkg_logger = logging.getLogger("lifu")
-pkg_logger.setLevel(logging.INFO)
-if not any(getattr(h, "_lifu_app_console", False) for h in pkg_logger.handlers):
-    ch = logging.StreamHandler()
-    ch._lifu_app_console = True  # marker for idempotent re-imports
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    pkg_logger.addHandler(ch)
-else:
-    ch = next(h for h in pkg_logger.handlers if getattr(h, "_lifu_app_console", False))
-
-# Module logger; uses the handler attached to the parent ``lifu`` logger.
+# Root logging (timestamped format, default level, stderr handler) is
+# configured once in ``main.py`` via ``logging.basicConfig`` so that
+# every logger in the process -- our ``lifu.*`` modules AND the SDK's
+# ``openlifu_sdk.*`` modules -- emits through a single, consistently
+# formatted handler. We do NOT attach a separate StreamHandler to the
+# ``lifu`` package logger here: doing so used to cause every lifu log
+# line to print twice (once from the package handler, once from the
+# root handler after propagation). Module loggers below just call
+# ``logging.getLogger(__name__)`` and inherit the root handler via the
+# normal propagation chain.
 logger = logging.getLogger(__name__)
-
-# Uncomment to activate logging from the sdk
-#sdklogger = logging.getLogger('openlifu_sdk.io')
-#sdklogger.setLevel(logging.INFO)
-#sdklogger.addHandler(ch)
 
 
 # Minimum required openlifu-sdk version. Bump this whenever the test app
@@ -609,6 +594,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._tx_connect_time = time.monotonic()
         elif descriptor == "HV":
             self._hvConnected = True
+        logger.info("%s connected on %s", descriptor, port)
         self.signalConnected.emit(descriptor, port)
         self.connectionStatusChanged.emit() 
         self.update_state()
@@ -645,7 +631,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                 self._hv_enable_mode = HV_EN_OFF  # Switch to OFF
                 self.hvEnableModeChanged.emit(self._hv_enable_mode)
                 logger.info("HV enable mode automatically switched to OFF due to HV disconnection")
-                
+
+        logger.info("%s disconnected (port=%s)", descriptor, port or "?")
         self.signalDisconnected.emit(descriptor, port)
         self.connectionStatusChanged.emit() 
         self.update_state()
