@@ -5,11 +5,13 @@ import warnings
 import logging
 import argparse
 from PyQt6.QtCore import QtMsgType, qInstallMessageHandler
-from PyQt6.QtGui import QGuiApplication, QIcon
+from PyQt6.QtGui import QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
 from lifu.lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
 from lifu.lifu_support import LIFUSupportConnector
+from openlifu_sdk.io.exceptions import LIFUHardwareInUseError
 from pathlib import Path
 
 from version import get_version
@@ -26,6 +28,47 @@ def resource_path(rel: str) -> str:
     import sys, os
     base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(sys.executable if getattr(sys,"frozen",False) else __file__)))
     return os.path.join(base, rel)
+
+
+def _construct_connector_with_hw_in_use_retry(factory):
+    """Construct a connector via ``factory()``, looping on
+    :class:`LIFUHardwareInUseError` with a Retry / Close Application dialog.
+
+    Returns the constructed connector. Does not return when the user
+    chooses to close the application.
+
+    Requires that a :class:`QApplication` already exist in the process
+    (constructed in ``main()`` before this is called).
+    """
+    while True:
+        try:
+            return factory()
+        except LIFUHardwareInUseError as exc:
+            pid = getattr(exc, "pid", None)
+            pid_text = f" (PID {pid})" if pid else ""
+            text = (
+                "Another process appears to be using the LIFU hardware "
+                f"interface{pid_text}.\n\n"
+                "Only one application can talk to the LIFU device at a "
+                "time. Close the other application (or stop the process) "
+                "and click 'Retry' to try connecting again, or click "
+                "'Close Application' to quit."
+            )
+            logger.error(
+                "LIFU hardware in use by another process (PID %s); prompting user.",
+                pid,
+            )
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("LIFU Hardware In Use")
+            box.setText(text)
+            retry_btn = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Close Application", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(retry_btn)
+            box.exec()
+            if box.clickedButton() is retry_btn:
+                continue
+            sys.exit(2)
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -219,7 +262,11 @@ def main():
     os.environ["QT_QUICK_CONTROLS_MATERIAL_THEME"] = "Dark"
     os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
-    app = QGuiApplication(sys.argv)
+    # Use QApplication (not QGuiApplication) so we can show QMessageBox
+    # popups for the SDK-version mismatch and hardware-in-use paths
+    # below. QApplication is a superset of QGuiApplication and works
+    # fine for QML-only apps.
+    app = QApplication(sys.argv)
 
     # Verify the installed openlifu-sdk meets our minimum required version
     # before we start touching hardware. Editable installs from GitHub may
@@ -231,11 +278,6 @@ def main():
     else:
         logger.error(sdk_message)
         try:
-            from PyQt6.QtWidgets import QApplication, QMessageBox
-            # QGuiApplication doesn't own QWidget; spin up a temporary
-            # QApplication only for the dialog. If QtWidgets isn't
-            # available (slim install) we still have the stderr path.
-            _msg_app = QApplication.instance() or QApplication(sys.argv)
             QMessageBox.critical(
                 None,
                 "Incompatible openlifu-sdk version",
@@ -264,7 +306,9 @@ def main():
 
         lifu_connector = SimulatedLIFUConnector(num_modules=sim_modules)
     else:
-        lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
+        lifu_connector = _construct_connector_with_hw_in_use_retry(
+            lambda: LIFUConnector(hv_test_mode=args.hv_test_mode),
+        )
     lifu_support_connector = LIFUSupportConnector(interface=lifu_connector.interface)
 
     # Expose to QML
