@@ -79,6 +79,7 @@ From the [Releases](https://github.com/OpenwaterHealth/openlifu-test-app/release
 | [Transmitter Page Guide](docs/transmitter-page-user-guide.md) | Run per-module TX bring-up tests and trigger/TX quick configs |
 | [Console Page Guide](docs/console-page-user-guide.md) | Exercise HV controller communication, rails, LEDs, and monitor channels |
 | [Verification Page Guide](docs/testing-page-user-guide.md) | Run long-form PRD verification scripts and inspect run logs |
+| [Water Tank Testing](https://docs.openwater.health/openlifu/water-tank-testing/) | Acoustic verification of transducers in a water tank — extender setup, holder fixture, hydrophone scans |
 | [Settings Page Guide](docs/settings-page-user-guide.md) | Read/write user config JSON and update firmware on Console/TX |
 | [Support Page Guide](docs/support-page-user-guide.md) | Run rapid diagnostics and export pass/fail PDF reports |
 
