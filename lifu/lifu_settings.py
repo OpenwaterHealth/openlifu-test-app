@@ -221,8 +221,9 @@ class SettingsMixin:
 
                 # Power cycle 12v to ensure correct enumeration.
                 self.interface.hvcontroller.turn_12v_off()
-                time.sleep(1)
+                time.sleep(3)
                 self.interface.hvcontroller.turn_12v_on()
+                time.sleep(3)
 
         threading.Thread(target=_run, daemon=True).start()
 
