@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import threading
+import time
 
 from PyQt6.QtCore import pyqtSlot
 
@@ -217,6 +218,12 @@ class SettingsMixin:
             finally:
                 self._interface_mutex.unlock()
                 self._monitoring_paused = prev_paused
+
+                # Power cycle 12v to ensure correct enumeration.
+                self.interface.hvcontroller.turn_12v_off()
+                time.sleep(3)
+                self.interface.hvcontroller.turn_12v_on()
+                time.sleep(3)
 
         threading.Thread(target=_run, daemon=True).start()
 
