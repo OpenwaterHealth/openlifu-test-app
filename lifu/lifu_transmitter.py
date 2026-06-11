@@ -41,6 +41,10 @@ class TransmitterMixin:
         """
         if self._cached_tx_info is not None:
             self.txDeviceInfoReceived.emit(self._cached_tx_info)
+            for entry in self._cached_tx_info:
+                self._update_firmware_compliance(
+                    "TX", entry.get("firmwareVersion"), module=entry.get("module"),
+                )
             return
         self._interface_mutex.lock()
         try:
@@ -49,6 +53,7 @@ class TransmitterMixin:
             for module_idx in range(module_count):
                 try:
                     fw_version = self.interface.txdevice.get_version(module=module_idx)
+                    self._cached_tx_fw_version[module_idx] = fw_version
                 except LIFUError as e:
                     logger.warning(f"Module {module_idx}: failed to read firmware version: {e}")
                     fw_version = "N/A"
@@ -71,6 +76,11 @@ class TransmitterMixin:
                     "firmwareVersion": fw_version,
                     "deviceId": device_id
                 })
+                self._update_firmware_compliance(
+                    "TX",
+                    fw_version if fw_version != "N/A" else None,
+                    module=module_idx,
+                )
             self._cached_tx_info = modules_info
             self.txDeviceInfoReceived.emit(modules_info)
         except LIFUError as e:
