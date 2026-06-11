@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # starts depending on a new SDK feature/fix. Keep in sync with the
 # `openlifu-sdk>=` pin in pyproject.toml. The parse/check helpers live in
 # the SDK (``openlifu_sdk.ui``); we just pin the version here.
-MIN_SDK_VERSION = "1.0.7"
+MIN_SDK_VERSION = "2.0.12"
 
 from openlifu_sdk.ui import (
     BaseConnector,
@@ -79,16 +79,6 @@ def check_sdk_version(min_version: str = MIN_SDK_VERSION):
     """Thin wrapper around the SDK's :func:`check_sdk_version` that pins the
     default minimum to this app's ``MIN_SDK_VERSION``."""
     return _sdk_check_sdk_version(min_version)
-
-def _parse_tx_module(target: str):
-    """Parse a target string like 'tx 0', 'tx_0', 'tx0' into an integer module index.
-    Returns None if the target is not a TX target (e.g. 'console').
-    """
-    import re as _re
-    m = _re.match(r'^tx[\s_]?(\d+)$', target.strip().lower())
-    if m:
-        return int(m.group(1))
-    return None
 
 
 # Define system states.
@@ -109,6 +99,15 @@ from lifu.lifu_constants import (
     SPEED_OF_SOUND,
     NUM_ELEMENTS_PER_MODULE,
     MAX_TIMEOUT_RETRIES,
+    FW_COMPLIANCE_OK,
+    FW_COMPLIANCE_UNKNOWN,
+    FW_COMPLIANCE_UPDATE_AVAILABLE,
+    FW_COMPLIANCE_UPDATE_REQUIRED,
+    MIN_CONSOLE_FW_VERSION,
+    MIN_TRANSMITTER_FW_VERSION,
+    firmware_compliance,
+    packaged_console_fw_version,
+    packaged_transmitter_fw_version,
 )
 
 
@@ -156,6 +155,13 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
     fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
 
+    # Firmware "check for updates" signal. Phases: "checking",
+    # "downloading", "uptodate", "done", "error". ``newPath`` and
+    # ``newVersion`` are populated for "done"/"uptodate"; empty
+    # otherwise. See ``SettingsMixin._check_and_download_firmware``.
+    firmwareCheckStatus = pyqtSignal(str, str, str, str, str)
+    # (device_type, phase, message, newPath, newVersion)
+
     # Test sequence signals
     testProgressUpdated = pyqtSignal(float, float, str, str, str, str)  # (total_frac, case_frac, total_label, case_label, status_color, log_file_path)
 
@@ -173,6 +179,12 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     
     # HV enable mode signals
     hvEnableModeChanged = pyqtSignal(int)  # Notifies when HV enable mode changes
+
+    # Firmware-compliance signal. Emitted whenever the per-device
+    # compliance buckets (consoleFirmwareCompliance,
+    # transmitterFirmwareCompliance) change, so QML rebinds the System
+    # Status text + button enable states.
+    firmwareComplianceChanged = pyqtSignal()
 
     # Sonication progress (parsed from unsolicited TX STATUS frames). Only
     # emitted while async_mode is enabled and a sonication is in progress.
@@ -248,6 +260,16 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
         self._hv_enable_mode = HV_EN_AUTO
 
+        # Per-device firmware compliance buckets (FW_COMPLIANCE_*).
+        # ``_console_fw_compliance`` covers the HV/console; the TX dict
+        # holds one bucket per known module index. Aggregate properties
+        # (consoleFirmwareCompliance, transmitterFirmwareCompliance,
+        # firmwareUpdateRequired, firmwareUpdateAvailable) derive from
+        # these and gate the Configure / Write Config / Add Device
+        # Configuration buttons in QML.
+        self._console_fw_compliance = FW_COMPLIANCE_UNKNOWN
+        self._tx_fw_compliance: dict[int, int] = {}
+
         # Tracks whether the TX device's unsolicited STATUS stream is
         # currently enabled. The firmware only emits STATUS frames during
         # active sonication; we keep async OFF while the host is issuing
@@ -279,6 +301,17 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._bridge.sig_disconnected.connect(self.on_disconnected)
         self._bridge.sig_data.connect(self.on_data_received)
         self._bridge.sig_error.connect(self.on_error)
+
+        # Drive the firmware-compliance check from the connector itself,
+        # not from individual UI pages, so the lockout/advisory state is
+        # populated even when the operator never opens Settings/Console.
+        # ``connectionStatusChanged`` fires after on_connected updates
+        # ``_hvConnected``/``_txConnected``; ``numModulesUpdated`` fires
+        # once the TX has finished enumerating its modules. Both queries
+        # are cached, so re-emits from UI pages don't cause duplicate
+        # UART round-trips.
+        self.connectionStatusChanged.connect(self._check_firmware_on_connect)
+        self.numModulesUpdated.connect(self._check_tx_firmware_on_modules)
 
         # Background telemetry polling thread (temperature + HV voltages).
         # QThread is used (not threading.Thread) so Qt's queued-connection
@@ -349,6 +382,94 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         if side in ("TX", "all"):
             self._cached_tx_info = None
             self._cached_tx_fw_version = {}
+        # Clear compliance buckets too so a successful firmware update
+        # doesn't leave the previous (older) version's lockout/advisory
+        # state visible until something re-reads. The next queryHvInfo /
+        # queryTxInfo (auto-fired by the connect handlers, or by a UI
+        # page) repopulates them.
+        self._reset_firmware_compliance(side)
+
+    def _update_firmware_compliance(self, side: str, version: str | None,
+                                    module: int | None = None) -> None:
+        """Recompute per-device firmware compliance from a fresh version read.
+
+        ``side`` is ``"HV"`` (console) or ``"TX"`` (transmitter). For TX,
+        ``module`` is the module index the version belongs to. ``version``
+        may be ``None`` / ``""`` / ``"Error"`` to mark the device as
+        ``FW_COMPLIANCE_UNKNOWN`` (e.g. after a failed read). Always emits
+        ``firmwareComplianceChanged`` so QML rebinds the System Status
+        tooltip with the freshly read version even when the compliance
+        bucket itself didn't move (e.g. a same-tier point-release upgrade).
+        """
+        if side == "HV":
+            if version and version != "Error":
+                self._console_fw_compliance = firmware_compliance(
+                    version,
+                    MIN_CONSOLE_FW_VERSION,
+                    packaged_console_fw_version(),
+                )
+            else:
+                self._console_fw_compliance = FW_COMPLIANCE_UNKNOWN
+        elif side == "TX":
+            if module is None:
+                return
+            if version and version != "Error":
+                self._tx_fw_compliance[module] = firmware_compliance(
+                    version,
+                    MIN_TRANSMITTER_FW_VERSION,
+                    packaged_transmitter_fw_version(),
+                )
+            else:
+                self._tx_fw_compliance[module] = FW_COMPLIANCE_UNKNOWN
+        self.firmwareComplianceChanged.emit()
+
+    def _reset_firmware_compliance(self, side: str) -> None:
+        """Drop compliance state for a side after disconnect."""
+        changed = False
+        if side in ("HV", "all"):
+            if self._console_fw_compliance != FW_COMPLIANCE_UNKNOWN:
+                self._console_fw_compliance = FW_COMPLIANCE_UNKNOWN
+                changed = True
+        if side in ("TX", "all"):
+            if self._tx_fw_compliance:
+                self._tx_fw_compliance = {}
+                changed = True
+        if changed:
+            self.firmwareComplianceChanged.emit()
+
+    def _aggregate_tx_compliance(self) -> int:
+        """Return the worst (numerically largest) TX module compliance bucket.
+
+        With no module data we report ``UNKNOWN`` rather than ``OK`` so
+        gated UI stays disabled until a real version is read.
+        """
+        if not self._tx_fw_compliance:
+            return FW_COMPLIANCE_UNKNOWN
+        return max(self._tx_fw_compliance.values())
+
+    @pyqtSlot()
+    def _check_firmware_on_connect(self):
+        """Auto-populate firmware compliance whenever a device connects.
+
+        Only kicks the HV side here; TX needs the module count first
+        (handled by ``_check_tx_firmware_on_modules``).
+        """
+        if self._hvConnected and self._cached_hv_info is None:
+            try:
+                self.queryHvInfo()
+            except Exception as e:
+                logger.warning(f"Auto firmware-compliance HV query failed: {e}")
+
+    @pyqtSlot()
+    def _check_tx_firmware_on_modules(self):
+        """Auto-populate TX firmware compliance once modules have enumerated."""
+        if (self._txConnected
+                and self._num_modules_connected > 0
+                and self._cached_tx_info is None):
+            try:
+                self.queryTxInfo()
+            except Exception as e:
+                logger.warning(f"Auto firmware-compliance TX query failed: {e}")
 
     def _handle_lifu_error(self, title: str, exc: BaseException, context: str = ""):
         """Format a caught LIFUError (or other exception) and emit a popup.
@@ -1013,6 +1134,107 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def hvEnableMode(self):
         """Expose HV enable mode to QML."""
         return self._hv_enable_mode
+
+    @pyqtProperty(int, notify=firmwareComplianceChanged)
+    def consoleFirmwareCompliance(self) -> int:
+        """Compliance bucket (FW_COMPLIANCE_*) for the console firmware."""
+        return self._console_fw_compliance
+
+    @pyqtProperty(int, notify=firmwareComplianceChanged)
+    def transmitterFirmwareCompliance(self) -> int:
+        """Aggregate (worst) compliance bucket across known TX modules."""
+        return self._aggregate_tx_compliance()
+
+    @pyqtProperty(bool, notify=firmwareComplianceChanged)
+    def firmwareUpdateRequired(self) -> bool:
+        """True iff any connected device firmware is below its hard minimum.
+
+        Drives the lockout on Configure (Controller) and on Write Config
+        / Add Device Configuration (Settings). Only checks compliance
+        for sides that are currently connected so a missing device does
+        not falsely lock the UI.
+        """
+        if (self._txConnected
+                and self._aggregate_tx_compliance() == FW_COMPLIANCE_UPDATE_REQUIRED):
+            return True
+        if (self._hvConnected
+                and self._console_fw_compliance == FW_COMPLIANCE_UPDATE_REQUIRED):
+            return True
+        return False
+
+    @pyqtProperty(bool, notify=firmwareComplianceChanged)
+    def firmwareUpdateAvailable(self) -> bool:
+        """True iff any connected device firmware is below the packaged version."""
+        if (self._txConnected
+                and self._aggregate_tx_compliance() == FW_COMPLIANCE_UPDATE_AVAILABLE):
+            return True
+        if (self._hvConnected
+                and self._console_fw_compliance == FW_COMPLIANCE_UPDATE_AVAILABLE):
+            return True
+        return False
+
+    @pyqtProperty(str, notify=firmwareComplianceChanged)
+    def firmwareStatusReport(self) -> str:
+        """Multi-line summary of every connected device's live firmware
+        version vs the app's hard minimum and SDK-packaged versions.
+
+        Surfaced as the System Status tooltip on the Controller page so
+        an operator hovering the status text can see the actual values
+        coming back from each module rather than just a "Firmware
+        Update Required" banner. Empty when nothing is connected.
+        """
+        labels = {
+            FW_COMPLIANCE_OK: "[OK]",
+            FW_COMPLIANCE_UPDATE_AVAILABLE: "[update available]",
+            FW_COMPLIANCE_UPDATE_REQUIRED: "[UPDATE REQUIRED]",
+            FW_COMPLIANCE_UNKNOWN: "[unknown]",
+        }
+        if not (self._hvConnected or self._txConnected):
+            return ""
+        lines: list[str] = []
+        lines.append(
+            f"Min required: console v{MIN_CONSOLE_FW_VERSION}, "
+            f"transmitter v{MIN_TRANSMITTER_FW_VERSION}"
+        )
+        pcv = packaged_console_fw_version() or "?"
+        ptv = packaged_transmitter_fw_version() or "?"
+        lines.append(f"SDK-packaged:  console v{pcv}, transmitter v{ptv}")
+        lines.append("")
+        if self._hvConnected:
+            cv = self._cached_hv_fw_version or "(reading…)"
+            tag = labels.get(self._console_fw_compliance, "[unknown]")
+            lines.append(f"Console:  v{cv}  {tag}")
+        if self._txConnected:
+            if not self._cached_tx_fw_version:
+                lines.append("TX modules: (reading…)")
+            else:
+                for module in sorted(self._cached_tx_fw_version):
+                    v = self._cached_tx_fw_version[module]
+                    tag = labels.get(
+                        self._tx_fw_compliance.get(module, FW_COMPLIANCE_UNKNOWN),
+                        "[unknown]",
+                    )
+                    lines.append(f"TX {module}:  v{v}  {tag}")
+        return "\n".join(lines)
+
+    @pyqtProperty(str, constant=True)
+    def minConsoleFirmwareVersion(self) -> str:
+        return MIN_CONSOLE_FW_VERSION
+
+    @pyqtProperty(str, constant=True)
+    def minTransmitterFirmwareVersion(self) -> str:
+        return MIN_TRANSMITTER_FW_VERSION
+
+    @pyqtProperty(str, constant=True)
+    def packagedConsoleFirmwareVersion(self) -> str:
+        # Stable for the life of the process; the SDK's bundled-or-
+        # downloaded firmware set is captured at startup, so QML can
+        # treat this as constant.
+        return packaged_console_fw_version() or ""
+
+    @pyqtProperty(str, constant=True)
+    def packagedTransmitterFirmwareVersion(self) -> str:
+        return packaged_transmitter_fw_version() or ""
 
     @pyqtProperty(int, notify=numModulesUpdated)
     def queryNumModulesConnected(self):

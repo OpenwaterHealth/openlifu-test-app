@@ -260,12 +260,61 @@ Rectangle {
     }
 
     function getSystemStateText() {
-        return "System State: " + (LIFUConnector.state === 0 ? "Disconnected"
+        return "Status: " + (LIFUConnector.state === 0 ? "Disconnected"
                             : LIFUConnector.state === 1 ? "Connected"
                             : LIFUConnector.state === 2 ? "Ready"
                             : LIFUConnector.state === 3 ? "Running"
                             : LIFUConnector.state === 4 ? "Test Script Ready"
                             : "Disconnected")
+    }
+
+    // Firmware-compliance overrides for the System State row. When any
+    // connected device is below the app's hard minimum we surface
+    // "Firmware Update Required" in orange and lock the Configure
+    // button; below the SDK-packaged version (but >= minimum) we show
+    // "Firmware Update Available" in yellow as advisory only.
+    function getStatusText() {
+        if (statusOverrideText !== "") {
+            return statusOverrideText
+        }
+        if (LIFUConnector.firmwareUpdateRequired) {
+            return "Status: Firmware Update Required"
+        }
+        if (LIFUConnector.firmwareUpdateAvailable) {
+            return "Status: Firmware Update Available"
+        }
+        return getSystemStateText()
+    }
+
+    function getStatusColor() {
+        if (statusOverrideText !== "") {
+            return getTXIndicatorColor()
+        }
+        if (LIFUConnector.firmwareUpdateRequired) {
+            return "#E67E22"  // orange: hard minimum violated; lockout active
+        }
+        if (LIFUConnector.firmwareUpdateAvailable) {
+            return "#F1C40F"  // yellow: advisory; SDK ships a newer build
+        }
+        return getTXIndicatorColor()
+    }
+
+    function getStatusTooltip() {
+        // Always show the per-device firmware report when something is
+        // connected; layer the Required/Available headline on top so
+        // operators see live versions next to the min/packaged values.
+        var report = LIFUConnector.firmwareStatusReport
+        if (LIFUConnector.firmwareUpdateRequired) {
+            var headline = "Configuration actions are disabled until the "
+                + "firmware is updated from the Settings tab."
+            return report.length > 0 ? headline + "\n\n" + report : headline
+        }
+        if (LIFUConnector.firmwareUpdateAvailable) {
+            var headline2 = "A newer firmware is available. Update from "
+                + "the Settings tab when convenient."
+            return report.length > 0 ? headline2 + "\n\n" + report : headline2
+        }
+        return report
     }
 
     function getTxTemperatureText() {
@@ -1476,21 +1525,40 @@ Rectangle {
 
                         Text {
                             id: statusText
-                            text: statusOverrideText !== "" ? statusOverrideText : getSystemStateText()
+                            text: getStatusText()
                             font.pixelSize: 14
-                            color: getTXIndicatorColor()
+                            color: getStatusColor()
                             horizontalAlignment: Text.AlignHCenter
                             Layout.fillWidth: true
+                            // Re-evaluate when firmware compliance flips so
+                            // text/color stay in sync with the binding.
+                            Connections {
+                                target: LIFUConnector
+                                function onFirmwareComplianceChanged() {
+                                    statusText.text = getStatusText()
+                                    statusText.color = getStatusColor()
+                                }
+                            }
                             SequentialAnimation on opacity {
                                 running: LIFUConnector.state === 3
                                 loops: Animation.Infinite
                                 NumberAnimation { from: 1.0; to: 0.35; duration: 500 }
                                 NumberAnimation { from: 0.35; to: 1.0; duration: 500 }
                             }
+
+                            MouseArea {
+                                id: statusTooltipArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                ToolTip.visible: containsMouse && getStatusTooltip().length > 0
+                                ToolTip.text: getStatusTooltip()
+                                ToolTip.delay: 400
+                            }
                         }
 
                         Text {
-                            text: "Modules: " + LIFUConnector.queryNumModulesConnected
+                            text: "#TX: " + LIFUConnector.queryNumModulesConnected
                             font.pixelSize: 12
                             color: "#BDC3C7"
                             verticalAlignment: Text.AlignVCenter
@@ -1498,7 +1566,7 @@ Rectangle {
 
                         
                         Text {
-                            text: "HV Enable:"
+                            text: "HV:"
                             font.pixelSize: 12
                             color: "#BDC3C7"
                             verticalAlignment: Text.AlignVCenter
@@ -1672,12 +1740,25 @@ Rectangle {
                             // Configure can run any time TX is connected and the
                             // device is not actively transmitting. Re-clicking
                             // re-pushes the current field values as the active
-                            // solution.
+                            // solution. Disabled while any connected device is
+                            // running firmware below the app's hard minimum --
+                            // the operator must update from the Settings tab.
                             enabled: LIFUConnector.txConnected && LIFUConnector.state <2 && !visualPressed
+                                     && !LIFUConnector.firmwareUpdateRequired
                             background: Rectangle {
                                 color: (configureButton.down || configureButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
+                            }
+                            ToolTip.visible: configureHoverArea.containsMouse && LIFUConnector.firmwareUpdateRequired
+                            ToolTip.text: "Configure is disabled until firmware is updated to the minimum required version (Settings tab)."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: configureHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                propagateComposedEvents: true
                             }
                             onClicked: {
                                 runWithButtonFeedback(configureButton, function() {

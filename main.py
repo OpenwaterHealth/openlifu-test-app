@@ -10,6 +10,7 @@ from PyQt6.QtQml import QQmlApplicationEngine
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
 from lifu.lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
+from lifu.lifu_constants import validate_firmware_version_pins
 from lifu.lifu_support import LIFUSupportConnector
 from openlifu_sdk.io.exceptions import LIFUHardwareInUseError
 from pathlib import Path
@@ -146,6 +147,13 @@ def build_app_tabs():
 
 def main():
     args = parse_arguments()
+
+    # Developer/dependency guardrail: refuse to start if the pinned
+    # minimum firmware versions exceed the versions bundled with the
+    # SDK. A misconfigured release would otherwise lock operators out
+    # of configuration with an in-app "Firmware Update Required" status
+    # that the bundled installer cannot satisfy.
+    validate_firmware_version_pins()
 
     # Apply the requested log level to the lifu package logger before
     # any of its modules log anything interesting. The handler is

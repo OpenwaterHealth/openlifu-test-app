@@ -21,6 +21,107 @@ Rectangle {
     property var configTargetModel: []
     property var modules: []  // Device info for all modules
 
+    // Font for the small "Check for Updates" icon buttons. Other widgets
+    // that need icons (e.g. IconButton.qml) load their own copy.
+    FontLoader {
+        id: settingsIconFont
+        source: "../assets/fonts/keenicons-outline.ttf"
+    }
+
+    // ----------------------------------------------------------------
+    // Firmware-version helpers (used by the colored "current firmware"
+    // labels). Compares the live device version against the operator's
+    // currently selected firmware file and the minimum-version pin
+    // baked into ``lifu_constants``. Result tiers:
+    //   "ok"               -- device >= file (green)
+    //   "update_available" -- device >= MIN but < file (yellow)
+    //   "update_required"  -- device < MIN (red)
+    //   "unknown"          -- can't parse the device version (gray)
+    // ----------------------------------------------------------------
+    function _parseFwVersion(s) {
+        if (!s) return null
+        var m = String(s).match(/(\d+)\.(\d+)\.(\d+)/)
+        if (!m) return null
+        return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])]
+    }
+    function _cmpFwVersion(a, b) {
+        if (a === null || b === null) return 0
+        for (var i = 0; i < 3; i++) {
+            if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1
+        }
+        return 0
+    }
+    function firmwareVersionColor(deviceVersion, minVersion, fileVersion) {
+        var d = _parseFwVersion(deviceVersion)
+        if (d === null) return "#BDC3C7"
+        var minV = _parseFwVersion(minVersion)
+        var fileV = _parseFwVersion(fileVersion)
+        if (minV !== null && _cmpFwVersion(d, minV) < 0) return "#E74C3C"  // red
+        if (fileV !== null && _cmpFwVersion(d, fileV) < 0) return "#F39C12"  // yellow
+        return "#2ECC71"  // green
+    }
+
+    // Color the firmware-file version label by how it compares to the
+    // hard MIN and to whatever the device is currently running.
+    //   orange -- file is itself below MIN (flashing this won't fix
+    //             the lockout; offer it but warn)
+    //   yellow -- file is below the device version (downgrade)
+    //   green  -- file is at/above MIN AND at/above device version
+    // Operators are not blocked from downgrading; this is purely
+    // informational.
+    function fileVersionColor(fileVersion, minVersion, deviceVersion) {
+        var f = _parseFwVersion(fileVersion)
+        if (f === null) return "#BDC3C7"
+        var minV = _parseFwVersion(minVersion)
+        var devV = _parseFwVersion(deviceVersion)
+        if (minV !== null && _cmpFwVersion(f, minV) < 0) return "#E67E22"  // orange
+        if (devV !== null && _cmpFwVersion(f, devV) < 0) return "#F1C40F"  // yellow (downgrade)
+        return "#2ECC71"  // green
+    }
+
+    // Canonical "M.m.p" form, stripping any "v" / "sim-" prefix the
+    // hardware reports. Returns the input verbatim when unparseable
+    // so the button text still says something rather than "undefined".
+    function _formatFwVersion(s) {
+        var p = _parseFwVersion(s)
+        if (p === null) return String(s || "?")
+        return p[0] + "." + p[1] + "." + p[2]
+    }
+
+    // Color tier for the Update Firmware button:
+    //   red    -- this update lifts the device from below MIN to at/above MIN
+    //   yellow -- this update is a downgrade, OR the file is still below MIN
+    //   grey   -- both before and after are at/above MIN (low-urgency)
+    // Falls back to red when versions can't be parsed (status quo).
+    function updateButtonColor(deviceVersion, fileVersion, minVersion) {
+        var d = _parseFwVersion(deviceVersion)
+        var f = _parseFwVersion(fileVersion)
+        var minV = _parseFwVersion(minVersion)
+        if (d === null || f === null || minV === null) return "#E74C3C"
+        var dBelowMin = _cmpFwVersion(d, minV) < 0
+        var fBelowMin = _cmpFwVersion(f, minV) < 0
+        var diff = _cmpFwVersion(f, d)
+        if (diff > 0 && dBelowMin && !fBelowMin) return "#E74C3C"  // red
+        if (diff < 0) return "#F1C40F"                              // yellow (downgrade)
+        if (diff > 0 && fBelowMin) return "#F1C40F"                 // yellow (still below MIN)
+        return "#7F8C8D"                                            // grey
+    }
+
+    // "Upgrade Firmware 1.0.1 -> 1.0.2" / "Downgrade Firmware ..."
+    // / "Reinstall Firmware v1.0.2" / fallback "Update Firmware".
+    function updateButtonText(deviceVersion, fileVersion) {
+        var d = _parseFwVersion(deviceVersion)
+        var f = _parseFwVersion(fileVersion)
+        if (f === null) return "Update Firmware"
+        if (d === null) return "Install Firmware v" + _formatFwVersion(fileVersion)
+        var diff = _cmpFwVersion(f, d)
+        if (diff > 0) return "Upgrade Firmware " + _formatFwVersion(deviceVersion)
+            + " → " + _formatFwVersion(fileVersion)
+        if (diff < 0) return "Downgrade Firmware " + _formatFwVersion(deviceVersion)
+            + " → " + _formatFwVersion(fileVersion)
+        return "Reinstall Firmware v" + _formatFwVersion(fileVersion)
+    }
+
     function rebuildConfigTargets() {
         var items = []
         // Console user config not yet supported in firmware – enable when ready:
@@ -120,6 +221,42 @@ Rectangle {
                 fwUpdateDialog.updateDone = true
                 settingsPage.consoleUpdating = false
                 settingsPage.transmitterUpdating = false
+            }
+        }
+
+        function onFirmwareCheckStatus(deviceType, phase, message, newPath, newVersion) {
+            // Drive the modal "Checking…" / "Downloading…" popup that
+            // overlays the Settings tab while the SDK polls GitHub.
+            // Phases come from SettingsMixin._check_and_download_firmware.
+            fwCheckDialog.deviceType = deviceType
+            fwCheckDialog.statusMessage = message
+            if (phase === "checking" || phase === "downloading") {
+                fwCheckDialog.busy = true
+                fwCheckDialog.checkDone = false
+                fwCheckDialog.statusColor = "#F39C12"
+                if (!fwCheckDialog.opened) {
+                    fwCheckDialog.dialogTitle = (deviceType === "console")
+                        ? "Console Firmware Update Check"
+                        : "Transmitter Firmware Update Check"
+                    fwCheckDialog.open()
+                }
+            } else {
+                fwCheckDialog.busy = false
+                fwCheckDialog.checkDone = true
+                fwCheckDialog.statusColor =
+                    (phase === "done" || phase === "uptodate") ? "#2ECC71" : "#E74C3C"
+                // For both "done" (downloaded a newer build) and
+                // "uptodate" (SDK already had the latest), retarget
+                // the firmware-file field to whatever the SDK now
+                // considers the preferred path. That way the operator
+                // sees the file they'll actually flash.
+                if ((phase === "done" || phase === "uptodate") && newPath && newPath.length > 0) {
+                    if (deviceType === "console") {
+                        consoleFwPath.text = newPath
+                    } else if (deviceType === "transmitter") {
+                        transmitterFwPath.text = newPath
+                    }
+                }
             }
         }
 
@@ -310,6 +447,92 @@ Rectangle {
                     border.color: parent.enabled ? (parent.hovered ? "#FFFFFF" : "#BDC3C7") : "#7F8C8D"
                 }
                 onClicked: fwUpdateDialog.close()
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Firmware "check for updates" dialog
+    //
+    // Shown while the SDK contacts GitHub for the latest firmware
+    // release and (optionally) downloads it. State is driven by
+    // ``onFirmwareCheckStatus`` above. The Close button is gated by
+    // ``checkDone`` so the dialog can't be dismissed mid-download.
+    // ----------------------------------------------------------------
+    Popup {
+        id: fwCheckDialog
+        anchors.centerIn: Overlay.overlay
+        width: 480
+        padding: 20
+        modal: true
+        closePolicy: Popup.NoAutoClose
+
+        property string dialogTitle: "Firmware Update Check"
+        property string deviceType: ""
+        property string statusMessage: ""
+        property string statusColor: "#F39C12"
+        property bool busy: false
+        property bool checkDone: false
+
+        background: Rectangle {
+            color: "#1E1E20"
+            radius: 12
+            border.color: "#3E4E6F"
+            border.width: 2
+        }
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 16
+
+            Text {
+                text: fwCheckDialog.dialogTitle
+                font.pixelSize: 16
+                font.weight: Font.Bold
+                color: "white"
+                Layout.alignment: Qt.AlignHCenter
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            BusyIndicator {
+                running: fwCheckDialog.busy
+                visible: fwCheckDialog.busy
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 48
+                Layout.preferredHeight: 48
+            }
+
+            Text {
+                text: fwCheckDialog.statusMessage
+                color: fwCheckDialog.statusColor
+                font.pixelSize: 13
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                Layout.fillWidth: true
+                visible: fwCheckDialog.statusMessage.length > 0
+            }
+
+            Button {
+                text: "Close"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 36
+                enabled: fwCheckDialog.checkDone
+                hoverEnabled: true
+
+                contentItem: Text {
+                    text: parent.text
+                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    font.pixelSize: 14
+                }
+                background: Rectangle {
+                    color: parent.enabled ? (parent.hovered ? "#4A90E2" : "#3A3F4B") : "#2A2F3B"
+                    radius: 6
+                    border.color: parent.enabled ? (parent.hovered ? "#FFFFFF" : "#BDC3C7") : "#7F8C8D"
+                }
+                onClicked: fwCheckDialog.close()
             }
         }
     }
@@ -868,7 +1091,9 @@ Rectangle {
                         // into the lead module's (TX 0) user_config. Only enabled when:
                         //   * a TX device is connected,
                         //   * the target component is "TX 0" (the lead module),
-                        //   * the editor holds something parseable.
+                        //   * the editor holds something parseable,
+                        //   * no connected device is below the app's hard
+                        //     minimum firmware version.
                         // The actual prompt + merge happens in addDeviceConfigDialog.
                         Rectangle {
                             id: addDeviceConfigButton
@@ -884,7 +1109,8 @@ Rectangle {
                             property bool canUse:
                                 LIFUConnector.txConnected &&
                                 targetIsLeadModule &&
-                                editorHasContent
+                                editorHasContent &&
+                                !LIFUConnector.firmwareUpdateRequired
                             color: !canUse
                                 ? "#2A2F3B"
                                 : (addDeviceConfigArea.containsMouse ? "#8E44AD" : "#3A3F4B")
@@ -907,6 +1133,20 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: addDeviceConfigButton.canUse
                                 onClicked: addDeviceConfigDialog.openForCurrentConfig()
+                            }
+
+                            ToolTip.visible: addDeviceConfigHoverArea.containsMouse
+                                && LIFUConnector.firmwareUpdateRequired
+                            ToolTip.text: "Disabled: update transmitter firmware to "
+                                + LIFUConnector.minTransmitterFirmwareVersion
+                                + " or newer (Firmware Update section above)."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: addDeviceConfigHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !addDeviceConfigButton.canUse
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -941,12 +1181,24 @@ Rectangle {
                         }
 
                         // Write Config
+                        //
+                        // Disabled when any connected device is below the
+                        // app's hard minimum firmware version -- the operator
+                        // must use the Firmware Update section above to bring
+                        // it back into compliance first.
                         Rectangle {
+                            id: writeConfigButton
                             Layout.fillWidth: true
                             height: 40
                             radius: 6
-                            color: writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B"
-                            border.color: writeConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+                            property bool canUse: !LIFUConnector.firmwareUpdateRequired
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : (writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (writeConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
 
                             Text {
                                 anchors.centerIn: parent
@@ -960,10 +1212,23 @@ Rectangle {
                                 id: writeConfigArea
                                 anchors.fill: parent
                                 hoverEnabled: true
+                                enabled: writeConfigButton.canUse
                                 onClicked: {
                                     var target = configTargetSelector.currentText.toLowerCase()
                                     LIFUConnector.writeUserConfig(target, userConfigEditor.text)
                                 }
+                            }
+
+                            ToolTip.visible: writeConfigHoverArea.containsMouse
+                                && LIFUConnector.firmwareUpdateRequired
+                            ToolTip.text: "Disabled: update firmware to the minimum required version (Firmware Update section above)."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: writeConfigHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !writeConfigButton.canUse
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -1082,8 +1347,39 @@ Rectangle {
                             Text {
                                 id: consoleCurrentVersion
                                 text: "—"
-                                color: "#4A90E2"
+                                color: settingsPage.firmwareVersionColor(
+                                    consoleCurrentVersion.text,
+                                    LIFUConnector.minConsoleFirmwareVersion,
+                                    LIFUConnector.getFirmwareFileVersion(consoleFwPath.text))
                                 font.pixelSize: 14
+                                font.weight: Font.Bold
+                            }
+                        }
+
+                        // File version row (extracted from the chosen .bin)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+
+                            Text {
+                                text: "File Version:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 14
+                                Layout.preferredWidth: 140
+                            }
+
+                            Text {
+                                id: consoleFileVersion
+                                text: {
+                                    var v = LIFUConnector.getFirmwareFileVersion(consoleFwPath.text)
+                                    return v ? v : "—"
+                                }
+                                color: settingsPage.fileVersionColor(
+                                    consoleFileVersion.text,
+                                    LIFUConnector.minConsoleFirmwareVersion,
+                                    consoleCurrentVersion.text)
+                                font.pixelSize: 14
+                                font.weight: Font.Bold
                             }
                         }
 
@@ -1138,23 +1434,66 @@ Rectangle {
                                 }
                                 onClicked: consoleFwDialog.open()
                             }
+
+                            Button {
+                                id: consoleCheckUpdatesBtn
+                                hoverEnabled: true
+                                Layout.preferredHeight: 40
+                                Layout.preferredWidth: 40
+                                enabled: !consoleUpdating
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Check GitHub for newer Console firmware"
+
+                                contentItem: Text {
+                                    text: "\ue950 "
+                                    font.family: settingsIconFont.name
+                                    font.pixelSize: 20
+                                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    color: {
+                                        if (!parent.enabled) return "#3A3F4B"
+                                        return parent.hovered ? "#4A90E2" : "#3A3F4B"
+                                    }
+                                    radius: 4
+                                    border.color: {
+                                        if (!parent.enabled) return "#7F8C8D"
+                                        return parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                    }
+                                }
+                                onClicked: LIFUConnector.checkLatestConsoleFirmware()
+                            }
                         }
 
-                        // Update button
+                        // Update button — dynamic color & text driven
+                        // by the device-vs-file version comparison and
+                        // the MIN pin (see updateButtonColor /
+                        // updateButtonText helpers above).
                         Rectangle {
                             id: consoleUpdateButton
-                            Layout.preferredWidth: 200
+                            Layout.preferredWidth: 340
                             Layout.alignment: Qt.AlignRight
                             height: 40
                             radius: 6
-                            color: enabled ? (consoleUpdateArea.containsMouse ? "#C0392B" : "#E74C3C") : "#7F8C8D"
                             enabled: LIFUConnector.hvConnected && !consoleUpdating && consoleFwPath.text.length > 0
+                            property color baseColor: settingsPage.updateButtonColor(
+                                consoleCurrentVersion.text,
+                                LIFUConnector.getFirmwareFileVersion(consoleFwPath.text),
+                                LIFUConnector.minConsoleFirmwareVersion)
+                            color: !enabled ? "#7F8C8D"
+                                : (consoleUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {
-                                text: consoleUpdating ? "Updating…" : "Update Firmware"
+                                text: consoleUpdating
+                                    ? "Updating…"
+                                    : settingsPage.updateButtonText(
+                                        consoleCurrentVersion.text,
+                                        LIFUConnector.getFirmwareFileVersion(consoleFwPath.text))
                                 anchors.centerIn: parent
                                 color: parent.enabled ? "white" : "#BDC3C7"
-                                font.pixelSize: 15
+                                font.pixelSize: 14
                                 font.weight: Font.Bold
                             }
 
@@ -1238,7 +1577,13 @@ Rectangle {
                             topPadding: 4
                         }
 
-                        // TX connection status indicator
+                        // TX connection status indicator + module selector.
+                        // The dropdown rides along on the same row as
+                        // the "X Modules Connected" text so the
+                        // transmitter card's row layout matches the
+                        // console card's (header → connection → fw
+                        // version → file version → file path → update),
+                        // keeping the two side-by-side cards aligned.
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
@@ -1260,22 +1605,17 @@ Rectangle {
                                 color: "#BDC3C7"
                                 Layout.fillWidth: true
                             }
-                        }
-
-                        // Module selector + current version row
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 10
 
                             Text {
                                 text: "Module:"
                                 color: "#BDC3C7"
-                                font.pixelSize: 14
-                                Layout.preferredWidth: 80
+                                font.pixelSize: 12
+                                visible: LIFUConnector.txConnected && txModuleCount > 0
                             }
 
                             ComboBox {
                                 id: txModuleSelector
+                                visible: LIFUConnector.txConnected && txModuleCount > 0
                                 model: {
                                     let count = txModuleCount > 0 ? txModuleCount : 1
                                     let items = []
@@ -1283,7 +1623,8 @@ Rectangle {
                                     return items
                                 }
                                 Layout.preferredWidth: 70
-                                Layout.preferredHeight: 32
+                                Layout.preferredHeight: 28
+                                font.pixelSize: 12
                                 enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0
 
                                 onCurrentIndexChanged: {
@@ -1295,20 +1636,56 @@ Rectangle {
                                     }
                                 }
                             }
+                        }
+
+                        // Firmware version row (selected module)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
 
                             Text {
                                 text: "Firmware Version:"
                                 color: "#BDC3C7"
                                 font.pixelSize: 14
-                                leftPadding: 10
+                                Layout.preferredWidth: 140
                             }
 
                             Text {
                                 id: txCurrentVersion
                                 text: "—"
-                                color: "#4A90E2"
+                                color: settingsPage.firmwareVersionColor(
+                                    txCurrentVersion.text,
+                                    LIFUConnector.minTransmitterFirmwareVersion,
+                                    LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text))
                                 font.pixelSize: 14
-                                Layout.fillWidth: true
+                                font.weight: Font.Bold
+                            }
+                        }
+
+                        // File version row (extracted from the chosen .bin)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+
+                            Text {
+                                text: "File Version:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 14
+                                Layout.preferredWidth: 140
+                            }
+
+                            Text {
+                                id: txFileVersion
+                                text: {
+                                    var v = LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text)
+                                    return v ? v : "—"
+                                }
+                                color: settingsPage.fileVersionColor(
+                                    txFileVersion.text,
+                                    LIFUConnector.minTransmitterFirmwareVersion,
+                                    txCurrentVersion.text)
+                                font.pixelSize: 14
+                                font.weight: Font.Bold
                             }
                         }
 
@@ -1363,23 +1740,66 @@ Rectangle {
                                 }
                                 onClicked: txFwDialog.open()
                             }
+
+                            Button {
+                                id: txCheckUpdatesBtn
+                                hoverEnabled: true
+                                Layout.preferredHeight: 40
+                                Layout.preferredWidth: 40
+                                enabled: !transmitterUpdating
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Check GitHub for newer Transmitter firmware"
+
+                                contentItem: Text {
+                                    text: "\ue950 "
+                                    font.family: settingsIconFont.name
+                                    font.pixelSize: 20
+                                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    color: {
+                                        if (!parent.enabled) return "#3A3F4B"
+                                        return parent.hovered ? "#4A90E2" : "#3A3F4B"
+                                    }
+                                    radius: 4
+                                    border.color: {
+                                        if (!parent.enabled) return "#7F8C8D"
+                                        return parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                    }
+                                }
+                                onClicked: LIFUConnector.checkLatestTransmitterFirmware()
+                            }
                         }
 
-                        // Update button
+                        // Update button — dynamic color & text driven
+                        // by the device-vs-file version comparison and
+                        // the MIN pin (see updateButtonColor /
+                        // updateButtonText helpers above).
                         Rectangle {
                             id: txUpdateButton
-                            Layout.preferredWidth: 200
+                            Layout.preferredWidth: 340
                             Layout.alignment: Qt.AlignRight
                             height: 40
                             radius: 6
-                            color: enabled ? (txUpdateArea.containsMouse ? "#C0392B" : "#E74C3C") : "#7F8C8D"
                             enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0 && transmitterFwPath.text.length > 0
+                            property color baseColor: settingsPage.updateButtonColor(
+                                txCurrentVersion.text,
+                                LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text),
+                                LIFUConnector.minTransmitterFirmwareVersion)
+                            color: !enabled ? "#7F8C8D"
+                                : (txUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {
-                                text: transmitterUpdating ? "Updating…" : "Update Firmware"
+                                text: transmitterUpdating
+                                    ? "Updating…"
+                                    : settingsPage.updateButtonText(
+                                        txCurrentVersion.text,
+                                        LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text))
                                 anchors.centerIn: parent
                                 color: parent.enabled ? "white" : "#BDC3C7"
-                                font.pixelSize: 15
+                                font.pixelSize: 14
                                 font.weight: Font.Bold
                             }
 
