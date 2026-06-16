@@ -96,6 +96,17 @@ RUN_LOG_DATEFMT = "%H:%M:%S"
 MIN_CONSOLE_FW_VERSION = "1.2.5"
 MIN_TRANSMITTER_FW_VERSION = "2.0.7"
 
+# Lowest device firmware version that supports being updated over the
+# wire from the app (DFU/bootloader path used by
+# ``updateConsoleFirmware`` / ``updateTransmitterFirmware``). Devices
+# running anything older than this must be recovered with a hardware
+# debugger / programmer -- attempting a firmware update from the app
+# will brick or stall them. The Settings page blocks the update button
+# and shows an error popup when the connected device reports a version
+# below these pins.
+MIN_DFU_CONSOLE_FW_VERSION = "1.2.3"
+MIN_DFU_TRANSMITTER_FW_VERSION = "2.0.4"
+
 # Compliance buckets surfaced to QML. Order matters: aggregate "worst"
 # state across modules picks the numerically larger value.
 FW_COMPLIANCE_OK = 0
@@ -182,14 +193,36 @@ def validate_firmware_version_pins():
     of configuration with an unfulfillable "Firmware Update Required"
     status.
     """
-    for label, min_v, pkg_v in (
-        ("console", MIN_CONSOLE_FW_VERSION, packaged_console_fw_version()),
-        ("transmitter", MIN_TRANSMITTER_FW_VERSION, packaged_transmitter_fw_version()),
+    for label, min_v, pkg_v, dfu_min_v in (
+        (
+            "console",
+            MIN_CONSOLE_FW_VERSION,
+            packaged_console_fw_version(),
+            MIN_DFU_CONSOLE_FW_VERSION,
+        ),
+        (
+            "transmitter",
+            MIN_TRANSMITTER_FW_VERSION,
+            packaged_transmitter_fw_version(),
+            MIN_DFU_TRANSMITTER_FW_VERSION,
+        ),
     ):
         parsed_min = parse_firmware_version(min_v)
         if parsed_min is None:
             raise ValueError(
                 f"Invalid {label} minimum firmware version: {min_v!r}"
+            )
+        parsed_dfu_min = parse_firmware_version(dfu_min_v)
+        if parsed_dfu_min is None:
+            raise ValueError(
+                f"Invalid {label} DFU minimum firmware version: {dfu_min_v!r}"
+            )
+        if parsed_dfu_min > parsed_min:
+            raise ValueError(
+                f"{label} DFU minimum firmware version {dfu_min_v} "
+                f"exceeds the runtime minimum {min_v}; lower "
+                f"MIN_DFU_{label.upper()}_FW_VERSION or raise "
+                f"MIN_{label.upper()}_FW_VERSION."
             )
         if pkg_v is None:
             raise ValueError(

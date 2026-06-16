@@ -538,6 +538,129 @@ Rectangle {
     }
 
     // ----------------------------------------------------------------
+    // "Firmware update not supported" error popup
+    //
+    // Shown when an operator clicks Update Firmware but the connected
+    // device is running a version older than the DFU minimum
+    // (``minDfu*FirmwareVersion`` from LIFUConnector). Devices that
+    // old cannot be updated over the wire and need to be recovered
+    // with a hardware debugger / programmer. Also used when the
+    // device version is unreadable so we don't blindly kick off a DFU
+    // that could brick the device.
+    // ----------------------------------------------------------------
+    Popup {
+        id: fwUpdateBlockedDialog
+        anchors.centerIn: Overlay.overlay
+        width: 500
+        padding: 20
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        property string dialogTitle: "Firmware Update Not Supported"
+        property string detailText: ""
+
+        background: Rectangle {
+            color: "#1E1E20"
+            radius: 12
+            border.color: "#E74C3C"
+            border.width: 2
+        }
+
+        function show(title, detail) {
+            dialogTitle = title
+            detailText = detail
+            open()
+        }
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 16
+
+            Text {
+                text: fwUpdateBlockedDialog.dialogTitle
+                font.pixelSize: 16
+                font.weight: Font.Bold
+                color: "#E74C3C"
+                Layout.alignment: Qt.AlignHCenter
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Text {
+                text: fwUpdateBlockedDialog.detailText
+                color: "#BDC3C7"
+                font.pixelSize: 13
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Button {
+                text: "Close"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 36
+                hoverEnabled: true
+
+                contentItem: Text {
+                    text: parent.text
+                    color: "#BDC3C7"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    font.pixelSize: 14
+                }
+                background: Rectangle {
+                    color: parent.hovered ? "#4A90E2" : "#3A3F4B"
+                    radius: 6
+                    border.color: parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                }
+                onClicked: fwUpdateBlockedDialog.close()
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Pre-flight check for the Update Firmware buttons. Returns true
+    // when the connected device is at/above the DFU minimum and the
+    // update may proceed; returns false (and shows the blocked-dialog)
+    // when the device version is unreadable or below the DFU minimum.
+    //
+    // ``deviceLabel`` is the human-readable name used in the popup
+    // ("Console" or "Transmitter module N"); ``deviceVersionText`` is
+    // the live version string from the corresponding label
+    // (consoleCurrentVersion.text / txCurrentVersion.text), and
+    // ``dfuMin`` is ``LIFUConnector.minDfu*FirmwareVersion``.
+    // ----------------------------------------------------------------
+    function _canStartFirmwareUpdate(deviceLabel, deviceVersionText, dfuMin) {
+        var d = _parseFwVersion(deviceVersionText)
+        if (d === null) {
+            fwUpdateBlockedDialog.show(
+                "Cannot Read Device Firmware Version",
+                "The current firmware version reported by " + deviceLabel +
+                " could not be parsed (\"" + deviceVersionText + "\").\n\n" +
+                "Wait for the device version to finish loading and try " +
+                "again. If the device never reports a version, it cannot " +
+                "be updated over the wire and must be recovered with a " +
+                "hardware debugger / programmer."
+            )
+            return false
+        }
+        var minV = _parseFwVersion(dfuMin)
+        if (minV !== null && _cmpFwVersion(d, minV) < 0) {
+            fwUpdateBlockedDialog.show(
+                "Firmware Too Old to Update",
+                deviceLabel + " is running firmware v" +
+                _formatFwVersion(deviceVersionText) + ", which is older " +
+                "than the minimum version (v" + _formatFwVersion(dfuMin) +
+                ") that supports updating over the wire from this app.\n\n" +
+                "Earlier firmware versions can only be updated using a " +
+                "hardware debugger / programmer. Contact Openwater support " +
+                "for recovery instructions."
+            )
+            return false
+        }
+        return true
+    }
+
+    // ----------------------------------------------------------------
     // Add Device Configuration dialog
     //
     // Prompts the operator for the array-level ``name`` and ``id`` fields,
@@ -1503,6 +1626,12 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: parent.enabled
                                 onClicked: {
+                                    if (!settingsPage._canStartFirmwareUpdate(
+                                            "the Console",
+                                            consoleCurrentVersion.text,
+                                            LIFUConnector.minDfuConsoleFirmwareVersion)) {
+                                        return
+                                    }
                                     fwUpdateDialog.updateTitle = "Updating Console Firmware…"
                                     fwUpdateDialog.progressValue = 0.0
                                     fwUpdateDialog.progressLabel = ""
@@ -1809,6 +1938,12 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: parent.enabled
                                 onClicked: {
+                                    if (!settingsPage._canStartFirmwareUpdate(
+                                            "Transmitter module " + txModuleSelector.currentIndex,
+                                            txCurrentVersion.text,
+                                            LIFUConnector.minDfuTransmitterFirmwareVersion)) {
+                                        return
+                                    }
                                     fwUpdateDialog.updateTitle = "Updating Transmitter Firmware (Module " + txModuleSelector.currentIndex + ")…"
                                     fwUpdateDialog.progressValue = 0.0
                                     fwUpdateDialog.progressLabel = ""

@@ -105,6 +105,8 @@ from lifu.lifu_constants import (
     FW_COMPLIANCE_UPDATE_REQUIRED,
     MIN_CONSOLE_FW_VERSION,
     MIN_TRANSMITTER_FW_VERSION,
+    MIN_DFU_CONSOLE_FW_VERSION,
+    MIN_DFU_TRANSMITTER_FW_VERSION,
     firmware_compliance,
     packaged_console_fw_version,
     packaged_transmitter_fw_version,
@@ -1224,6 +1226,21 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     @pyqtProperty(str, constant=True)
     def minTransmitterFirmwareVersion(self) -> str:
         return MIN_TRANSMITTER_FW_VERSION
+
+    @pyqtProperty(str, constant=True)
+    def minDfuConsoleFirmwareVersion(self) -> str:
+        # Lowest console firmware version that can still be updated
+        # over the wire from the app. Older devices require a hardware
+        # debugger; the Settings page blocks the update button and
+        # shows an error popup below this.
+        return MIN_DFU_CONSOLE_FW_VERSION
+
+    @pyqtProperty(str, constant=True)
+    def minDfuTransmitterFirmwareVersion(self) -> str:
+        # Lowest transmitter firmware version that can still be
+        # updated over the wire from the app. See
+        # ``minDfuConsoleFirmwareVersion``.
+        return MIN_DFU_TRANSMITTER_FW_VERSION
 
     @pyqtProperty(str, constant=True)
     def packagedConsoleFirmwareVersion(self) -> str:
