@@ -56,6 +56,16 @@ def parse_arguments():
             "(debug, info, warning, error, critical). Default: info."
         ),
     )
+    parser.add_argument(
+        "--sdk-loglevel",
+        default=None,
+        type=str,
+        help=(
+            "Logging level for the openlifu_sdk package logger. "
+            "Defaults to the value of --loglevel. Useful for turning on "
+            "verbose SDK chatter independently of the app's own logs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -90,16 +100,25 @@ def main():
     # attached to the ``lifu`` package logger in ``lifu_connector.py``
     # so every submodule (lifu.lifu_controller, lifu.lifu_settings,
     # lifu.lifu_transmitter, ...) inherits it; setting the level here
-    # at the package level controls all of them at once.
-    level_name = str(args.loglevel).upper()
-    level = logging.getLevelName(level_name)
-    if not isinstance(level, int):
-        print(
-            f"WARNING: invalid --loglevel '{args.loglevel}', falling back to INFO.",
-            file=sys.stderr,
-        )
-        level = logging.INFO
+    # at the package level controls all of them at once. The same
+    # handler is shared with the ``openlifu_sdk`` logger so SDK output
+    # is routed to the same terminal stream.
+    def _resolve_level(name: str, fallback: int) -> int:
+        resolved = logging.getLevelName(str(name).upper())
+        if not isinstance(resolved, int):
+            print(
+                f"WARNING: invalid log level '{name}', falling back to "
+                f"{logging.getLevelName(fallback)}.",
+                file=sys.stderr,
+            )
+            return fallback
+        return resolved
+
+    level = _resolve_level(args.loglevel, logging.INFO)
     logging.getLogger("lifu").setLevel(level)
+
+    sdk_level = _resolve_level(args.sdk_loglevel, level) if args.sdk_loglevel is not None else level
+    logging.getLogger("openlifu_sdk").setLevel(sdk_level)
 
     # Tell Windows to treat this as its own app (not python.exe) so the
     # taskbar shows our icon instead of the Python icon.
