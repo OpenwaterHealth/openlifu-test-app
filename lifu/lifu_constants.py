@@ -93,8 +93,8 @@ RUN_LOG_DATEFMT = "%H:%M:%S"
 # either minimum exceeds what the SDK can actually deliver -- otherwise
 # an operator could see "Firmware Update Required" without the bundled
 # installer being able to satisfy it.
-MIN_CONSOLE_FW_VERSION = "1.2.5"
-MIN_TRANSMITTER_FW_VERSION = "2.0.7"
+MIN_CONSOLE_FW_VERSION = "1.2.2"
+MIN_TRANSMITTER_FW_VERSION = "2.0.3"
 
 # Lowest device firmware version that supports being updated over the
 # wire from the app (DFU/bootloader path used by
