@@ -471,7 +471,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             except Exception as e:
                 logger.warning(f"Auto firmware-compliance TX query failed: {e}")
 
-    def _handle_lifu_error(self, title: str, exc: BaseException, context: str = ""):
+    def _handle_lifu_error(self, title: str, exc: BaseException, context: str = "",
+                           diagnostics: str = ""):
         """Format a caught exception and surface it as a device-error popup.
 
         The popup message includes:
@@ -484,7 +485,10 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
           duty-cycle / sequence-time numbers from
           :meth:`LIFUInterface.check_solution`),
         * any chained ``__cause__`` / ``__context__`` exception, so the
-          root cause of a wrapped error is not lost.
+          root cause of a wrapped error is not lost,
+        * an optional ``diagnostics`` block (e.g. the device-state
+          snapshot collected by the start-sonication handler when the
+          firmware NAKs ``start_trigger`` without giving a sub-code).
 
         The full traceback is logged at DEBUG level so it shows up in the
         terminal when ``--loglevel debug`` is in effect, without spamming
@@ -508,6 +512,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
         if context:
             detail = f"{context}\n{detail}"
+
+        if diagnostics:
+            detail = f"{detail}\n\nDevice state at failure:\n{diagnostics}"
 
         # Full traceback is useful for diagnosing the failure but is
         # noisy for the popup; route it to the debug log only.

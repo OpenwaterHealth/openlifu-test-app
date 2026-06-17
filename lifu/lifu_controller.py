@@ -75,12 +75,15 @@ class ControllerMixin:
 
     def get_solution(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=False):
         """Simulate configuring the transmitter."""
+        import copy
         num_modules = self._num_modules_connected if self._num_modules_connected > 0 else 1
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
-            solution = self._loaded_solution_data
-            if solution['sequence']['pulse_train_interval'] == 0:
-                solution['sequence']['pulse_train_interval'] = solution['sequence']['pulse_count'] * solution['sequence']['pulse_interval']
+            solution = copy.deepcopy(self._loaded_solution_data)  # Make a deep copy to avoid modifying the original loaded solution
+            # NOTE: pulse_train_interval == 0 is normalized inside
+            # ``LIFUTXDevice.set_trigger`` (which also bumps the value just
+            # above the firmware per-pulse period for FW <= 2.0.3
+            # compatibility). Do not patch it here.
             #check if delays and apodizations match the number of elements in the loaded solution
             delays_arr = np.array(solution["delays"]).reshape(-1)  # Ensure it's a 1D array
             apodizations_arr = np.array(solution["apodizations"]).reshape(-1)  # Ensure it's a 1D array
@@ -125,8 +128,8 @@ class ControllerMixin:
 
             pulse_count = int(pulseCount)
             pulse_train_interval = float(trainInterval)
-            if pulse_train_interval == 0:
-                pulse_train_interval = pulse_count * pulse_interval_seconds
+            # NOTE: pulse_train_interval == 0 and FW <= 2.0.3 firmware-period
+            # collisions are handled inside ``LIFUTXDevice.set_trigger``.
             sequence = {"pulse_interval": pulse_interval_seconds,
                         "pulse_count": pulse_count,
                         "pulse_train_interval": pulse_train_interval,
@@ -203,8 +206,8 @@ class ControllerMixin:
             pulse_interval_s = float(pulseInterval) * 1e-3  # UI ms -> s
             pulse_count = int(pulseCount)
             pulse_train_interval_s = float(trainInterval)   # UI already in seconds
-            if pulse_train_interval_s == 0:
-                pulse_train_interval_s = pulse_count * pulse_interval_s
+            # NOTE: pulse_train_interval == 0 and FW <= 2.0.3 firmware-period
+            # collisions are handled inside ``LIFUTXDevice.set_trigger``.
             pulse_train_count = int(trainCount)            
             trigger_mode = str(mode).lower()
             result = self._call_with_comm_retry(
@@ -443,15 +446,71 @@ class ControllerMixin:
             self._handle_lifu_error("Start Sonication", e,
                                     context="HV rail did not settle")
         except LIFUError as e:
+            # Most often this is a LIFUDeviceError on start_trigger --
+            # the firmware NAKed the command and the OW_ERROR packet
+            # carries no sub-code or payload. Collect what we can from
+            # the live HV/TX state so the operator-facing popup
+            # actually points at the likely cause (HV off, voltage not
+            # at setpoint, async-mode mismatch, etc.) rather than just
+            # repeating "returned device error".
             self._async_mode_enabled = False
             self.stateChanged.emit(self._state)
-            self._handle_lifu_error("Start Sonication", e)
+            self._handle_lifu_error("Start Sonication", e,
+                                    diagnostics=self._collect_sonication_diagnostics())
         except Exception as e:
             self._async_mode_enabled = False
             self.stateChanged.emit(self._state)
             self._handle_lifu_error("Start Sonication", e, context="Unexpected error")
         finally:
             self._interface_mutex.unlock()
+
+
+    def _collect_sonication_diagnostics(self) -> str:
+        """Snapshot HV + TX state for the start-sonication error popup.
+
+        Each probe is wrapped individually so a single failing query
+        doesn't suppress the rest -- failed probes report the exception
+        type/message inline instead of being dropped silently. Returns
+        a newline-joined block ready to drop into the popup's
+        ``diagnostics`` field.
+        """
+        lines: list[str] = []
+
+        def _probe(label: str, fn):
+            try:
+                lines.append(f"  {label}: {fn()}")
+            except Exception as exc:  # noqa: BLE001 - diagnostic best-effort
+                lines.append(f"  {label}: <query failed: {type(exc).__name__}: {exc}>")
+
+        lines.append(f"  HV enable mode: {HV_EN_MODES.get(self._hv_enable_mode, self._hv_enable_mode)}")
+        lines.append(f"  HV connected: {self._hvConnected}")
+        lines.append(f"  TX connected: {self._txConnected}")
+        lines.append(f"  Async mode (cached): {self._async_mode_enabled}")
+        lines.append(f"  Configured: {self._configured}")
+
+        hv = getattr(self.interface, "hvcontroller", None)
+        if hv is not None and self._hvConnected:
+            _probe("HV on (device)", hv.get_hv_status)
+            _probe("HV programmed setpoint", lambda: f"{hv.supply_voltage} V")
+            _probe("HV measured", lambda: f"{hv.get_voltage():.2f} V")
+        elif hv is None:
+            lines.append("  HV controller: (none -- external power supply)")
+        else:
+            lines.append("  HV controller: not connected")
+
+        tx = getattr(self.interface, "txdevice", None)
+        if tx is not None and self._txConnected:
+            _probe("TX async_mode (device)", lambda: tx.async_mode(None))
+            _probe("TX module count", tx.get_tx_module_count)
+            _probe(
+                "TX trigger config",
+                lambda: {k: v for k, v in tx.get_trigger().items()
+                         if k in ("pulse_interval", "pulse_count",
+                                  "pulse_train_interval", "pulse_train_count",
+                                  "mode")},
+            )
+
+        return "\n".join(lines)
 
 
     @pyqtSlot()
