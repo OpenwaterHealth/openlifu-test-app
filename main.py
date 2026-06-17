@@ -119,16 +119,6 @@ def parse_arguments():
             "INFO. Default: derive."
         ),
     )
-    parser.add_argument(
-        "--sdk-loglevel",
-        default=None,
-        type=str,
-        help=(
-            "Logging level for the openlifu_sdk package logger. "
-            "Defaults to the value of --loglevel. Useful for turning on "
-            "verbose SDK chatter independently of the app's own logs."
-        ),
-    )
     return parser.parse_args()
 
 
