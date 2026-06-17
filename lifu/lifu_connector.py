@@ -211,9 +211,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         """
         return LIFUInterface(HV_test_mode=hv_test_mode,
                              run_async=True,
-                             voltage_table_selection="evt0",
-                             sequence_time_selection="stress_test",
-                             duty_cycle_selection="stress_test")
+                             voltage_table_selection='evt0')
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -474,18 +472,46 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                 logger.warning(f"Auto firmware-compliance TX query failed: {e}")
 
     def _handle_lifu_error(self, title: str, exc: BaseException, context: str = ""):
-        """Format a caught LIFUError (or other exception) and emit a popup.
+        """Format a caught exception and surface it as a device-error popup.
 
-        The message passed to the user includes the ``[LIFU-<code>]`` prefix
-        that ``LIFUError`` embeds in its string representation, so operators
-        can reference the exact error code when reporting issues.
+        The popup message includes:
+
+        * the optional ``context`` (e.g. ``"Communication timeout"``),
+        * the exception class name (``LIFUSolutionError``, ``ValueError``, ...),
+        * the exception's own message text -- for :class:`LIFUError` subclasses
+          this already carries the ``[LIFU-<code>]`` prefix plus the
+          diagnostic detail composed by the SDK (e.g. the failing voltage /
+          duty-cycle / sequence-time numbers from
+          :meth:`LIFUInterface.check_solution`),
+        * any chained ``__cause__`` / ``__context__`` exception, so the
+          root cause of a wrapped error is not lost.
+
+        The full traceback is logged at DEBUG level so it shows up in the
+        terminal when ``--loglevel debug`` is in effect, without spamming
+        the popup for users at the default INFO level.
         """
-        if isinstance(exc, LIFUError):
-            detail = str(exc)
-        else:
-            detail = f"{type(exc).__name__}: {exc}"
+        exc_name = type(exc).__name__
+        message = str(exc).strip() or repr(exc)
+        detail = f"{exc_name}: {message}"
+
+        # Walk the explicit ``raise ... from cause`` chain (and fall back
+        # to the implicit ``__context__`` for unwrapped wrappers). Each
+        # link is appended on its own line so the popup reads top-down
+        # from the highest-level failure to the underlying root cause.
+        seen = {id(exc)}
+        cause = exc.__cause__ or exc.__context__
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            cause_msg = str(cause).strip() or repr(cause)
+            detail += f"\nCaused by {type(cause).__name__}: {cause_msg}"
+            cause = cause.__cause__ or cause.__context__
+
         if context:
-            detail = f"{context}: {detail}"
+            detail = f"{context}\n{detail}"
+
+        # Full traceback is useful for diagnosing the failure but is
+        # noisy for the popup; route it to the debug log only.
+        logger.debug("%s failed", title, exc_info=exc)
         self._emit_device_error(title, detail)
 
     def update_state(self):
@@ -703,6 +729,52 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def parse_status_string(self, status_str):
         """Parse a TX STATUS frame into a dict. Delegates to the SDK parser."""
         return _sdk_parse_status_string(status_str)
+
+    @pyqtSlot(str)
+    def setActiveTab(self, tab_id: str) -> None:
+        """Notify the connector that the user switched to *tab_id*.
+
+        Used to swap the LIFU safety profile when entering tabs that have
+        different operating envelopes than the main Controller workflow.
+        Specifically:
+
+        * ``"testing"`` (the Verification tab) loads the ``stress_test_evt0``
+          voltage table so the long-duration / accuracy suites can run at
+          higher duty cycles + durations than the production envelope.
+        * ``"controller"`` reverts to ``None`` so the next ``check_solution``
+          call infers the profile from the connected HV controller's
+          reported hardware version (``evt0``/``evt2``).
+
+        Other tabs leave the current selection alone. The change is lazy:
+        ``LIFUInterface._load_voltage_table()`` re-reads
+        ``voltage_table_selection`` on the next ``check_solution`` /
+        ``set_solution`` call, so no immediate hardware traffic is needed.
+        """
+        if self.interface is None:
+            return
+        prev = getattr(self.interface, "voltage_table_selection", None)
+        if tab_id == "testing":
+            new_selection = "stress_test_evt0"
+        elif tab_id == "controller":
+            new_selection = None
+        else:
+            return
+        if prev == new_selection:
+            return
+        try:
+            self.interface.voltage_table_selection = new_selection
+        except AttributeError as exc:
+            # SimulatedLIFUInterface / older SDKs may not expose the
+            # attribute; surface it in the log but don't crash the UI.
+            logger.warning(
+                "setActiveTab(%r): interface has no voltage_table_selection (%s)",
+                tab_id, exc,
+            )
+            return
+        logger.info(
+            "Tab switched to %r: voltage_table_selection %r -> %r",
+            tab_id, prev, new_selection,
+        )
 
     def on_error(self, desc: str, pkt_id: int, msg: str):
         if desc != "Console":

@@ -18,7 +18,7 @@ import logging
 from PyQt6.QtCore import pyqtSlot
 
 from openlifu_sdk.io import LIFUInterfaceStatus
-from openlifu_sdk.io.exceptions import LIFUError
+from openlifu_sdk.io.exceptions import LIFUError, LIFUDeviceError
 from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 from lifu.lifu_constants import HV_EN_WHILE_RUNNING, READY
@@ -139,7 +139,7 @@ class TransmitterMixin:
         """Fetch and emit number of connected TX modules."""
         self._interface_mutex.lock()
         try:
-            count = self.interface.txdevice.get_tx_module_count()
+            count = self.interface.txdevice.get_module_count()
             self._num_modules_connected = count
             self.numModulesUpdated.emit()
             logger.debug(f"Number of connected TX modules: {self._num_modules_connected}")

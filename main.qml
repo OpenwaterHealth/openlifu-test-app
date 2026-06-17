@@ -127,6 +127,10 @@ Window {
         }
 
         activeMenu = index
+        // Let the connector swap safety profiles per tab (Verification
+        // tab loads the stress-test envelope; Controller restores the
+        // production / HV-version-inferred envelope).
+        LIFUConnector.setActiveTab(targetId)
         console.log("Tab selected:", targetId, "(index", index + ")")
     }
 
