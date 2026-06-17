@@ -172,6 +172,9 @@ def firmware_compliance(version_str, min_version, packaged_version):
     update-available advisory is skipped (the minimum-version check
     still runs).
     """
+    if version_str.lower().startswith('sim-'):
+        # Simulator firmware; mark as OK compliance
+        return FW_COMPLIANCE_OK
     parsed = parse_firmware_version(version_str)
     if parsed is None:
         return FW_COMPLIANCE_UNKNOWN
