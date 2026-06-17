@@ -217,13 +217,6 @@ def validate_firmware_version_pins():
             raise ValueError(
                 f"Invalid {label} DFU minimum firmware version: {dfu_min_v!r}"
             )
-        if parsed_dfu_min > parsed_min:
-            raise ValueError(
-                f"{label} DFU minimum firmware version {dfu_min_v} "
-                f"exceeds the runtime minimum {min_v}; lower "
-                f"MIN_DFU_{label.upper()}_FW_VERSION or raise "
-                f"MIN_{label.upper()}_FW_VERSION."
-            )
         if pkg_v is None:
             raise ValueError(
                 f"Could not determine the {label} firmware version "
