@@ -209,9 +209,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         """
         return LIFUInterface(HV_test_mode=hv_test_mode,
                              run_async=True,
-                             voltage_table_selection="evt0",
-                             sequence_time_selection="stress_test",
-                             duty_cycle_selection="stress_test")
+                             voltage_table_selection="evt0")
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
