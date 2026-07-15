@@ -231,6 +231,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._tx_poll_failures = 0   # consecutive TX telemetry failures
         self._temp_poll_failures = 0  # consecutive temperature poll failures
         self._monitoring_paused = False  # set True while diagnostics tab is active
+        # Slave-module temperature polling while RUNNING (see poll_pre_tick).
+        self._last_slave_temp_poll = 0.0   # monotonic timestamp of last slave poll
+        self._next_slave_temp_module = 1   # round-robin cursor over modules 1..N-1
 
         # ----- Cached static device-info -----
         # Each ``queryXxxInfo`` / ``readXxxFirmwareVersion`` slot is
@@ -628,6 +631,62 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # ------------------------------------------------------------------
     _HV_POLL_FAIL_LIMIT = 3
     _TX_POLL_FAIL_LIMIT = 3
+    # Minimum spacing between slave-module temperature reads while RUNNING.
+    # Deliberately much slower than the 1 Hz stopped-state poll: each read
+    # shares the TX CDC endpoint with the unsolicited STATUS stream, so we
+    # keep the collision window small.
+    _SLAVE_TEMP_POLL_INTERVAL_S = 3.0
+
+    def poll_pre_tick(self):
+        """Poll slave-module temperatures while a sonication is RUNNING.
+
+        The poll thread skips ``poll_tx_tick`` during RUNNING because the
+        firmware's unsolicited STATUS frames already push the *master*
+        module's temperature -- but those frames carry no slave-module
+        data, so without this hook every module except 0 freezes at its
+        last stopped-state reading for the whole run.
+
+        This hook fires every cycle regardless of state; we act only while
+        RUNNING (the stopped-state path in ``queryTxTemperature`` already
+        covers all modules at 1 Hz). One slave module is read per poll, at
+        most every ``_SLAVE_TEMP_POLL_INTERVAL_S`` seconds, round-robin.
+        Failures are expected occasionally (a STATUS frame can interleave
+        with the response on the shared CDC IN endpoint and time the read
+        out); they are logged and dropped without touching the
+        ``_tx_poll_failures`` disconnect counter -- the STATUS stream
+        itself is proof the TX link is alive.
+        """
+        if self._state != RUNNING or not self._txConnected:
+            return
+        if self._num_modules_connected <= 1:
+            return
+        now = time.monotonic()
+        if now - self._last_slave_temp_poll < self._SLAVE_TEMP_POLL_INTERVAL_S:
+            return
+        self._last_slave_temp_poll = now
+
+        module = self._next_slave_temp_module
+        if module < 1 or module >= self._num_modules_connected:
+            module = 1
+        self._next_slave_temp_module = module + 1
+
+        self._interface_mutex.lock()
+        try:
+            tx_temp = self.interface.txdevice.get_temperature(module=module)
+            amb_temp = self.interface.txdevice.get_ambient_temperature(module=module)
+        except LIFUError as e:
+            logger.debug("Module %d: temperature poll while RUNNING failed "
+                         "(likely raced a STATUS frame): %s", module, e)
+            return
+        except Exception as e:
+            logger.warning("Module %d: unexpected error polling temperature "
+                           "while RUNNING: %s", module, e)
+            return
+        finally:
+            self._interface_mutex.unlock()
+        self.temperatureTxUpdated.emit(module, float(tx_temp), float(amb_temp))
+        logger.debug("Module %d (RUNNING poll): Temp: %s, Ambient: %s",
+                     module, tx_temp, amb_temp)
 
     def poll_tx_tick(self):
         """Per-tick TX telemetry poll: module enumeration + temperature.
