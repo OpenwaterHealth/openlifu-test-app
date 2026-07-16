@@ -1,0 +1,462 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:3967ef11-8d65-4198-a097-9422d69f13ec",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-16T00:00:00Z",
+    "authors": [
+      {
+        "name": "Openwater Firmware Engineering"
+      }
+    ],
+    "tools": [
+      {
+        "vendor": "Openwater",
+        "name": "curated-sbom",
+        "version": "1.0",
+        "notes": "Hand-curated CycloneDX SBOM. Direct Python dependencies are taken from pyproject.toml [project.dependencies]; they are declared as >= ranges, so the versions recorded here are the verified set installed in the application's deployment venv (.venv) on 2026-07-16 - the same environment the PyInstaller build (OpenLIFU-TestApp.spec) packages. Pin the ranges or add a lockfile to make this repository-enforced. The 'dev' (pyinstaller, black, isort, flake8, mypy) and 'test' (pytest family) extras are development-only and are not part of the distributed application. Transitive dependencies (PyQt6-Qt6, PyQt6_sip, contourpy, cycler, fonttools, kiwisolver, pillow, urllib3, certifi, idna, charset-normalizer, cffi, et al.) are resolved at install time and are not enumerated. openlifu-sdk and openlifu-verification are Openwater components; see the openlifu-sdk repository sbom.cdx.json for the SDK's own composition (including bundled firmware images and libusb DLLs)."
+      }
+    ],
+    "component": {
+      "bom-ref": "openwater-openlifu-test-app",
+      "type": "application",
+      "group": "cc.openwater",
+      "name": "openlifu-test-app",
+      "version": "1.0.18+14.g81d8297",
+      "description": "OpenLIFU Test Application - PyQt6/QML focused-ultrasound control interface for the LIFU transmitter and console (device connection, trigger/solution configuration, HV control, verification flows). Distributed as a PyInstaller-built executable.",
+      "publisher": "Openwater",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-only"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "openwater:git-commit",
+          "value": "81d8297"
+        },
+        {
+          "name": "openwater:version-source",
+          "value": "git describe (1.0.18-14-g81d8297); the static version = 0.1.0 in pyproject.toml is stale and not what the app displays"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "openlifu-sdk",
+      "type": "library",
+      "group": "cc.openwater",
+      "name": "openlifu-sdk",
+      "version": "2.0.15rc1",
+      "supplier": {
+        "name": "Openwater"
+      },
+      "publisher": "Openwater",
+      "description": "Openwater LIFU hardware I/O SDK (declared openlifu-sdk>=2.0.13). Bundles signed firmware images and libusb DLLs; see its own sbom.cdx.json for full composition.",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-only"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/openlifu-sdk@2.0.15rc1",
+      "properties": [
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv (wheel from GitHub release tag 2.0.15-rc.1, commit 911ff12)"
+        }
+      ]
+    },
+    {
+      "bom-ref": "openlifu-verification",
+      "type": "library",
+      "group": "cc.openwater",
+      "name": "openlifu-verification",
+      "version": "1.1.4",
+      "supplier": {
+        "name": "Openwater"
+      },
+      "publisher": "Openwater",
+      "description": "Openwater LIFU verification flows library (declared openlifu-verification>=1.1.0).",
+      "licenses": [
+        {
+          "license": {
+            "id": "AGPL-3.0-only"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/openlifu-verification@1.1.4",
+      "properties": [
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pyqt6",
+      "type": "library",
+      "name": "PyQt6",
+      "version": "6.11.0",
+      "supplier": {
+        "name": "Riverbank Computing"
+      },
+      "description": "Qt 6 bindings - the application's UI framework (QML front end).",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0-only"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pyqt6@6.11.0",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "PyQt6>=6.7.0"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        },
+        {
+          "name": "openwater:license-note",
+          "value": "GPL-3.0 (or Riverbank commercial license); compatible with the application's AGPL-3.0 license"
+        }
+      ]
+    },
+    {
+      "bom-ref": "qasync",
+      "type": "library",
+      "name": "qasync",
+      "version": "0.28.0",
+      "supplier": {
+        "name": "qasync contributors"
+      },
+      "description": "asyncio integration for Qt event loops.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/qasync@0.28.0",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "qasync>=0.25.0"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "matplotlib",
+      "type": "library",
+      "name": "matplotlib",
+      "version": "3.11.0",
+      "supplier": {
+        "name": "Matplotlib Development Team"
+      },
+      "description": "Plotting library used for signal/response visualization.",
+      "licenses": [
+        {
+          "license": {
+            "name": "Matplotlib License (PSF-based)"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/matplotlib@3.11.0",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "matplotlib>=3.7.0"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "numpy",
+      "type": "library",
+      "name": "numpy",
+      "version": "2.5.1",
+      "supplier": {
+        "name": "NumPy Developers"
+      },
+      "description": "Array computing for Python.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/numpy@2.5.1",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "numpy>=1.24.0"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "scipy",
+      "type": "library",
+      "name": "scipy",
+      "version": "1.18.0",
+      "supplier": {
+        "name": "SciPy Developers"
+      },
+      "description": "Scientific computing library.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/scipy@1.18.0",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "scipy>=1.10.0"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "requests",
+      "type": "library",
+      "name": "requests",
+      "version": "2.34.2",
+      "supplier": {
+        "name": "Python Software Foundation"
+      },
+      "description": "HTTP client.",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/requests@2.34.2",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "requests>=2.28.0"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pyserial",
+      "type": "library",
+      "name": "pyserial",
+      "version": "3.5",
+      "supplier": {
+        "name": "Chris Liechti"
+      },
+      "description": "Serial port access library.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/pyserial@3.5",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "pyserial>=3.5"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "soundfile",
+      "type": "library",
+      "name": "soundfile",
+      "version": "0.14.0",
+      "supplier": {
+        "name": "Bastian Bechtold"
+      },
+      "description": "Audio file I/O (libsndfile bindings), used for hydrophone/audio capture handling.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/soundfile@0.14.0",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "soundfile>=0.12.0"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "sounddevice",
+      "type": "library",
+      "name": "sounddevice",
+      "version": "0.5.5",
+      "supplier": {
+        "name": "Matthias Geier"
+      },
+      "description": "PortAudio bindings for audio capture/playback.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/sounddevice@0.5.5",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "sounddevice>=0.4.6"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    },
+    {
+      "bom-ref": "openpyxl",
+      "type": "library",
+      "name": "openpyxl",
+      "version": "3.1.5",
+      "supplier": {
+        "name": "openpyxl contributors"
+      },
+      "description": "Excel .xlsx read/write, used for report/preset export.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:pypi/openpyxl@3.1.5",
+      "properties": [
+        {
+          "name": "openwater:declared-constraint",
+          "value": "openpyxl (any version)"
+        },
+        {
+          "name": "openwater:version-basis",
+          "value": "installed in .venv"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "openwater-openlifu-test-app",
+      "dependsOn": [
+        "openlifu-sdk",
+        "openlifu-verification",
+        "pyqt6",
+        "qasync",
+        "matplotlib",
+        "numpy",
+        "scipy",
+        "requests",
+        "pyserial",
+        "soundfile",
+        "sounddevice",
+        "openpyxl"
+      ]
+    },
+    {
+      "ref": "openlifu-sdk",
+      "dependsOn": [
+        "numpy",
+        "pyserial"
+      ]
+    },
+    {
+      "ref": "openlifu-verification",
+      "dependsOn": []
+    },
+    {
+      "ref": "qasync",
+      "dependsOn": [
+        "pyqt6"
+      ]
+    },
+    {
+      "ref": "matplotlib",
+      "dependsOn": [
+        "numpy"
+      ]
+    },
+    {
+      "ref": "scipy",
+      "dependsOn": [
+        "numpy"
+      ]
+    },
+    {
+      "ref": "soundfile",
+      "dependsOn": []
+    },
+    {
+      "ref": "sounddevice",
+      "dependsOn": []
+    },
+    {
+      "ref": "pyqt6",
+      "dependsOn": []
+    },
+    {
+      "ref": "numpy",
+      "dependsOn": []
+    },
+    {
+      "ref": "pyserial",
+      "dependsOn": []
+    },
+    {
+      "ref": "requests",
+      "dependsOn": []
+    },
+    {
+      "ref": "openpyxl",
+      "dependsOn": []
+    }
+  ]
+}
