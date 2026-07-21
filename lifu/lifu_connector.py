@@ -231,6 +231,12 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._tx_poll_failures = 0   # consecutive TX telemetry failures
         self._temp_poll_failures = 0  # consecutive temperature poll failures
         self._monitoring_paused = False  # set True while diagnostics tab is active
+        # Set True for the duration of a firmware update. A console update
+        # power-cycles the TX modules, so they disconnect and re-enumerate;
+        # any TX query caught in that window times out. Those failures are
+        # EXPECTED, so they are logged but never surfaced as error popups
+        # (the update has its own modal progress/status dialog).
+        self._fw_update_active = False
         # Slave-module temperature polling while RUNNING (see poll_pre_tick).
         self._last_slave_temp_poll = 0.0   # monotonic timestamp of last slave poll
         self._next_slave_temp_module = 1   # round-robin cursor over modules 1..N-1
@@ -361,7 +367,18 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             logger.error(f"Error closing LIFU interface: {e}")
 
     def _emit_device_error(self, title: str, message: str):
-        """Log a device/communication failure and surface it to QML as a popup."""
+        """Log a device/communication failure and surface it to QML as a popup.
+
+        While a firmware update is running (``_fw_update_active``) the popup
+        is suppressed: a console update power-cycles the TX modules, so any
+        query that races their disconnect/re-enumeration times out. Those
+        failures are expected and would otherwise stack error dialogs behind
+        the update's own progress dialog. They are still logged.
+        """
+        if self._fw_update_active:
+            logger.warning("%s: %s (suppressed - firmware update in progress)",
+                           title, message)
+            return
         logger.error(f"{title}: {message}")
         try:
             self.deviceError.emit(title, message)

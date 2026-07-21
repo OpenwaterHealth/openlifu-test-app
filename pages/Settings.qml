@@ -21,6 +21,16 @@ Rectangle {
     property var configTargetModel: []
     property var modules: []  // Device info for all modules
 
+    // Console firmware to install: the operator-browsed file if one is
+    // selected, otherwise the signed image included with the SDK. The path
+    // field starts empty (meaning "use the included firmware"); Browse is an
+    // override, offered only once the console is on the secure bootloader
+    // (>= 1.2.6). See the console firmware card below.
+    readonly property string consoleEffectivePath:
+        consoleFwPath.text.length > 0
+            ? consoleFwPath.text
+            : LIFUConnector.getDefaultFirmwarePath("console")
+
     // Font for the small "Check for Updates" icon buttons. Other widgets
     // that need icons (e.g. IconButton.qml) load their own copy.
     FontLoader {
@@ -88,11 +98,25 @@ Rectangle {
         return p[0] + "." + p[1] + "." + p[2]
     }
 
+    // FULL version for display: keeps any pre-release / build suffix
+    // ("1.2.6-rc.5") while still stripping a leading "v" / "sim-" prefix,
+    // so an rc build is shown as an rc rather than collapsed to "1.2.6".
+    // Version *comparisons* still use the M.m.p triple (_parseFwVersion) —
+    // that is what the SBSFU header encodes and the bootloader enforces.
+    function _fullFwVersion(s) {
+        if (!s) return "?"
+        var m = String(s).match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/)
+        return m ? m[0] : String(s)
+    }
+
     // Color tier for the Update Firmware button:
     //   red    -- this update lifts the device from below MIN to at/above MIN
     //   yellow -- this update is a downgrade, OR the file is still below MIN
-    //   grey   -- both before and after are at/above MIN (low-urgency)
+    //   blue   -- normal actionable update / reinstall (already compliant,
+    //             low-urgency but still a valid, clickable action)
     // Falls back to red when versions can't be parsed (status quo).
+    // NOTE: this must NOT return the disabled colour (#7F8C8D) for any
+    // enabled state, or a valid reinstall looks greyed-out / disabled.
     function updateButtonColor(deviceVersion, fileVersion, minVersion) {
         var d = _parseFwVersion(deviceVersion)
         var f = _parseFwVersion(fileVersion)
@@ -104,22 +128,30 @@ Rectangle {
         if (diff > 0 && dBelowMin && !fBelowMin) return "#E74C3C"  // red
         if (diff < 0) return "#F1C40F"                              // yellow (downgrade)
         if (diff > 0 && fBelowMin) return "#F1C40F"                 // yellow (still below MIN)
-        return "#7F8C8D"                                            // grey
+        return "#4A90E2"                                            // blue (reinstall / compliant)
     }
 
-    // "Upgrade Firmware 1.0.1 -> 1.0.2" / "Downgrade Firmware ..."
-    // / "Reinstall Firmware v1.0.2" / fallback "Update Firmware".
+    // "Upgrade Firmware 1.2.5 -> 1.2.6-rc.5" / "Downgrade Firmware ..."
+    // / "Reinstall Firmware v1.2.6-rc.5" / fallback "Update Firmware".
+    // Labels show the FULL version (pre-release suffix included) so an rc
+    // build reads as an rc; the upgrade/downgrade/reinstall decision still
+    // comes from the M.m.p triple the bootloader actually enforces.
     function updateButtonText(deviceVersion, fileVersion) {
         var d = _parseFwVersion(deviceVersion)
         var f = _parseFwVersion(fileVersion)
         if (f === null) return "Update Firmware"
-        if (d === null) return "Install Firmware v" + _formatFwVersion(fileVersion)
+        if (d === null) return "Install Firmware v" + _fullFwVersion(fileVersion)
         var diff = _cmpFwVersion(f, d)
-        if (diff > 0) return "Upgrade Firmware " + _formatFwVersion(deviceVersion)
-            + " → " + _formatFwVersion(fileVersion)
-        if (diff < 0) return "Downgrade Firmware " + _formatFwVersion(deviceVersion)
-            + " → " + _formatFwVersion(fileVersion)
-        return "Reinstall Firmware v" + _formatFwVersion(fileVersion)
+        if (diff > 0) return "Upgrade Firmware " + _fullFwVersion(deviceVersion)
+            + " → " + _fullFwVersion(fileVersion)
+        if (diff < 0) return "Downgrade Firmware " + _fullFwVersion(deviceVersion)
+            + " → " + _fullFwVersion(fileVersion)
+        // Same M.m.p but a different build string (e.g. rc -> release) is
+        // still a meaningful change, so show both sides rather than "v X".
+        var dFull = _fullFwVersion(deviceVersion)
+        var fFull = _fullFwVersion(fileVersion)
+        if (dFull !== fFull) return "Install Firmware " + dFull + " → " + fFull
+        return "Reinstall Firmware v" + fFull
     }
 
     function rebuildConfigTargets() {
@@ -137,9 +169,11 @@ Rectangle {
         txQueryTimer.start()
     }
 
-    // Populate default firmware paths; query versions if already connected
+    // Populate default firmware paths; query versions if already connected.
+    // The console path is left EMPTY by default: an empty field means "use
+    // the firmware included with the SDK" (see consoleEffectivePath). Browse
+    // only overrides it, and only on a secure-bootloader (>= 1.2.6) unit.
     Component.onCompleted: {
-        consoleFwPath.text = LIFUConnector.getDefaultFirmwarePath("console")
         transmitterFwPath.text = LIFUConnector.getDefaultFirmwarePath("transmitter")
         if (LIFUConnector.hvConnected) {
             consoleCurrentVersion.text = "Reading…"
@@ -149,6 +183,22 @@ Rectangle {
             queryTxModules()
         }
         rebuildConfigTargets()
+        // Pages live in a StackLayout and are all instantiated up-front, so
+        // this page can be the visible one already at creation time.
+        if (visible) LIFUConnector.pauseMonitoring(true)
+    }
+
+    // Stop background telemetry (module temperatures, trigger/power status)
+    // while Settings is showing. Those 1 Hz reads race the firmware queries
+    // and DFU traffic this page issues, producing UART timeouts. Resume on
+    // leaving — unless a firmware update is still in flight, which manages
+    // the pause itself and must not be interrupted.
+    onVisibleChanged: {
+        if (visible) {
+            LIFUConnector.pauseMonitoring(true)
+        } else if (!consoleUpdating && !transmitterUpdating) {
+            LIFUConnector.pauseMonitoring(false)
+        }
     }
 
     // Small delay so the busy indicator renders before the blocking query
@@ -447,6 +497,77 @@ Rectangle {
                     border.color: parent.enabled ? (parent.hovered ? "#FFFFFF" : "#BDC3C7") : "#7F8C8D"
                 }
                 onClicked: fwUpdateDialog.close()
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // "Must update to 1.2.6 first" notice
+    //
+    // A custom (browsed) firmware image can only be installed on the
+    // secure bootloader, which exists on units already running >= 1.2.6.
+    // If the operator tries to Browse on an older unit, tell them to first
+    // update to the included 1.2.6 firmware (Update Firmware with the field
+    // left empty does exactly that via migration).
+    // ----------------------------------------------------------------
+    Popup {
+        id: mustUpdate126Dialog
+        anchors.centerIn: Overlay.overlay
+        width: 460
+        padding: 20
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        background: Rectangle {
+            color: "#1E1E20"
+            radius: 12
+            border.color: "#E67E22"
+            border.width: 2
+        }
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 16
+
+            Text {
+                text: "Update to 1.2.6 required first"
+                font.pixelSize: 16
+                font.weight: Font.Bold
+                color: "white"
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Text {
+                text: "This console is running " + consoleCurrentVersion.text
+                    + ". A custom firmware image can only be installed on the "
+                    + "secure bootloader (version 1.2.6 or newer).\n\n"
+                    + "Leave the Firmware File field empty and press "
+                    + "“Update Firmware” to install the included "
+                    + "1.2.6 firmware first, then browse for a custom image."
+                color: "#BDC3C7"
+                font.pixelSize: 13
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Button {
+                text: "OK"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 36
+                hoverEnabled: true
+                contentItem: Text {
+                    text: parent.text
+                    color: "#BDC3C7"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    font.pixelSize: 14
+                }
+                background: Rectangle {
+                    color: parent.hovered ? "#4A90E2" : "#3A3F4B"
+                    radius: 6
+                    border.color: parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                }
+                onClicked: mustUpdate126Dialog.close()
             }
         }
     }
@@ -1350,13 +1471,15 @@ Rectangle {
                                 color: settingsPage.firmwareVersionColor(
                                     consoleCurrentVersion.text,
                                     LIFUConnector.minConsoleFirmwareVersion,
-                                    LIFUConnector.getFirmwareFileVersion(consoleFwPath.text))
+                                    LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
                                 font.pixelSize: 14
                                 font.weight: Font.Bold
                             }
                         }
 
-                        // File version row (extracted from the chosen .bin)
+                        // File version row (the firmware that will be
+                        // installed: the browsed file, or — when the field is
+                        // empty — the image included with the SDK).
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 10
@@ -1371,7 +1494,7 @@ Rectangle {
                             Text {
                                 id: consoleFileVersion
                                 text: {
-                                    var v = LIFUConnector.getFirmwareFileVersion(consoleFwPath.text)
+                                    var v = LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath)
                                     return v ? v : "—"
                                 }
                                 color: settingsPage.fileVersionColor(
@@ -1398,7 +1521,7 @@ Rectangle {
                             TextField {
                                 id: consoleFwPath
                                 Layout.fillWidth: true
-                                placeholderText: "Path to firmware (.bin)"
+                                placeholderText: "Using included firmware — Browse to override"
                                 font.pixelSize: 13
                                 color: "white"
                                 background: Rectangle {
@@ -1432,40 +1555,73 @@ Rectangle {
                                         return parent.hovered ? "#FFFFFF" : "#BDC3C7"
                                     }
                                 }
-                                onClicked: consoleFwDialog.open()
-                            }
-
-                            Button {
-                                id: consoleCheckUpdatesBtn
-                                hoverEnabled: true
-                                Layout.preferredHeight: 40
-                                Layout.preferredWidth: 40
-                                enabled: !consoleUpdating
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Check GitHub for newer Console firmware"
-
-                                contentItem: Text {
-                                    text: "\ue950 "
-                                    font.family: settingsIconFont.name
-                                    font.pixelSize: 20
-                                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                                background: Rectangle {
-                                    color: {
-                                        if (!parent.enabled) return "#3A3F4B"
-                                        return parent.hovered ? "#4A90E2" : "#3A3F4B"
-                                    }
-                                    radius: 4
-                                    border.color: {
-                                        if (!parent.enabled) return "#7F8C8D"
-                                        return parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                // A custom (browsed) image only installs on
+                                // the secure bootloader. If the console is
+                                // older than 1.2.6, tell the operator to
+                                // update to the included 1.2.6 firmware first.
+                                onClicked: {
+                                    var d = settingsPage._parseFwVersion(
+                                        consoleCurrentVersion.text)
+                                    if (LIFUConnector.hvConnected && d !== null
+                                        && settingsPage._cmpFwVersion(d, [1, 2, 6]) < 0) {
+                                        mustUpdate126Dialog.open()
+                                    } else {
+                                        consoleFwDialog.open()
                                     }
                                 }
-                                onClicked: LIFUConnector.checkLatestConsoleFirmware()
                             }
                         }
+
+                        // Force flag — flash even when the image version is
+                        // BELOW the installed one. The SDK refuses downgrades
+                        // by default; this passes force=True. The bootloader's
+                        // persistent anti-rollback floor is still the final
+                        // authority at boot and may reject the image, leaving
+                        // the slot empty — bench/recovery use only.
+                        // Kept on ONE row with the update button: the card
+                        // clips to its height, so an extra row pushes the
+                        // button out of view.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 12
+
+                            CheckBox {
+                                id: consoleForceDowngrade
+                                checked: false
+                                enabled: !consoleUpdating
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Flash even if the image is older "
+                                    + "than what's installed. The bootloader's "
+                                    + "anti-rollback floor may still reject it at boot."
+
+                                indicator: Rectangle {
+                                    implicitWidth: 18
+                                    implicitHeight: 18
+                                    x: consoleForceDowngrade.leftPadding
+                                    y: parent.height / 2 - height / 2
+                                    radius: 3
+                                    color: consoleForceDowngrade.checked ? "#E67E22" : "#2A2F3B"
+                                    border.color: consoleForceDowngrade.enabled
+                                        ? (consoleForceDowngrade.checked ? "#E67E22" : "#3E4E6F")
+                                        : "#7F8C8D"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "✓"
+                                        color: "white"
+                                        font.pixelSize: 13
+                                        font.weight: Font.Bold
+                                        visible: consoleForceDowngrade.checked
+                                    }
+                                }
+                                contentItem: Text {
+                                    text: "Force"
+                                    color: consoleForceDowngrade.enabled ? "#BDC3C7" : "#7F8C8D"
+                                    font.pixelSize: 12
+                                    verticalAlignment: Text.AlignVCenter
+                                    leftPadding: consoleForceDowngrade.indicator.width
+                                        + consoleForceDowngrade.spacing
+                                }
+                            }
 
                         // Update button — dynamic color & text driven
                         // by the device-vs-file version comparison and
@@ -1473,16 +1629,27 @@ Rectangle {
                         // updateButtonText helpers above).
                         Rectangle {
                             id: consoleUpdateButton
-                            Layout.preferredWidth: 340
-                            Layout.alignment: Qt.AlignRight
-                            height: 40
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 200
+                            Layout.preferredHeight: 40
                             radius: 6
-                            enabled: LIFUConnector.hvConnected && !consoleUpdating && consoleFwPath.text.length > 0
+                            // The firmware to install must be a signed console
+                            // image. When the field is empty this is the SDK's
+                            // included (bundled) signed image; when the operator
+                            // browses, it's their file. The unit's state
+                            // (no-bootloader / legacy / secure) is auto-detected
+                            // by the SDK updater, so older units update via
+                            // migration — no minimum running-version gate here.
+                            property bool consoleFileSigned:
+                                LIFUConnector.isConsoleFirmwareSigned(
+                                    settingsPage.consoleEffectivePath)
+                            enabled: LIFUConnector.hvConnected && !consoleUpdating
+                                && consoleFileSigned
                             property color baseColor: settingsPage.updateButtonColor(
                                 consoleCurrentVersion.text,
-                                LIFUConnector.getFirmwareFileVersion(consoleFwPath.text),
+                                LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath),
                                 LIFUConnector.minConsoleFirmwareVersion)
-                            color: !enabled ? "#7F8C8D"
+                            color: !enabled ? "#3A3F4B"
                                 : (consoleUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {
@@ -1490,9 +1657,13 @@ Rectangle {
                                     ? "Updating…"
                                     : settingsPage.updateButtonText(
                                         consoleCurrentVersion.text,
-                                        LIFUConnector.getFirmwareFileVersion(consoleFwPath.text))
-                                anchors.centerIn: parent
-                                color: parent.enabled ? "white" : "#BDC3C7"
+                                        LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                                color: consoleUpdateButton.enabled ? "white" : "#BDC3C7"
                                 font.pixelSize: 14
                                 font.weight: Font.Bold
                             }
@@ -1512,11 +1683,35 @@ Rectangle {
                                     fwUpdateDialog.updateDone = false
                                     fwUpdateDialog.open()
                                     settingsPage.consoleUpdating = true
-                                    LIFUConnector.updateConsoleFirmware(consoleFwPath.text)
+                                    LIFUConnector.updateConsoleFirmware(
+                                        settingsPage.consoleEffectivePath,
+                                        consoleForceDowngrade.checked)
                                 }
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+                        }
+
+                        // Why the update button is disabled (signed-image
+                        // requirement).
+                        Text {
+                            Layout.alignment: Qt.AlignRight
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignRight
+                            wrapMode: Text.WordWrap
+                            color: "#E67E22"
+                            font.pixelSize: 11
+                            visible: text.length > 0
+                            text: {
+                                if (!LIFUConnector.hvConnected || consoleUpdating) return ""
+                                // Empty field uses the included (signed) image;
+                                // only a browsed, unsigned file trips this.
+                                if (consoleFwPath.text.length > 0
+                                    && !consoleUpdateButton.consoleFileSigned)
+                                    return "This file is not a signed console image."
+                                return ""
+                            }
                         }
                     }
                 }
@@ -1788,7 +1983,7 @@ Rectangle {
                                 txCurrentVersion.text,
                                 LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text),
                                 LIFUConnector.minTransmitterFirmwareVersion)
-                            color: !enabled ? "#7F8C8D"
+                            color: !enabled ? "#3A3F4B"
                                 : (txUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {

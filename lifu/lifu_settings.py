@@ -32,6 +32,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import pyqtSlot
 
@@ -64,34 +65,42 @@ class SettingsMixin:
 
     @pyqtSlot(str, result=str)
     def getDefaultFirmwarePath(self, device_type: str) -> str:
-        """Return the SDK's preferred firmware file for ``device_type``.
+        """Return the firmware file INCLUDED with the SDK for ``device_type``.
 
-        Delegates to ``openlifu_sdk.util.firmware`` so the path picks up
-        anything dropped into the SDK's ``firmware/downloads/`` directory
-        by ``checkLatest*Firmware`` -- otherwise the operator would only
-        see the wheel-bundled binaries here. Falls back to the canonical
-        bundled filename if the SDK can't be queried.
+        The console uses the signed image bundled with the SDK
+        (``LIFUFirmwareUpdate.bundled_signed_app()``) - deliberately NOT a
+        GitHub download: the update-to firmware and its version come from the
+        binary shipped with the app. The transmitter still uses the SDK's
+        firmware lookup. Falls back to the canonical bundled filename if the
+        SDK can't be queried.
         """
-        try:
-            from openlifu_sdk.util import firmware as sdk_fw
-            if device_type == "console":
-                return str(sdk_fw.get_console_firmware_path())
-            if device_type == "transmitter":
-                return str(sdk_fw.get_transmitter_firmware_path())
-            return ""
-        except Exception as e:
-            logger.warning(
-                "openlifu-sdk firmware path lookup failed for %s; "
-                "falling back to the bundled filename: %s",
-                device_type, e,
-            )
+        if device_type == "console":
+            try:
+                from openlifu_sdk.io.LIFUFirmwareUpdate import bundled_signed_app
+                p = bundled_signed_app()
+                if p.is_file():
+                    return str(p)
+                logger.warning("bundled console firmware not present: %s", p)
+            except Exception as e:
+                logger.warning("bundled console firmware lookup failed: %s", e)
+        else:
+            try:
+                from openlifu_sdk.util import firmware as sdk_fw
+                if device_type == "transmitter":
+                    return str(sdk_fw.get_transmitter_firmware_path())
+                return ""
+            except Exception as e:
+                logger.warning(
+                    "openlifu-sdk firmware path lookup failed for %s; "
+                    "falling back to the bundled filename: %s", device_type, e,
+                )
         try:
             spec = importlib.util.find_spec("openlifu_sdk")
             if spec is None or spec.origin is None:
                 return ""
             fw_dir = os.path.join(os.path.dirname(spec.origin), "firmware")
             names = {
-                "console": "openlifu-console-fw.signed.bin",
+                "console": "openlifu-console-fw-signed.bin",
                 "transmitter": "openlifu-transmitter-fw.signed.bin",
             }
             name = names.get(device_type, "")
@@ -102,16 +111,31 @@ class SettingsMixin:
 
     @pyqtSlot(str, result=str)
     def getFirmwareFileVersion(self, path: str) -> str:
-        """Return the ``MAJOR.MINOR.PATCH`` substring embedded in a
-        firmware blob.
+        """Return the firmware version string embedded in a firmware blob.
 
-        Returns ``""`` if ``path`` is empty/missing/unreadable, so the
-        QML side can suppress the version label without special-casing
-        every error mode. Uses the SDK's parser to stay byte-for-byte
-        compatible with what the device-side firmware update accepts.
+        Prefers the **full build version** the firmware embeds (e.g.
+        ``1.2.6-rc.5``) so the UI shows the complete version, not just the
+        ``MAJOR.MINOR.PATCH`` triple the SBSFU header encodes. The header
+        triple is used to anchor the search (so an unrelated version string
+        elsewhere in the image is ignored) and as the fallback. Returns
+        ``""`` if ``path`` is empty/missing/unreadable, so the QML side can
+        suppress the version label without special-casing every error mode.
         """
         if not path:
             return ""
+        # Authoritative numeric version from the SBSFU header (major.minor.patch).
+        header_ver = ""
+        try:
+            from openlifu_sdk.io.LIFUCrypto import parse_signed_image
+            header_ver = parse_signed_image(path).fw_version_str
+        except Exception:
+            pass
+        # Prefer the richer embedded build string when it matches the header.
+        full = self._embedded_full_version(path, header_ver)
+        if full:
+            return full
+        if header_ver:
+            return header_ver
         try:
             from openlifu_sdk.util.firmware import _get_firmware_version
             return _get_firmware_version(path)
@@ -119,21 +143,81 @@ class SettingsMixin:
             logger.debug("Could not read firmware version from %s: %s", path, e)
             return ""
 
-    @pyqtSlot()
-    def checkLatestConsoleFirmware(self) -> None:
-        """Poll GitHub for a newer console firmware build, downloading
-        it if found. Status pushed via :attr:`firmwareCheckStatus`.
+    @staticmethod
+    def _embedded_full_version(path: str, anchor: str = "") -> str:
+        """Scan ``path`` for the fullest ``x.y.z[-suffix]`` version string.
 
-        Runs in a background thread so the QML "Checking…" /
-        "Downloading…" popup can render and the Qt event loop stays
-        responsive while the network calls are in flight.
+        If ``anchor`` (the header triple) is given, only matches that start
+        with it are considered, so we return the build string for the image's
+        actual version (e.g. header ``1.2.6`` -> embedded ``1.2.6-rc.5``).
+        Returns ``""`` if nothing matches.
         """
-        self._check_and_download_firmware("console")
+        import re
+        try:
+            data = Path(path).read_bytes()
+        except Exception:
+            return ""
+        pat = re.compile(rb"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?")
+        best = ""
+        for m in pat.finditer(data):
+            s = m.group().decode("ascii", "ignore")
+            if anchor and not s.startswith(anchor):
+                continue
+            if len(s) > len(best):
+                best = s
+        return best
+
+    @pyqtSlot(str, result=bool)
+    def isConsoleFirmwareSigned(self, path: str) -> bool:
+        """True if ``path`` is a valid signed console (SBSFU) image.
+
+        A user-provided firmware file must be signed to be installable. This
+        checks the structure and the SHA-256 firmware tag (a full ECDSA check
+        happens in the bootloader at boot)."""
+        if not path:
+            return False
+        try:
+            from openlifu_sdk.io.LIFUCrypto import validate_signed_image
+            return validate_signed_image(path).structural_ok
+        except Exception as e:
+            logger.debug("Firmware signed-check failed for %s: %s", path, e)
+            return False
+
+    @pyqtSlot(result=bool)
+    def canInstallSignedFirmware(self) -> bool:
+        """True if the connected console can accept a signed binary.
+
+        Signed images run under the secure bootloader, which exists only on
+        units already running >= 1.2.6. Returns False if not connected, the
+        version can't be read, or the running app is older."""
+        return self._console_ge_126()[0]
+
+    def _console_ge_126(self) -> tuple[bool, str]:
+        """(ok, running_version) - is the console on >= 1.2.6?"""
+        try:
+            ver = str(self.interface.hvcontroller.get_version())
+        except Exception as e:
+            logger.debug("Could not read console version: %s", e)
+            return False, ""
+        from lifu.lifu_constants import parse_firmware_version
+        parsed = parse_firmware_version(ver)
+        return (parsed is not None and parsed >= (1, 2, 6)), ver
+
+    # NOTE: the console firmware is no longer fetched from GitHub. The
+    # console updates exclusively to the signed image bundled with the SDK
+    # (see :meth:`getDefaultFirmwarePath` -> ``bundled_signed_app``), so
+    # there is no ``checkLatestConsoleFirmware`` slot. The transmitter card
+    # still offers a GitHub "check for latest" action below.
 
     @pyqtSlot()
     def checkLatestTransmitterFirmware(self) -> None:
         """Poll GitHub for a newer transmitter firmware build,
-        downloading it if found. See :meth:`checkLatestConsoleFirmware`.
+        downloading it if found. Status pushed via
+        :attr:`firmwareCheckStatus`.
+
+        Runs in a background thread so the QML "Checking…" /
+        "Downloading…" popup can render and the Qt event loop stays
+        responsive while the network calls are in flight.
         """
         self._check_and_download_firmware("transmitter")
 
@@ -367,37 +451,72 @@ class SettingsMixin:
             self._interface_mutex.unlock()
 
     @pyqtSlot(str)
-    def updateConsoleFirmware(self, firmware_path: str) -> None:
-        """Update the console (HV) firmware using DFU.  Runs in a background thread."""
+    @pyqtSlot(str, bool)
+    def updateConsoleFirmware(self, firmware_path: str,
+                              force: bool = False) -> None:
+        """Update the console (HV) firmware. Runs in a background thread.
+
+        Uses the SDK's auto-detecting updater (:class:`LIFUFirmwareUpdate`),
+        which picks the correct path for the unit's current state, so this
+        works for units older than the secure bootloader too:
+
+          - no bootloader (app < 1.2.0)     -> migrate to the secure
+            bootloader via STM32 ROM DFU (bundled production image)
+          - legacy bootloader (1.2.0-1.2.5) -> migrate via the RAM updater
+          - secure bootloader (>= 1.2.6)    -> normal signed-app update
+
+        ``firmware_path`` is the signed app (used for the legacy and secure
+        paths); the no-bootloader path flashes the SDK's bundled combined
+        image. Precondition: the file must be a valid signed console image.
+
+        ``force`` applies to the secure app-update path only: it flashes an
+        image whose version is BELOW the installed one, which the SDK
+        otherwise refuses. The bootloader's persistent anti-rollback floor is
+        still the final authority at boot and may reject the image, leaving
+        the slot empty - so this is a bench/recovery option.
+        """
         def _run():
+            # The provided file must be a signed image (the bundled default
+            # is). This is a sanity check on a user-browsed file; the actual
+            # cohort/path is chosen by LIFUFirmwareUpdate at run time.
+            if not self.isConsoleFirmwareSigned(firmware_path):
+                msg = "Firmware file is not a valid signed console image."
+                logger.error(msg)
+                self.fwUpdateStatus.emit("console", False, msg)
+                return
+
             # The DFU sequence reboots the device into the bootloader; any
             # polling round-trip in flight against the soon-to-disappear
             # CDC interface causes spurious comm timeouts. Pause polling
             # for the duration of the update.
             prev_paused = self._monitoring_paused
             self._monitoring_paused = True
+            # Updating the console also drops 12V, so the TX modules power
+            # off and re-enumerate. Any TX query that races that window
+            # fails ("get_device_count timed out"). Those errors are
+            # EXPECTED here, so suppress the popups for the duration.
+            prev_fw_active = self._fw_update_active
+            self._fw_update_active = True
             try:
-                from openlifu_sdk.io.LIFUDFU import LIFUDFUManager
+                from openlifu_sdk.io.LIFUFirmwareUpdate import LIFUFirmwareUpdate
 
                 def _progress(written: int, total: int, label: str) -> None:
                     self.fwUpdateProgress.emit(label, written, total)
 
                 self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
-                logger.info(f"Console firmware update: {firmware_path}")
-                mgr = LIFUDFUManager(uart=self.interface.hvcontroller.uart)
-                mgr.update_module(
-                    module=0,
-                    package_file=firmware_path,
-                    enter_dfu_fn=self.interface.hvcontroller.enter_dfu,
-                    vid=0x0483,
-                    pid=0xDF11,
-                    libusb_dll=None,
-                    dfu_wait_s=5.0,
-                    device_type="console",
-                    progress_callback=_progress,
-                )
-                self.fwUpdateStatus.emit("console", True, "Console firmware update complete.")
-                logger.info("Console firmware update complete.")
+                logger.info("Console firmware update: %s (force=%s)",
+                            firmware_path, force)
+                # Auto-detect the unit's state and run the right path
+                # (ROM-DFU migration / RAM-updater migration / signed-app
+                # update). Keyless: the bootloader verifies at boot.
+                fw = LIFUFirmwareUpdate(hv=self.interface.hvcontroller)
+                result = fw.update(signed_app=firmware_path, force=force,
+                                   progress_callback=_progress)
+                done = result.summary
+                if result.reboot_required:
+                    done += " Power-cycle the console to boot the new application."
+                self.fwUpdateStatus.emit("console", True, done)
+                logger.info("Console firmware update complete: %s", result.summary)
                 # New firmware -> cached version/HWID is stale.
                 self._invalidate_device_caches("HV")
             except Exception as e:
@@ -406,6 +525,11 @@ class SettingsMixin:
                 self.fwUpdateStatus.emit("console", False, msg)
             finally:
                 self._monitoring_paused = prev_paused
+                # TX modules re-enumerate after the console comes back; drop
+                # the stale cache so the next query re-reads them, and stop
+                # suppressing real errors.
+                self._invalidate_device_caches("TX")
+                self._fw_update_active = prev_fw_active
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -414,9 +538,12 @@ class SettingsMixin:
         """Update the transmitter firmware for a specific module. Runs in a background thread."""
         def _run():
             # Pause polling for the duration -- see updateConsoleFirmware
-            # for rationale.
+            # for rationale. The 12V power-cycle at the end re-enumerates
+            # every module, so suppress the expected TX query failures too.
             prev_paused = self._monitoring_paused
             self._monitoring_paused = True
+            prev_fw_active = self._fw_update_active
+            self._fw_update_active = True
             self._interface_mutex.lock()
             try:
                 def _progress(written: int, total: int, label: str) -> None:
@@ -446,11 +573,16 @@ class SettingsMixin:
                 self._interface_mutex.unlock()
                 self._monitoring_paused = prev_paused
 
-                # Power cycle 12v to ensure correct enumeration.
-                self.interface.hvcontroller.turn_12v_off()
-                time.sleep(3)
-                self.interface.hvcontroller.turn_12v_on()
-                time.sleep(3)
+                # Power cycle 12v to ensure correct enumeration. Errors from
+                # modules dropping/returning are still suppressed here -
+                # _fw_update_active is not cleared until after the cycle.
+                try:
+                    self.interface.hvcontroller.turn_12v_off()
+                    time.sleep(3)
+                    self.interface.hvcontroller.turn_12v_on()
+                    time.sleep(3)
+                finally:
+                    self._fw_update_active = prev_fw_active
 
         threading.Thread(target=_run, daemon=True).start()
 

@@ -106,15 +106,25 @@ FW_COMPLIANCE_UPDATE_REQUIRED = 3
 
 @functools.lru_cache(maxsize=1)
 def packaged_console_fw_version() -> str | None:
-    """Latest console firmware version the pinned SDK can provide.
+    """Console firmware version the SDK ships as its *included* image.
 
-    Cached for the lifetime of the process: the SDK's bundled binaries
-    don't change, and any newer file dropped into its
-    ``firmware/downloads/`` between launches will be picked up on the
-    next start. Returns ``None`` if the SDK isn't importable or doesn't
-    expose any console firmware on disk -- callers must treat that as
-    "unknown" and skip the update-available advisory.
+    The console updates exclusively to the signed image bundled with the
+    SDK (``LIFUFirmwareUpdate.bundled_signed_app``), so the authoritative
+    version is the FwVersion in that image's SBSFU header (decoded to
+    semver by ``LIFUCrypto``). Falls back to the legacy GitHub-era lookup
+    for older SDKs. Returns ``None`` if neither is available -- callers
+    must treat that as "unknown" and skip the update-available advisory.
     """
+    try:
+        from openlifu_sdk.io.LIFUCrypto import parse_signed_image
+        from openlifu_sdk.io.LIFUFirmwareUpdate import bundled_signed_app
+        img = bundled_signed_app()
+        if img.is_file():
+            return parse_signed_image(str(img)).fw_version_str
+        logger.warning("bundled console firmware not present: %s", img)
+    except Exception as e:
+        logger.debug("Bundled signed console image unreadable (%s); "
+                     "trying legacy SDK lookup", e)
     try:
         from openlifu_sdk.util.firmware import get_console_firmware_version
         return get_console_firmware_version()
