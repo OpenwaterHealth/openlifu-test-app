@@ -128,7 +128,14 @@ class ConsoleMixin:
 
     @pyqtSlot()
     def queryPowerStatus(self):
-        """Fetch and emit HV state."""
+        """Fetch and emit HV state.
+
+        No-ops while telemetry is paused (see :meth:`pauseMonitoring`) so
+        page-enter refreshes from QML -- which run on the main thread, not
+        the poll thread -- also stay off the wire while paused.
+        """
+        if self._monitoring_paused:
+            return
         self._interface_mutex.lock()
         try:
             hv_state = self.interface.hvcontroller.get_hv_status()
