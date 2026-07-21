@@ -51,6 +51,14 @@ datas    += sdk_datas
 binaries += sdk_bins
 hidden   += sdk_hidden
 
+# openlifu_verification -- the prodreqs_* verification tests imported by
+# lifu_connector. Pure-Python submodules PyInstaller won't discover from the
+# ``from openlifu_verification.prodreqs_* import ...`` statements alone.
+ver_datas, ver_bins, ver_hidden = collect_all("openlifu_verification")
+datas    += ver_datas
+binaries += ver_bins
+hidden   += ver_hidden
+
 # pyserial -- importing the ``serial`` package directly (e.g. for
 # ``serial.Serial`` / ``serial.SerialException``) requires its
 # ``__init__`` to be bundled, not just its submodules. Listing only the
