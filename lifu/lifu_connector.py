@@ -155,10 +155,11 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
     fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
 
-    # Firmware "check for updates" signal. Phases: "checking",
-    # "downloading", "uptodate", "done", "error". ``newPath`` and
-    # ``newVersion`` are populated for "done"/"uptodate"; empty
-    # otherwise. See ``SettingsMixin._check_and_download_firmware``.
+    # Firmware "check for updates" signal. Phases: "checking", "uptodate",
+    # "error" ("downloading"/"done" are retired — the SDK no longer
+    # downloads firmware from GitHub; units flash the SDK-bundled image).
+    # ``newPath`` and ``newVersion`` are populated for "uptodate"; empty
+    # otherwise. See ``SettingsMixin._report_bundled_firmware``.
     firmwareCheckStatus = pyqtSignal(str, str, str, str, str)
     # (device_type, phase, message, newPath, newVersion)
 
