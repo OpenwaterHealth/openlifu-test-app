@@ -433,11 +433,22 @@ class SettingsMixin:
             # Pause polling for the duration -- see updateConsoleFirmware
             # for rationale. The 12V power-cycle at the end re-enumerates
             # every module, so suppress the expected TX query failures too.
+            #
+            # IMPORTANT: do NOT hold self._interface_mutex across the update.
+            # _monitoring_paused already keeps the poll thread AND main-thread
+            # QML telemetry refreshes off the wire (they early-return on the
+            # flag before locking the mutex -- see queryTxTemperature /
+            # queryPowerStatus), so the lock is redundant for serialization.
+            # Worse, holding it for the multi-second update lets any
+            # mutex-taking slot invoked on the GUI thread block the Qt event
+            # loop, which then cannot deliver the queued fwUpdateProgress
+            # signals -- the progress bar freezes and only jumps to 100% when
+            # the lock is finally released. The console path (which works)
+            # deliberately relies on _monitoring_paused alone; mirror it here.
             prev_paused = self._monitoring_paused
             self._monitoring_paused = True
             prev_fw_active = self._fw_update_active
             self._fw_update_active = True
-            self._interface_mutex.lock()
             try:
                 def _progress(written: int, total: int, label: str) -> None:
                     self.fwUpdateProgress.emit(label, written, total)
@@ -463,7 +474,6 @@ class SettingsMixin:
                 logger.error(msg)
                 self.fwUpdateStatus.emit("transmitter", False, msg)
             finally:
-                self._interface_mutex.unlock()
                 self._monitoring_paused = prev_paused
 
                 # Power cycle 12v to ensure correct enumeration. Errors from
