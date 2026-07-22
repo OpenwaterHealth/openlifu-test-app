@@ -101,7 +101,7 @@ class SettingsMixin:
             fw_dir = os.path.join(os.path.dirname(spec.origin), "firmware")
             names = {
                 "console": "openlifu-console-fw-signed.bin",
-                "transmitter": "openlifu-transmitter-fw.signed.bin",
+                "transmitter": "openlifu-transmitter-fw-signed.bin",
             }
             name = names.get(device_type, "")
             return os.path.join(fw_dir, name) if name else ""
@@ -203,181 +203,74 @@ class SettingsMixin:
         parsed = parse_firmware_version(ver)
         return (parsed is not None and parsed >= (1, 2, 6)), ver
 
-    # NOTE: the console firmware is no longer fetched from GitHub. The
-    # console updates exclusively to the signed image bundled with the SDK
-    # (see :meth:`getDefaultFirmwarePath` -> ``bundled_signed_app``), so
-    # there is no ``checkLatestConsoleFirmware`` slot. The transmitter card
-    # still offers a GitHub "check for latest" action below.
+    # NOTE: firmware is no longer fetched from GitHub at runtime — the SDK's
+    # download flow was removed. Both devices update exclusively to the
+    # signed image bundled with the SDK's firmware directory; other versions
+    # must be downloaded from the firmware repo's GitHub releases (or built
+    # from source) and selected manually in the firmware file field.
 
     @pyqtSlot()
     def checkLatestTransmitterFirmware(self) -> None:
-        """Poll GitHub for a newer transmitter firmware build,
-        downloading it if found. Status pushed via
-        :attr:`firmwareCheckStatus`.
+        """Report the transmitter firmware bundled with the SDK.
 
-        Runs in a background thread so the QML "Checking…" /
-        "Downloading…" popup can render and the Qt event loop stays
-        responsive while the network calls are in flight.
+        The SDK no longer polls or downloads from GitHub: units flash the
+        image shipped in the SDK's firmware directory. Status is pushed via
+        :attr:`firmwareCheckStatus` using the same phase contract the popup
+        expects (``checking`` then ``uptodate``/``error``); the ``uptodate``
+        payload carries the bundled path/version so the UI retargets the
+        firmware file field to it.
         """
-        self._check_and_download_firmware("transmitter")
+        self._report_bundled_firmware("transmitter")
 
-    def _check_and_download_firmware(self, device_type: str) -> None:
-        """Worker for ``checkLatest{Console,Transmitter}Firmware``.
-
-        Phases (emitted via :attr:`firmwareCheckStatus`):
-          ``checking``   -- contacting GitHub for the latest release
-          ``downloading``-- a newer release was found; fetching it
-          ``uptodate``   -- already on (or ahead of) the latest release
-          ``done``       -- newer release downloaded; ``newPath`` /
-                            ``newVersion`` populated so the UI can
-                            retarget the firmware file field
-          ``error``      -- any failure (network, missing asset, parse).
-
-        ``packaged_*_fw_version`` is cache-cleared on success so the
-        next compliance check sees the freshly downloaded binary.
-        """
+    def _report_bundled_firmware(self, device_type: str) -> None:
+        """Worker for ``checkLatest*Firmware``: resolve the SDK-bundled
+        firmware for *device_type* and report it via
+        :attr:`firmwareCheckStatus`. Runs in a background thread so the
+        popup renders while the file is probed."""
         from lifu.lifu_constants import (
             packaged_console_fw_version,
             packaged_transmitter_fw_version,
         )
 
         def _run():
-            try:
-                from openlifu_sdk.util import firmware as sdk_fw
-            except Exception as e:
-                self.firmwareCheckStatus.emit(
-                    device_type, "error", f"openlifu-sdk unavailable: {e}", "", "",
-                )
-                return
-
-            # The SDK wraps GitHub network failures in
-            # ``FirmwareNetworkError`` (with the urllib3 traceback
-            # suppressed) so we can render a clean "check your internet
-            # connection" message and skip the noisy stack trace. Older
-            # SDK builds may not export it; fall back to a sentinel
-            # tuple so ``isinstance`` always works.
-            FirmwareNetworkError = getattr(sdk_fw, "FirmwareNetworkError", ())
-
-            def _is_network_error(exc: BaseException) -> bool:
-                return bool(FirmwareNetworkError) and isinstance(exc, FirmwareNetworkError)
-
-            if device_type == "console":
-                check_latest = sdk_fw.check_latest_console_firmware_version
-                get_current = sdk_fw.get_console_firmware_version
-                get_path = sdk_fw.get_console_firmware_path
-                download = sdk_fw.download_latest_console_firmware
-                cache_clear = packaged_console_fw_version.cache_clear
-                label = "Console"
-            elif device_type == "transmitter":
-                check_latest = sdk_fw.check_latest_transmitter_firmware_version
-                get_current = sdk_fw.get_transmitter_firmware_version
-                get_path = sdk_fw.get_transmitter_firmware_path
-                download = sdk_fw.download_latest_transmitter_firmware
-                cache_clear = packaged_transmitter_fw_version.cache_clear
-                label = "Transmitter"
-            else:
-                self.firmwareCheckStatus.emit(
-                    device_type, "error", f"Unknown device type: {device_type}", "", "",
-                )
-                return
-
+            label = "Console" if device_type == "console" else "Transmitter"
             self.firmwareCheckStatus.emit(
                 device_type, "checking",
-                f"Checking GitHub for the latest {label} firmware…",
-                "", "",
+                f"Locating the bundled {label} firmware…", "", "",
             )
-
             try:
-                current_version = get_current()
-                latest_version = check_latest()
-            except Exception as e:
-                if _is_network_error(e):
-                    # Network failures get a one-line warning -- the
-                    # SDK already logged the offending URL and there's
-                    # no useful stack trace to show.
-                    logger.warning("Latest %s firmware lookup failed: %s", label, e)
-                    msg = (
-                        f"Could not reach GitHub to check for {label} "
-                        f"firmware updates. Check your internet connection."
-                    )
+                from openlifu_sdk.util import firmware as sdk_fw
+                if device_type == "console":
+                    path = str(sdk_fw.get_console_firmware_path())
+                    version = sdk_fw.get_console_firmware_version()
+                    packaged_console_fw_version.cache_clear()
+                elif device_type == "transmitter":
+                    path = str(sdk_fw.get_transmitter_firmware_path())
+                    version = sdk_fw.get_transmitter_firmware_version()
+                    packaged_transmitter_fw_version.cache_clear()
                 else:
-                    logger.exception("Latest %s firmware lookup failed", label)
-                    msg = f"Could not check for {label} firmware updates: {e}"
-                self.firmwareCheckStatus.emit(
-                    device_type, "error", msg, "", "",
-                )
-                return
-
-            from lifu.lifu_constants import parse_firmware_version
-            latest_tuple = parse_firmware_version(latest_version)
-            current_tuple = parse_firmware_version(current_version)
-            # check_latest_*_firmware_version() returns the existing
-            # local version when nothing newer is on GitHub, so an
-            # equal-version response is the up-to-date case. If
-            # ``current`` is unparseable (e.g. mocked SDK returning
-            # garbage) we still accept the new build as an upgrade.
-            already_current = (
-                latest_tuple is None
-                or (current_tuple is not None and latest_tuple <= current_tuple)
-            )
-            if already_current:
-                try:
-                    current_path = str(get_path())
-                except Exception:
-                    current_path = ""
-                self.firmwareCheckStatus.emit(
-                    device_type, "uptodate",
-                    f"{label} firmware is already up to date "
-                    f"(have v{current_version}).",
-                    current_path, current_version,
-                )
-                return
-
-            self.firmwareCheckStatus.emit(
-                device_type, "downloading",
-                f"Downloading {label} firmware v{latest_version}…",
-                "", latest_version,
-            )
-
-            try:
-                downloaded = download()
-            except Exception as e:
-                if _is_network_error(e):
-                    logger.warning("%s firmware download failed: %s", label, e)
-                    msg = (
-                        f"Could not reach GitHub to download {label} "
-                        f"firmware. Check your internet connection."
+                    self.firmwareCheckStatus.emit(
+                        device_type, "error",
+                        f"Unknown device type: {device_type}", "", "",
                     )
-                else:
-                    logger.exception("%s firmware download failed", label)
-                    msg = f"{label} firmware download failed: {e}"
-                self.firmwareCheckStatus.emit(
-                    device_type, "error", msg, "", "",
-                )
-                return
-
-            if downloaded is None:
-                # download_latest_*_firmware returns None for both
-                # "already current" and "asset missing" -- the SDK
-                # logged the discriminator. Surface a generic message
-                # rather than guessing.
+                    return
+            except Exception as e:
+                logger.exception("Bundled %s firmware lookup failed", label)
                 self.firmwareCheckStatus.emit(
                     device_type, "error",
-                    f"{label} firmware download did not produce a file. "
-                    f"See application logs for details.",
+                    f"Could not locate the bundled {label} firmware: {e}. "
+                    "Reinstall the SDK, or browse to a signed image "
+                    "downloaded from the firmware repo's GitHub releases.",
                     "", "",
                 )
                 return
-
-            cache_clear()
-            try:
-                new_version = sdk_fw._get_firmware_version(downloaded)
-            except Exception:
-                new_version = latest_version
             self.firmwareCheckStatus.emit(
-                device_type, "done",
-                f"Downloaded {label} firmware v{new_version}.",
-                str(downloaded), new_version,
+                device_type, "uptodate",
+                f"{label} updates flash the firmware bundled with the SDK "
+                f"(v{version}). To flash a different version, download it "
+                "from the firmware repo's GitHub releases (or build it from "
+                "source) and select the file manually.",
+                path, version,
             )
 
         threading.Thread(target=_run, daemon=True).start()
