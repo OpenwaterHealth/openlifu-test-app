@@ -13,7 +13,6 @@ Signals consumed (defined on ``LIFUConnector``):
     - ``fwUpdateProgress`` (str, int, int)
     - ``fwUpdateStatus`` (str, bool, str)
     - ``fwVersionRead`` (str, str)
-    - ``firmwareCheckStatus`` (str, str, str, str, str)
     - ``userConfigRead`` (str, str)
     - ``userConfigStatus`` (str, bool, str)
     - ``testReportLoaded`` (bool, str)
@@ -204,76 +203,26 @@ class SettingsMixin:
         return (parsed is not None and parsed >= (1, 2, 6)), ver
 
     # NOTE: firmware is no longer fetched from GitHub at runtime — the SDK's
-    # download flow was removed. Both devices update exclusively to the
-    # signed image bundled with the SDK's firmware directory; other versions
-    # must be downloaded from the firmware repo's GitHub releases (or built
-    # from source) and selected manually in the firmware file field.
+    # download flow was removed, and the transmitter "check GitHub" action was
+    # retired with it. Both devices update exclusively to the image bundled
+    # with the SDK's firmware directory; other versions must be downloaded
+    # from the firmware repo's GitHub releases (or built from source) and
+    # selected manually in the firmware file field.
 
-    @pyqtSlot()
-    def checkLatestTransmitterFirmware(self) -> None:
-        """Report the transmitter firmware bundled with the SDK.
-
-        The SDK no longer polls or downloads from GitHub: units flash the
-        image shipped in the SDK's firmware directory. Status is pushed via
-        :attr:`firmwareCheckStatus` using the same phase contract the popup
-        expects (``checking`` then ``uptodate``/``error``); the ``uptodate``
-        payload carries the bundled path/version so the UI retargets the
-        firmware file field to it.
-        """
-        self._report_bundled_firmware("transmitter")
-
-    def _report_bundled_firmware(self, device_type: str) -> None:
-        """Worker for ``checkLatest*Firmware``: resolve the SDK-bundled
-        firmware for *device_type* and report it via
-        :attr:`firmwareCheckStatus`. Runs in a background thread so the
-        popup renders while the file is probed."""
-        from lifu.lifu_constants import (
-            packaged_console_fw_version,
-            packaged_transmitter_fw_version,
-        )
-
-        def _run():
-            label = "Console" if device_type == "console" else "Transmitter"
-            self.firmwareCheckStatus.emit(
-                device_type, "checking",
-                f"Locating the bundled {label} firmware…", "", "",
-            )
-            try:
-                from openlifu_sdk.util import firmware as sdk_fw
-                if device_type == "console":
-                    path = str(sdk_fw.get_console_firmware_path())
-                    version = sdk_fw.get_console_firmware_version()
-                    packaged_console_fw_version.cache_clear()
-                elif device_type == "transmitter":
-                    path = str(sdk_fw.get_transmitter_firmware_path())
-                    version = sdk_fw.get_transmitter_firmware_version()
-                    packaged_transmitter_fw_version.cache_clear()
-                else:
-                    self.firmwareCheckStatus.emit(
-                        device_type, "error",
-                        f"Unknown device type: {device_type}", "", "",
-                    )
-                    return
-            except Exception as e:
-                logger.exception("Bundled %s firmware lookup failed", label)
-                self.firmwareCheckStatus.emit(
-                    device_type, "error",
-                    f"Could not locate the bundled {label} firmware: {e}. "
-                    "Reinstall the SDK, or browse to a signed image "
-                    "downloaded from the firmware repo's GitHub releases.",
-                    "", "",
-                )
-                return
-            self.firmwareCheckStatus.emit(
-                device_type, "uptodate",
-                f"{label} updates flash the firmware bundled with the SDK "
-                f"(v{version}). To flash a different version, download it "
-                "from the firmware repo's GitHub releases (or build it from "
-                "source) and select the file manually.",
-                path, version,
-            )
-
-        threading.Thread(target=_run, daemon=True).start()
+    @pyqtSlot(str, result=bool)
+    def isTransmitterProductionImage(self, path: str) -> bool:
+        """True if *path* is a combined transmitter PRODUCTION image
+        (bootloader + signed app at the slot offset), suitable for a
+        force-production reflash. False for a signed-app-only image, a
+        missing file, or any parse failure."""
+        if not path:
+            return False
+        try:
+            from openlifu_sdk.io.LIFUDFU import split_transmitter_flash_image
+            split_transmitter_flash_image(Path(path).read_bytes())
+            return True
+        except Exception:
+            return False
 
     @pyqtSlot(result=str)
     def readHvFirmwareVersion(self) -> str:
@@ -426,9 +375,68 @@ class SettingsMixin:
 
         threading.Thread(target=_run, daemon=True).start()
 
+    def _tx_module_cohort(self, module: int) -> tuple[str | None, str]:
+        """(cohort, version) of a transmitter module from its running app
+        version — ``"no-bootloader"`` (<= 2.0.3), ``"legacy-bl"``
+        (2.0.4 - 2.0.7) or ``"secure-bl"`` (>= 2.0.8). Cohort is ``None`` when
+        the version can't be read/parsed (the SDK's own auto-detect then
+        decides at update time)."""
+        ver = self._cached_tx_fw_version.get(module)
+        if ver is None:
+            try:
+                ver = self.interface.txdevice.get_version(module=module)
+            except Exception as e:
+                logger.debug("Could not read module %d version: %s", module, e)
+                return None, ""
+        try:
+            from openlifu_sdk.io.LIFUDFU import (
+                infer_transmitter_bootloader_from_app_version,
+            )
+            return infer_transmitter_bootloader_from_app_version(str(ver)), str(ver)
+        except Exception as e:
+            logger.debug("Could not parse module %d version %r: %s", module, ver, e)
+            return None, str(ver)
+
     @pyqtSlot(str, int)
-    def updateTransmitterFirmware(self, firmware_path: str, module: int) -> None:
-        """Update the transmitter firmware for a specific module. Runs in a background thread."""
+    @pyqtSlot(str, int, bool)
+    def updateTransmitterFirmware(self, firmware_path: str, module: int,
+                                  force_production: bool = False) -> None:
+        """Update the transmitter firmware for a specific module. Runs in a
+        background thread. All paths are delegated to the SDK's
+        auto-detecting :class:`LIFUTransmitterFirmwareUpdate`.
+
+        Master (module 0), ``force_production=False``: an EMPTY
+        ``firmware_path`` means "use the firmware included with the SDK" — a
+        pre-secure unit (app <= 2.0.7) auto-migrates to the secure bootloader
+        via the bundled production image (a NO-bootloader unit, <= 2.0.3,
+        enters the STM32 ROM DFU with a plain DFU command; a legacy unit uses
+        the reserved=0x77 force switch), and a secure unit (>= 2.0.8)
+        installs the bundled signed app. A non-empty ``firmware_path`` is an
+        operator-browsed signed app, which the UI only permits once the unit
+        is on the secure bootloader (>= 2.0.8).
+
+        GUARD: a master on app <= 2.0.3 may only be updated as a
+        SINGLE-module system. Those apps predate slave I2C updates entirely,
+        and the ROM-DFU migration reboots/reflashes the whole chip with
+        slaves in an undefined state — the operator must disconnect the
+        slave modules (updating each alone as the USB master) first.
+
+        Master (module 0), ``force_production=True``: reflash the FULL
+        production image (bootloader + signed app) via STM32 ROM DFU
+        (``OW_CMD_DFU reserved=0x77``). Beta/unlocked units only.
+
+        Slave modules (1+): ``update_slave`` over the master's I2C
+        passthrough. An EMPTY ``firmware_path`` uses the bundled images: a
+        secure slave (>= 2.0.8) gets the bundled signed app; a LEGACY slave
+        (2.0.4 - 2.0.7) is migrated in one shot (RAM-resident DFU stub +
+        full production image — bootloader AND app). With
+        ``force_production=True`` a secure slave is fully reflashed
+        (signed stub + production image).
+
+        GUARD: a slave on app <= 2.0.3 CANNOT be updated over I2C (its DFU
+        entry jumps to the STM32 ROM loader, unreachable through the I2C
+        passthrough) — the UI blocks it and this method double-checks.
+        """
         def _run():
             # Pause polling for the duration -- see updateConsoleFirmware
             # for rationale. The 12V power-cycle at the end re-enumerates
@@ -450,27 +458,89 @@ class SettingsMixin:
             prev_fw_active = self._fw_update_active
             self._fw_update_active = True
             try:
+                from openlifu_sdk.io.LIFUFirmwareUpdate import (
+                    COHORT_NONE,
+                    LIFUTransmitterFirmwareUpdate,
+                )
+
                 def _progress(written: int, total: int, label: str) -> None:
                     self.fwUpdateProgress.emit(label, written, total)
 
-                self.fwUpdateStatus.emit("transmitter", False, f"Starting transmitter firmware update for module {module}…")
-                logger.info(f"Transmitter module {module} firmware update: {firmware_path}")
-                self.interface.txdevice.update_firmware(
-                    module=module,
-                    package_file=firmware_path,
-                    vid=0x0483,
-                    pid=0xDF11,
-                    libusb_dll=None,
-                    dfu_wait_s=5.0,
-                    device_type="transmitter",
-                    progress_callback=_progress,
-                )
-                self.fwUpdateStatus.emit("transmitter", True, f"Transmitter module {module} firmware update complete.")
-                logger.info(f"Transmitter module {module} firmware update complete.")
-                # New firmware -> cached per-module FW/HWID is stale.
+                # Version gates (the UI disables these cases too; this is the
+                # backstop for stale UI state).
+                cohort, ver = self._tx_module_cohort(module)
+                if module >= 1 and cohort == COHORT_NONE:
+                    raise RuntimeError(
+                        f"slave module {module} runs app {ver} (2.0.3 or "
+                        "older): it cannot be updated over I2C. Connect that "
+                        "module by itself as the USB master and update it "
+                        "there.")
+                if module == 0 and cohort == COHORT_NONE:
+                    count = self.interface.txdevice.get_module_count()
+                    if count > 1:
+                        raise RuntimeError(
+                            f"the master runs app {ver} (2.0.3 or older) with "
+                            f"{count} modules connected. Update 2.0.3-or-older "
+                            "masters only as a SINGLE-module system: "
+                            "disconnect the slave modules (update each alone "
+                            "as the USB master) and retry.")
+
+                if module >= 1:
+                    # Slave (1+): SDK update_slave over the I2C passthrough.
+                    # Empty path -> bundled images (secure slave: signed app;
+                    # legacy slave: one-shot stub migration, BL + app).
+                    signed = firmware_path or None
+                    label = (f"Starting transmitter slave module {module} "
+                             + ("production reflash…" if force_production
+                                else "update…"))
+                    self.fwUpdateStatus.emit("transmitter", False, label)
+                    logger.info("Transmitter slave %d update: %s (force=%s)",
+                                module, signed or "bundled SDK firmware",
+                                force_production)
+                    fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
+                    result = fw.update_slave(
+                        module, signed_app=signed,
+                        force_production=force_production,
+                        progress_callback=_progress)
+                    self.fwUpdateStatus.emit("transmitter", True, result.summary)
+                    logger.info("Transmitter slave %d update complete: %s",
+                                module, result.summary)
+                    self._invalidate_device_caches("TX")
+                    return
+
+                if force_production:
+                    self._run_transmitter_force_production(firmware_path, _progress)
+                    self.fwUpdateStatus.emit(
+                        "transmitter", True,
+                        "Transmitter production reflash complete "
+                        "(bootloader + app).")
+                    logger.info("Transmitter production reflash complete.")
+                    self._invalidate_device_caches("TX")
+                    return
+
+                # Master: auto-detecting updater. Empty path -> bundled SDK
+                # firmware (migrates a pre-2.0.8 unit — including a <= 2.0.3
+                # no-bootloader unit — or signed-app-updates a secure one). A
+                # browsed path is a signed app (UI-gated to secure units only).
+                signed = firmware_path or None
+                self.fwUpdateStatus.emit(
+                    "transmitter", False,
+                    "Starting transmitter update"
+                    + (" (included firmware)…" if signed is None
+                       else "…"))
+                logger.info("Transmitter master update: %s",
+                            signed or "bundled SDK firmware")
+                fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
+                result = fw.update(signed_app=signed,
+                                   progress_callback=_progress)
+                self.fwUpdateStatus.emit("transmitter", True, result.summary)
+                logger.info("Transmitter master update complete: %s",
+                            result.summary)
                 self._invalidate_device_caches("TX")
             except Exception as e:
-                msg = f"Transmitter module {module} update failed: {e}"
+                verb = ("production reflash" if force_production
+                        else f"module {module} update")
+                msg = f"Transmitter {verb} failed: {e}"
                 logger.error(msg)
                 self.fwUpdateStatus.emit("transmitter", False, msg)
             finally:
@@ -488,6 +558,33 @@ class SettingsMixin:
                     self._fw_update_active = prev_fw_active
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _run_transmitter_force_production(self, firmware_path: str,
+                                          progress_cb) -> None:
+        """Force-production reflash of the transmitter master (module 0):
+        force STM32 ROM DFU via the OW_CMD_DFU 0x77 switch and write the full
+        production image (bootloader + app). Delegated to the SDK's
+        :class:`LIFUTransmitterFirmwareUpdate`. Raises on failure."""
+        from openlifu_sdk.io.LIFUFirmwareUpdate import (
+            LIFUTransmitterFirmwareUpdate,
+        )
+
+        # Use the browsed file only when it is a real combined production
+        # image; otherwise fall back to the SDK's bundled production image
+        # (the firmware-file field defaults to the signed app, which is NOT a
+        # production image).
+        prod_image = (firmware_path
+                      if self.isTransmitterProductionImage(firmware_path)
+                      else None)
+        self.fwUpdateStatus.emit(
+            "transmitter", False,
+            "Starting transmitter production reflash (bootloader + app) "
+            "via STM32 DFU…")
+        logger.info("Transmitter force-production reflash: %s",
+                    prod_image or "bundled production image")
+        fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
+        fw.update(force_production=True, production_image=prod_image,
+                  progress_callback=progress_cb)
 
     # ------------------------------------------------------------------
     # User config (read/write JSON to TX module EEPROM)

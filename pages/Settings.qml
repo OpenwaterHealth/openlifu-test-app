@@ -31,6 +31,16 @@ Rectangle {
             ? consoleFwPath.text
             : LIFUConnector.getDefaultFirmwarePath("console")
 
+    // Transmitter firmware to install: same rule as the console — the
+    // operator-browsed file if one is selected, otherwise the signed image
+    // included with the SDK. The path field starts empty ("use the included
+    // firmware"); this resolves it so the version display and update button
+    // show/act on the bundled firmware instead of "none".
+    readonly property string transmitterEffectivePath:
+        transmitterFwPath.text.length > 0
+            ? transmitterFwPath.text
+            : LIFUConnector.getDefaultFirmwarePath("transmitter")
+
     // Font for the small "Check for Updates" icon buttons. Other widgets
     // that need icons (e.g. IconButton.qml) load their own copy.
     FontLoader {
@@ -61,6 +71,35 @@ Rectangle {
         }
         return 0
     }
+
+    // True when ``ver`` parses AND is below the [maj, min, patch] triple.
+    // Unparseable versions ("—", "Error") return false — the update stays
+    // enabled and the SDK's own auto-detect/guards decide at run time.
+    function _txVerBelow(ver, triple) {
+        var d = _parseFwVersion(ver)
+        return d !== null && _cmpFwVersion(d, triple) < 0
+    }
+
+    // ----------------------------------------------------------------
+    // Transmitter update gates (mirrored by guards in lifu_settings.py).
+    // Apps <= 2.0.3 predate both bootloaders and slave-I2C updates:
+    //   * a <= 2.0.3 SLAVE cannot be updated over I2C at all — its DFU
+    //     entry jumps to the STM32 ROM loader, unreachable through the
+    //     master's I2C passthrough. It must be connected as the USB
+    //     master (by itself) and updated as module 0.
+    //   * a <= 2.0.3 MASTER may only be updated as a SINGLE-module
+    //     system (any number of attached slaves blocks it): the ROM-DFU
+    //     migration reflashes the whole chip and those apps can't
+    //     coordinate the slaves.
+    // ----------------------------------------------------------------
+    readonly property bool txSelectedIsSlave: txModuleSelector.currentIndex > 0
+    readonly property bool txSlaveTooOld:
+        txSelectedIsSlave && _txVerBelow(txCurrentVersion.text, [2, 0, 4])
+    readonly property bool txMasterTooOldMultiModule:
+        !txSelectedIsSlave && txModuleCount > 1
+        && _txVerBelow(txCurrentVersion.text, [2, 0, 4])
+    readonly property bool txUpdateBlocked:
+        txSlaveTooOld || txMasterTooOldMultiModule
     function firmwareVersionColor(deviceVersion, minVersion, fileVersion) {
         var d = _parseFwVersion(deviceVersion)
         if (d === null) return "#BDC3C7"
@@ -169,12 +208,12 @@ Rectangle {
         txQueryTimer.start()
     }
 
-    // Populate default firmware paths; query versions if already connected.
-    // The console path is left EMPTY by default: an empty field means "use
-    // the firmware included with the SDK" (see consoleEffectivePath). Browse
-    // only overrides it, and only on a secure-bootloader (>= 1.2.6) unit.
+    // Query versions if already connected. BOTH firmware path fields are
+    // left EMPTY by default: an empty field means "use the firmware included
+    // with the SDK". Browse only overrides it, and only once the unit is on
+    // its secure bootloader (console >= 1.2.6, transmitter >= 2.0.8);
+    // otherwise the operator must first update to the included firmware.
     Component.onCompleted: {
-        transmitterFwPath.text = LIFUConnector.getDefaultFirmwarePath("transmitter")
         if (LIFUConnector.hvConnected) {
             consoleCurrentVersion.text = "Reading…"
             LIFUConnector.readHvFirmwareVersion()
@@ -271,42 +310,6 @@ Rectangle {
                 fwUpdateDialog.updateDone = true
                 settingsPage.consoleUpdating = false
                 settingsPage.transmitterUpdating = false
-            }
-        }
-
-        function onFirmwareCheckStatus(deviceType, phase, message, newPath, newVersion) {
-            // Drive the modal "Checking…" / "Downloading…" popup that
-            // overlays the Settings tab while the SDK polls GitHub.
-            // Phases come from SettingsMixin._check_and_download_firmware.
-            fwCheckDialog.deviceType = deviceType
-            fwCheckDialog.statusMessage = message
-            if (phase === "checking" || phase === "downloading") {
-                fwCheckDialog.busy = true
-                fwCheckDialog.checkDone = false
-                fwCheckDialog.statusColor = "#F39C12"
-                if (!fwCheckDialog.opened) {
-                    fwCheckDialog.dialogTitle = (deviceType === "console")
-                        ? "Console Firmware Update Check"
-                        : "Transmitter Firmware Update Check"
-                    fwCheckDialog.open()
-                }
-            } else {
-                fwCheckDialog.busy = false
-                fwCheckDialog.checkDone = true
-                fwCheckDialog.statusColor =
-                    (phase === "done" || phase === "uptodate") ? "#2ECC71" : "#E74C3C"
-                // For both "done" (downloaded a newer build) and
-                // "uptodate" (SDK already had the latest), retarget
-                // the firmware-file field to whatever the SDK now
-                // considers the preferred path. That way the operator
-                // sees the file they'll actually flash.
-                if ((phase === "done" || phase === "uptodate") && newPath && newPath.length > 0) {
-                    if (deviceType === "console") {
-                        consoleFwPath.text = newPath
-                    } else if (deviceType === "transmitter") {
-                        transmitterFwPath.text = newPath
-                    }
-                }
             }
         }
 
@@ -573,32 +576,26 @@ Rectangle {
     }
 
     // ----------------------------------------------------------------
-    // Firmware "check for updates" dialog
+    // "Update to 2.0.8 required first" dialog (transmitter)
     //
-    // Shown while the SDK contacts GitHub for the latest firmware
-    // release and (optionally) downloads it. State is driven by
-    // ``onFirmwareCheckStatus`` above. The Close button is gated by
-    // ``checkDone`` so the dialog can't be dismissed mid-download.
+    // A custom (browsed) transmitter image is a signed app that only installs
+    // on the secure bootloader, which exists on units already running
+    // >= 2.0.8. If the operator tries to Browse on an older unit, tell them to
+    // first update to the included firmware ("Update Firmware (included)" with
+    // the field left empty migrates the unit to the secure bootloader).
     // ----------------------------------------------------------------
     Popup {
-        id: fwCheckDialog
+        id: mustUpdate208Dialog
         anchors.centerIn: Overlay.overlay
-        width: 480
+        width: 460
         padding: 20
         modal: true
-        closePolicy: Popup.NoAutoClose
-
-        property string dialogTitle: "Firmware Update Check"
-        property string deviceType: ""
-        property string statusMessage: ""
-        property string statusColor: "#F39C12"
-        property bool busy: false
-        property bool checkDone: false
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
         background: Rectangle {
             color: "#1E1E20"
             radius: 12
-            border.color: "#3E4E6F"
+            border.color: "#E67E22"
             border.width: 2
         }
 
@@ -607,53 +604,45 @@ Rectangle {
             spacing: 16
 
             Text {
-                text: fwCheckDialog.dialogTitle
+                text: "Update to 2.0.8 required first"
                 font.pixelSize: 16
                 font.weight: Font.Bold
                 color: "white"
                 Layout.alignment: Qt.AlignHCenter
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
-
-            BusyIndicator {
-                running: fwCheckDialog.busy
-                visible: fwCheckDialog.busy
-                Layout.alignment: Qt.AlignHCenter
-                Layout.preferredWidth: 48
-                Layout.preferredHeight: 48
             }
 
             Text {
-                text: fwCheckDialog.statusMessage
-                color: fwCheckDialog.statusColor
+                text: "This module is running " + txCurrentVersion.text
+                    + ". A custom firmware image can only be installed on the "
+                    + "secure bootloader (version 2.0.8 or newer).\n\n"
+                    + "Leave the Firmware File field empty and press "
+                    + "“Update Firmware (included)” to install the included "
+                    + "firmware first — that migrates the unit to the secure "
+                    + "bootloader — then browse for a custom image."
+                color: "#BDC3C7"
                 font.pixelSize: 13
                 wrapMode: Text.WordWrap
-                horizontalAlignment: Text.AlignHCenter
                 Layout.fillWidth: true
-                visible: fwCheckDialog.statusMessage.length > 0
             }
 
             Button {
-                text: "Close"
+                text: "OK"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 36
-                enabled: fwCheckDialog.checkDone
                 hoverEnabled: true
-
                 contentItem: Text {
                     text: parent.text
-                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
+                    color: "#BDC3C7"
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                     font.pixelSize: 14
                 }
                 background: Rectangle {
-                    color: parent.enabled ? (parent.hovered ? "#4A90E2" : "#3A3F4B") : "#2A2F3B"
+                    color: parent.hovered ? "#4A90E2" : "#3A3F4B"
                     radius: 6
-                    border.color: parent.enabled ? (parent.hovered ? "#FFFFFF" : "#BDC3C7") : "#7F8C8D"
+                    border.color: parent.hovered ? "#FFFFFF" : "#BDC3C7"
                 }
-                onClicked: fwCheckDialog.close()
+                onClicked: mustUpdate208Dialog.close()
             }
         }
     }
@@ -1851,7 +1840,7 @@ Rectangle {
                                 color: settingsPage.firmwareVersionColor(
                                     txCurrentVersion.text,
                                     LIFUConnector.minTransmitterFirmwareVersion,
-                                    LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text))
+                                    LIFUConnector.getFirmwareFileVersion(settingsPage.transmitterEffectivePath))
                                 font.pixelSize: 14
                                 font.weight: Font.Bold
                             }
@@ -1872,7 +1861,7 @@ Rectangle {
                             Text {
                                 id: txFileVersion
                                 text: {
-                                    var v = LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text)
+                                    var v = LIFUConnector.getFirmwareFileVersion(settingsPage.transmitterEffectivePath)
                                     return v ? v : "—"
                                 }
                                 color: settingsPage.fileVersionColor(
@@ -1899,7 +1888,7 @@ Rectangle {
                             TextField {
                                 id: transmitterFwPath
                                 Layout.fillWidth: true
-                                placeholderText: "Path to firmware (.bin)"
+                                placeholderText: "Using included firmware — Browse to override (requires v2.0.8+)"
                                 font.pixelSize: 13
                                 color: "white"
                                 background: Rectangle {
@@ -1933,40 +1922,85 @@ Rectangle {
                                         return parent.hovered ? "#FFFFFF" : "#BDC3C7"
                                     }
                                 }
-                                onClicked: txFwDialog.open()
-                            }
-
-                            Button {
-                                id: txCheckUpdatesBtn
-                                hoverEnabled: true
-                                Layout.preferredHeight: 40
-                                Layout.preferredWidth: 40
-                                enabled: !transmitterUpdating
-                                ToolTip.visible: hovered
-                                ToolTip.text: "Check GitHub for newer Transmitter firmware"
-
-                                contentItem: Text {
-                                    text: "\ue950 "
-                                    font.family: settingsIconFont.name
-                                    font.pixelSize: 20
-                                    color: parent.enabled ? "#BDC3C7" : "#7F8C8D"
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                                background: Rectangle {
-                                    color: {
-                                        if (!parent.enabled) return "#3A3F4B"
-                                        return parent.hovered ? "#4A90E2" : "#3A3F4B"
-                                    }
-                                    radius: 4
-                                    border.color: {
-                                        if (!parent.enabled) return "#7F8C8D"
-                                        return parent.hovered ? "#FFFFFF" : "#BDC3C7"
+                                // A custom (browsed) image is a signed app that
+                                // only installs on the secure bootloader. If the
+                                // selected module is older than 2.0.8, tell the
+                                // operator to update to the included firmware
+                                // first (which migrates it) rather than browse.
+                                onClicked: {
+                                    var d = settingsPage._parseFwVersion(
+                                        txCurrentVersion.text)
+                                    if (LIFUConnector.txConnected && d !== null
+                                        && settingsPage._cmpFwVersion(d, [2, 0, 8]) < 0) {
+                                        mustUpdate208Dialog.open()
+                                    } else {
+                                        txFwDialog.open()
                                     }
                                 }
-                                onClicked: LIFUConnector.checkLatestTransmitterFirmware()
                             }
                         }
+
+                        // Force-production flag + update button on one row.
+                        // When checked, the update reflashes the FULL
+                        // production image (bootloader + app): the USB master
+                        // (module 0) via STM32 ROM DFU (OW_CMD_DFU
+                        // reserved=0x77); a SECURE slave (>= 2.0.8) via the
+                        // signed DFU stub over I2C. A legacy slave doesn't
+                        // need it (its normal path already reflashes the
+                        // bootloader). Beta/unlocked units only — on
+                        // RDP/FDA-locked units the bootloader flash is
+                        // protected. (Kept on one row: the card clips to
+                        // height.)
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 12
+
+                            CheckBox {
+                                id: txForceProduction
+                                checked: false
+                                // Master (any version), or a slave already on
+                                // the secure bootloader (>= 2.0.8, signed-stub
+                                // path). Legacy slaves reflash the BL on their
+                                // normal path; <= 2.0.3 slaves are blocked.
+                                enabled: !transmitterUpdating
+                                    && (!settingsPage.txSelectedIsSlave
+                                        || !settingsPage._txVerBelow(
+                                            txCurrentVersion.text, [2, 0, 8]))
+                                onEnabledChanged: if (!enabled) checked = false
+                                ToolTip.visible: hovered
+                                ToolTip.text: "Reflash the full production image "
+                                    + "(bootloader + app). Master: via STM32 ROM "
+                                    + "DFU. Secure slave (≥ 2.0.8): via the signed "
+                                    + "DFU stub over I2C. Beta/unlocked units only."
+
+                                indicator: Rectangle {
+                                    implicitWidth: 18
+                                    implicitHeight: 18
+                                    x: txForceProduction.leftPadding
+                                    y: parent.height / 2 - height / 2
+                                    radius: 3
+                                    color: txForceProduction.checked ? "#E67E22" : "#2A2F3B"
+                                    border.color: txForceProduction.enabled
+                                        ? (txForceProduction.checked ? "#E67E22" : "#3E4E6F")
+                                        : "#7F8C8D"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "✓"
+                                        color: "white"
+                                        font.pixelSize: 13
+                                        font.weight: Font.Bold
+                                        visible: txForceProduction.checked
+                                    }
+                                }
+                                contentItem: Text {
+                                    text: "Force (production)"
+                                    color: txForceProduction.enabled ? "#BDC3C7" : "#7F8C8D"
+                                    font.pixelSize: 12
+                                    verticalAlignment: Text.AlignVCenter
+                                    leftPadding: txForceProduction.indicator.width
+                                        + txForceProduction.spacing
+                                }
+                            }
 
                         // Update button — dynamic color & text driven
                         // by the device-vs-file version comparison and
@@ -1974,25 +2008,47 @@ Rectangle {
                         // updateButtonText helpers above).
                         Rectangle {
                             id: txUpdateButton
-                            Layout.preferredWidth: 340
-                            Layout.alignment: Qt.AlignRight
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 200
                             height: 40
                             radius: 6
-                            enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0 && transmitterFwPath.text.length > 0
-                            property color baseColor: settingsPage.updateButtonColor(
-                                txCurrentVersion.text,
-                                LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text),
-                                LIFUConnector.minTransmitterFirmwareVersion)
+                            // Any module can update with an empty file field
+                            // (uses the included SDK firmware): the master
+                            // migrates pre-2.0.8 units, a legacy slave takes
+                            // the one-shot stub migration (BL + app), a secure
+                            // slave gets the bundled signed app. Blocked for
+                            // the <= 2.0.3 cases (txUpdateBlocked) — the
+                            // button label shows why.
+                            enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0
+                                && !settingsPage.txUpdateBlocked
+                            property color baseColor: txForceProduction.checked
+                                ? "#E67E22"
+                                : settingsPage.updateButtonColor(
+                                    txCurrentVersion.text,
+                                    LIFUConnector.getFirmwareFileVersion(settingsPage.transmitterEffectivePath),
+                                    LIFUConnector.minTransmitterFirmwareVersion)
                             color: !enabled ? "#3A3F4B"
                                 : (txUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {
-                                text: transmitterUpdating
-                                    ? "Updating…"
-                                    : settingsPage.updateButtonText(
+                                text: {
+                                    if (settingsPage.txSlaveTooOld)
+                                        return "Slave ≤ 2.0.3 — connect it as the USB master to update"
+                                    if (settingsPage.txMasterTooOldMultiModule)
+                                        return "Master ≤ 2.0.3 — disconnect slaves (single module only)"
+                                    if (transmitterUpdating)
+                                        return "Updating…"
+                                    if (txForceProduction.checked)
+                                        return "Reflash Production (BL + App)"
+                                    return settingsPage.updateButtonText(
                                         txCurrentVersion.text,
-                                        LIFUConnector.getFirmwareFileVersion(transmitterFwPath.text))
-                                anchors.centerIn: parent
+                                        LIFUConnector.getFirmwareFileVersion(settingsPage.transmitterEffectivePath))
+                                }
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
                                 color: parent.enabled ? "white" : "#BDC3C7"
                                 font.pixelSize: 14
                                 font.weight: Font.Bold
@@ -2004,7 +2060,9 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: parent.enabled
                                 onClicked: {
-                                    fwUpdateDialog.updateTitle = "Updating Transmitter Firmware (Module " + txModuleSelector.currentIndex + ")…"
+                                    fwUpdateDialog.updateTitle = txForceProduction.checked
+                                        ? "Reflashing Transmitter Production (Bootloader + App)…"
+                                        : "Updating Transmitter Firmware (Module " + txModuleSelector.currentIndex + ")…"
                                     fwUpdateDialog.progressValue = 0.0
                                     fwUpdateDialog.progressLabel = ""
                                     fwUpdateDialog.statusMessage = ""
@@ -2015,12 +2073,14 @@ Rectangle {
                                     settingsPage.transmitterUpdating = true
                                     LIFUConnector.updateTransmitterFirmware(
                                         transmitterFwPath.text,
-                                        parseInt(txModuleSelector.currentText)
+                                        parseInt(txModuleSelector.currentText),
+                                        txForceProduction.checked
                                     )
                                 }
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
+                        }
                         }
                     }
                 }
