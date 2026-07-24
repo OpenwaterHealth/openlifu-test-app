@@ -128,10 +128,6 @@ class ControllerMixin:
             transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
 
             pulse_count = int(pulseCount)
-            # Pass 0 (back-to-back trains) straight through; set_trigger() pads
-            # it with MIN_PROFILE_SWITCH_INTERVAL. Pre-computing it as exactly
-            # pulse_count * pulse_interval leaves a zero-length inter-train gap
-            # and destabilises the trigger output (TIM2/TIM1 boundary race).
             pulse_train_interval = float(trainInterval)
             sequence = {"pulse_interval": pulse_interval_seconds,
                         "pulse_count": pulse_count,
