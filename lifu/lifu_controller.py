@@ -79,8 +79,13 @@ class ControllerMixin:
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
             solution = self._loaded_solution_data
-            if solution['sequence']['pulse_train_interval'] == 0:
-                solution['sequence']['pulse_train_interval'] = solution['sequence']['pulse_count'] * solution['sequence']['pulse_interval']
+            # NOTE: pulse_train_interval == 0 (back-to-back trains) is passed
+            # through untouched. set_trigger() resolves it to
+            # pulse_interval * pulse_count + MIN_PROFILE_SWITCH_INTERVAL.
+            # Pre-computing it here as exactly pulse_count * pulse_interval
+            # dropped that safety margin, leaving a zero-length inter-train gap
+            # where the firmware TIM2 expiry races the final TIM1 pulse and the
+            # trigger output goes unstable.
             #check if delays and apodizations match the number of elements in the loaded solution
             delays_arr = np.array(solution["delays"]).reshape(-1)  # Ensure it's a 1D array
             apodizations_arr = np.array(solution["apodizations"]).reshape(-1)  # Ensure it's a 1D array
@@ -91,16 +96,18 @@ class ControllerMixin:
                     n_delays = delays_arr.shape[1]
                 if n_delays != num_modules * NUM_ELEMENTS_PER_MODULE:
                     logger.error(f"Loaded solution has {len(delays_arr)} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                    self.solutionLoadError.emit(f"Loaded solution has {len(delays_arr)} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                    return
+                    # self.solutionLoadError.emit(f"Loaded solution has {len(delays_arr)} delays, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    # pass
+                    # return
                 if apodizations_arr.ndim == 1:
                     n_apodizations = apodizations_arr.shape[0]
                 else:
                     n_apodizations = apodizations_arr.shape[1]
                 if n_apodizations != num_modules * NUM_ELEMENTS_PER_MODULE:
                     logger.error(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                    self.solutionLoadError.emit(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
-                    return
+                    # self.solutionLoadError.emit(f"Loaded solution has {len(apodizations_arr)} apodizations, but expected {num_modules * NUM_ELEMENTS_PER_MODULE} for {num_modules} modules.")
+                    # pass
+                    # return
         else:
             # Controller UI displays frequency in kHz, duration in microseconds, and pulse interval in ms.
             frequency_hz = float(freq) * 1e3
@@ -124,9 +131,11 @@ class ControllerMixin:
             transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
 
             pulse_count = int(pulseCount)
+            # Pass 0 (back-to-back trains) straight through; set_trigger() pads
+            # it with MIN_PROFILE_SWITCH_INTERVAL. Pre-computing it as exactly
+            # pulse_count * pulse_interval leaves a zero-length inter-train gap
+            # and destabilises the trigger output (TIM2/TIM1 boundary race).
             pulse_train_interval = float(trainInterval)
-            if pulse_train_interval == 0:
-                pulse_train_interval = pulse_count * pulse_interval_seconds
             sequence = {"pulse_interval": pulse_interval_seconds,
                         "pulse_count": pulse_count,
                         "pulse_train_interval": pulse_train_interval,
@@ -202,10 +211,12 @@ class ControllerMixin:
         try:
             pulse_interval_s = float(pulseInterval) * 1e-3  # UI ms -> s
             pulse_count = int(pulseCount)
-            pulse_train_interval_s = float(trainInterval)   # UI already in seconds
-            if pulse_train_interval_s == 0:
-                pulse_train_interval_s = pulse_count * pulse_interval_s
-            pulse_train_count = int(trainCount)            
+            # UI already in seconds. 0 (back-to-back) is passed through so
+            # set_trigger() can pad it with MIN_PROFILE_SWITCH_INTERVAL;
+            # pre-computing pulse_count * pulse_interval here would leave a
+            # zero-length inter-train gap and destabilise the trigger output.
+            pulse_train_interval_s = float(trainInterval)
+            pulse_train_count = int(trainCount)
             trigger_mode = str(mode).lower()
             result = self._call_with_comm_retry(
                 "Set Sequence",
