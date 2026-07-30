@@ -19,8 +19,13 @@ def generate_ultrasound_plot_from_solution(solution, mode="file"):
     fig, ax = plt.subplots(3, 1, figsize=(7.5, 6.5), gridspec_kw={'height_ratios': [1, 1, 3], 'hspace': 0.35})
     fig.set_facecolor('#1E1E20')  # Match QML dark theme background
     pulse = solution["pulse"]
-    delays = np.array(solution["delays"])
-    apodizations = np.array(solution["apodizations"])
+    # Multi-focus solutions carry one delay/apodization row per focus.
+    # Normalize to 2-D so the single- and multi-focus paths share code.
+    delays = np.atleast_2d(np.array(solution["delays"]))
+    apodizations = np.atleast_2d(np.array(solution["apodizations"]))
+    n_profiles = delays.shape[0]
+    execution_order = list(solution.get("execution_order") or range(1, n_profiles + 1))
+    profile_colors = plt.get_cmap("tab10")
     transducer = solution.get('transducer', {})
     sequence = solution["sequence"]
     voltage = solution["voltage"]
@@ -44,27 +49,76 @@ def generate_ultrasound_plot_from_solution(solution, mode="file"):
     pulse_train_length = sequence['pulse_count'] * pulse_interval
     pulse_train_interval = max(pulse_train_length, sequence['pulse_train_interval'])
     pulse_train_t = np.arange(0, pulse_train_interval, pulse_train_dt)
+    firing = ((pulse_train_t % pulse_interval) < pulse["duration"]) & (pulse_train_t < pulse_train_length)
     pulse_train_waveform_posenv = np.zeros_like(pulse_train_t) + A/100
-    pulse_train_waveform_posenv[((pulse_train_t % pulse_interval) < pulse["duration"]) & (pulse_train_t < pulse_train_length)] = A
+    pulse_train_waveform_posenv[firing] = A
     pulse_train_waveform_negenv = np.zeros_like(pulse_train_t) - A/100
-    pulse_train_waveform_negenv[((pulse_train_t % pulse_interval) < pulse["duration"]) & (pulse_train_t < pulse_train_length)] = -A
-    ax[1].fill_between(pulse_train_t * 1e3, pulse_train_waveform_posenv, pulse_train_waveform_negenv, alpha=1.0)
+    pulse_train_waveform_negenv[firing] = -A
+
+    if n_profiles > 1:
+        # Colour each pulse by the focus the firmware fires it at. The
+        # execution order is walked at pulse boundaries, giving each entry
+        # pulse_count/len(order) consecutive pulses, and restarts at the
+        # top of every pulse train.
+        cycle_length = len(execution_order)
+        pulses_per_entry = max(1, int(sequence['pulse_count']) // cycle_length)
+        pulse_index = np.floor(pulse_train_t / pulse_interval).astype(int)
+        order_index = (pulse_index // pulses_per_entry) % cycle_length
+        profile_at_t = np.take(np.array(execution_order), order_index)
+        # Baseline (between pulses) drawn once so the gaps stay visible.
+        ax[1].fill_between(pulse_train_t * 1e3,
+                           np.full_like(pulse_train_t, A/100),
+                           np.full_like(pulse_train_t, -A/100),
+                           color="#888888", alpha=1.0)
+        for profile in sorted(set(execution_order)):
+            mask = firing & (profile_at_t == profile)
+            if not mask.any():
+                continue
+            ax[1].fill_between(pulse_train_t * 1e3,
+                               pulse_train_waveform_posenv,
+                               pulse_train_waveform_negenv,
+                               where=mask,
+                               color=profile_colors((profile - 1) % 10),
+                               label=f"Focus {profile}")
+        ax[1].legend(loc="upper right", fontsize=7, ncol=min(4, len(set(execution_order))))
+    else:
+        ax[1].fill_between(pulse_train_t * 1e3, pulse_train_waveform_posenv, pulse_train_waveform_negenv, alpha=1.0)
+        ax[1].legend(["Pulse Train Envelope"], loc="upper right")
     #ax[1].set_title("Pulse Train Envelope")
     ax[1].set_xlabel("Time (ms)")
     ax[1].set_ylabel("Amplitude (V)")
     ax[1].set_ylim(-A*1.5, A*1.5)
-    ax[1].legend(["Pulse Train Envelope"], loc="upper right")
 
     if 'elements' in transducer:
         element_positions = np.array([elem.get('position', [0, 0, 0]) for elem in transducer['elements']])
-        ax[2].scatter(element_positions[:, 0], element_positions[:, 1], c=delays, marker='s', s=apodizations*100, cmap='turbo', edgecolors='white')
+        # The element map can only show one delay pattern at a time; show
+        # the first profile and mark every focus so the raster pattern is
+        # still legible.
+        ax[2].scatter(element_positions[:, 0], element_positions[:, 1], c=delays[0], marker='s', s=apodizations[0]*100, cmap='turbo', edgecolors='white')
         ax[2].set_xlabel("X (mm)")
         ax[2].set_ylabel("Y (mm)")
         ax[2].set_aspect('equal', adjustable='box')
-        xlim = [np.min(element_positions[:, 0]) - 5, np.max(element_positions[:, 0]) + 5]
-        ylim = [np.min(element_positions[:, 1]) - 5, np.max(element_positions[:, 1]) + 5]
-        ax[2].set_xlim(xlim)
-        ax[2].set_ylim(ylim)
+        xs = [np.min(element_positions[:, 0]) - 5, np.max(element_positions[:, 0]) + 5]
+        ys = [np.min(element_positions[:, 1]) - 5, np.max(element_positions[:, 1]) + 5]
+
+        focus_positions = [entry.get('position') for entry in (solution.get('foci') or [])
+                           if isinstance(entry, dict) and entry.get('position') is not None]
+        if len(focus_positions) > 1:
+            for index, position in enumerate(focus_positions, start=1):
+                ax[2].plot(position[0], position[1], marker='x', markersize=9, markeredgewidth=2,
+                           color=profile_colors((index - 1) % 10))
+                ax[2].annotate(str(index), (position[0], position[1]),
+                               textcoords="offset points", xytext=(6, 4),
+                               fontsize=8, color='white')
+                xs = [min(xs[0], position[0] - 5), max(xs[1], position[0] + 5)]
+                ys = [min(ys[0], position[1] - 5), max(ys[1], position[1] + 5)]
+            ax[2].set_title(
+                f"Delays: focus 1 of {n_profiles}  |  order: "
+                + "-".join(str(p) for p in execution_order),
+                fontsize=8)
+
+        ax[2].set_xlim(xs)
+        ax[2].set_ylim(ys)
 
     if mode == "file":
             # Save plot as file

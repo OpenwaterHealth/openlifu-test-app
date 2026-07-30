@@ -98,6 +98,8 @@ from lifu.lifu_constants import (
     HV_EN_WHILE_RUNNING,
     SPEED_OF_SOUND,
     NUM_ELEMENTS_PER_MODULE,
+    MAX_FOCUS_POINTS,
+    MIN_PROFILE_SWITCH_INTERVAL_S,
     MAX_TIMEOUT_RETRIES,
     FW_COMPLIANCE_OK,
     FW_COMPLIANCE_UNKNOWN,
@@ -178,6 +180,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # HV enable mode signals
     hvEnableModeChanged = pyqtSignal(int)  # Notifies when HV enable mode changes
 
+    # Emitted when the solution safety-limit bypass is turned on or off.
+    safetyBypassChanged = pyqtSignal(bool)
+
     # Firmware-compliance signal. Emitted whenever the per-device
     # compliance buckets (consoleFirmwareCompliance,
     # transmitterFirmwareCompliance) change, so QML rebinds the System
@@ -207,7 +212,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         """
         return LIFUInterface(HV_test_mode=hv_test_mode,
                              run_async=True,
-                             voltage_table_selection="evt0")
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -264,6 +268,14 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
         # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
         self._hv_enable_mode = HV_EN_AUTO
+
+        # Engineering override: when True, Configure skips the SDK's
+        # check_solution() safety pass (duty-cycle / voltage / sequence-
+        # duration limits), allowing drive levels up to 100% duty cycle.
+        # Deliberately in-memory only -- it must never survive a restart,
+        # and it is cleared whenever the TX device disconnects. The HV
+        # controller's hard 5-100 V rail clamp is unaffected.
+        self._bypass_safety_checks = False
 
         # Per-device firmware compliance buckets (FW_COMPLIANCE_*).
         # ``_console_fw_compliance`` covers the HV/console; the TX dict
@@ -810,6 +822,12 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._num_modules_connected = 0
             self._configured = False
             self._invalidate_device_caches("TX")
+            # Re-enable safety checks on disconnect 
+            if self._bypass_safety_checks:
+                self._bypass_safety_checks = False
+                self.safetyBypassChanged.emit(False)
+                logger.warning("[SAFETY] Solution safety limits re-enabled "
+                               "automatically on TX disconnect")
         elif descriptor == "HV":
             self._hvConnected = False
             self._hv_poll_failures = 0
@@ -991,6 +1009,36 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def _get_default_solution_path(self) -> str:
         return os.path.join(self._get_runtime_preset_solutions_path(), "default_solution.json")
 
+    @staticmethod
+    def _extract_focus_points(data, fallback_position):
+        """Return a solution's foci as ``[{'x':, 'y':, 'z':}, ...]`` for QML.
+
+        Prefers the ``foci`` list (present on multi-focus solutions and on
+        anything this app has saved); falls back to the single ``target``
+        position for older or hand-written files.
+        """
+        points = []
+        for entry in data.get('foci', []) or []:
+            position = entry.get('position') if isinstance(entry, dict) else entry
+            if position is None or len(position) < 3:
+                continue
+            try:
+                points.append({
+                    'x': round(float(position[0]), 3),
+                    'y': round(float(position[1]), 3),
+                    'z': round(float(position[2]), 3),
+                })
+            except (TypeError, ValueError):
+                logger.warning(f"Skipping focus with non-numeric position: {position}")
+
+        if not points:
+            points = [{
+                'x': round(float(fallback_position[0]), 3),
+                'y': round(float(fallback_position[1]), 3),
+                'z': round(float(fallback_position[2]), 3),
+            }]
+        return points
+
     def _extract_solution_settings(self, data):
         """Extract UI-editable settings from a solution-like dict."""
         target = data.get('target', {})
@@ -1011,10 +1059,24 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         def _r(value, digits):
             return round(float(value), digits)
 
+        focus_points = self._extract_focus_points(data, focus_position)
+        try:
+            execution_order = [int(v) for v in (data.get('execution_order') or [])]
+        except (TypeError, ValueError):
+            logger.warning("Solution has a non-integer execution_order; using the default order.")
+            execution_order = []
+        if not execution_order:
+            execution_order = list(range(1, len(focus_points) + 1))
+
         return {
-            'xInput': _r(focus_position[0], 3),
-            'yInput': _r(focus_position[1], 3),
-            'zInput': _r(focus_position[2], 3),
+            # xInput/yInput/zInput mirror the first focus. Kept for the
+            # single-focus callers (Transmitter page, operator interface)
+            # that predate multi-focus support.
+            'xInput': focus_points[0]['x'],
+            'yInput': focus_points[0]['y'],
+            'zInput': focus_points[0]['z'],
+            'foci': focus_points,
+            'executionOrder': execution_order,
             'frequency': _r(float(frequency) / 1e3, 3),
             'duration': _r(float(duration) * 1e6, 3),
             'voltage': _r(voltage, 3),
@@ -1027,12 +1089,14 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
     def _build_solution_export_data(self, solution_id, solution_name, num_modules,
                                     xInput, yInput, zInput, freq, voltage,
-                                    pulseInterval, pulseCount, trainInterval, trainCount, durationS):
+                                    pulseInterval, pulseCount, trainInterval, trainCount, durationS,
+                                    foci=None, executionOrder=None):
         solution = self.get_solution(
             xInput, yInput, zInput,
             freq, voltage, pulseInterval, pulseCount,
             trainInterval, trainCount, durationS,
-            validate=True
+            validate=True,
+            foci=foci, executionOrder=executionOrder
         )
         if solution is None:
             raise ValueError("failed to build a valid solution")
@@ -1040,7 +1104,13 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         solution_data = self._to_json_compatible(solution)
         cleaned_id = (solution_id or "").strip() or "solution"
         cleaned_name = (solution_name or "").strip() or cleaned_id
-        target_position = [float(xInput), float(yInput), float(zInput)]
+
+        # get_solution already populated "foci" and "execution_order" from
+        # the focus list; "target" mirrors the first focus so single-focus
+        # files keep the exact shape older readers expect.
+        exported_foci = solution_data.get("foci") or []
+        target_position = (exported_foci[0]["position"] if exported_foci
+                           else [float(xInput), float(yInput), float(zInput)])
 
         pinmap_data = self._load_pinmap_data(num_modules)
         solution_data["id"] = cleaned_id
@@ -1049,10 +1119,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             "position": target_position,
             "units": "mm"
         }
-        solution_data["foci"] = [{
-            "position": target_position,
-            "units": "mm"
-        }]
         solution_data["transducer"] = self._build_transducer_from_pinmap(pinmap_data)
         return solution_data
 
@@ -1131,13 +1197,19 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             return {}
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, str, str, str, result=bool)
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, str, str, str,
+              'QVariantList', 'QVariantList', result=bool)
     def saveSolutionToFile(self, solution_id, solution_name, file_path, num_modules_str,
                            xInput, yInput, zInput, freq, voltage,
-                           pulseInterval, pulseCount, trainInterval, trainCount, durationS):
+                           pulseInterval, pulseCount, trainInterval, trainCount, durationS,
+                           foci=None, executionOrder=None):
         """Save the current solution to a JSON file.
 
         num_modules_str: number of TX modules to use for the transducer field.
         When TX is connected, this is read from hardware; when offline it comes from the UI spinbox.
+
+        foci/executionOrder: optional multi-focus configuration. When
+        omitted the single focus given by xInput/yInput/zInput is saved.
         """
         try:
             try:
@@ -1158,7 +1230,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                 solution_id, solution_name, num_modules,
                 xInput, yInput, zInput,
                 freq, voltage, pulseInterval, pulseCount,
-                trainInterval, trainCount, durationS
+                trainInterval, trainCount, durationS,
+                foci=foci, executionOrder=executionOrder
             )
             normalized_path = self._write_solution_json(file_path, solution_data)
 
@@ -1206,6 +1279,29 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def hvEnableMode(self):
         """Expose HV enable mode to QML."""
         return self._hv_enable_mode
+
+    @pyqtProperty(bool, notify=safetyBypassChanged)
+    def safetyBypassEnabled(self):
+        """Expose the solution safety-limit bypass to QML."""
+        return self._bypass_safety_checks
+
+    # Hardware limits, surfaced so QML validates against the SDK's numbers
+    # instead of restating them. ``constant=True`` -- these cannot change
+    # for the lifetime of the process, so QML binds them once.
+
+    @pyqtProperty(int, constant=True)
+    def maxFocusPoints(self):
+        """Delay-RAM profile slots available for foci (SDK-derived)."""
+        return MAX_FOCUS_POINTS
+
+    @pyqtProperty(float, constant=True)
+    def minProfileSwitchIntervalMs(self):
+        """Inter-pulse dead time the firmware needs to switch focus, in ms.
+
+        Exposed in milliseconds because the Controller page works in the
+        units of its own fields (pulse interval in ms), not SI seconds.
+        """
+        return MIN_PROFILE_SWITCH_INTERVAL_S * 1e3
 
     @pyqtProperty(int, notify=firmwareComplianceChanged)
     def consoleFirmwareCompliance(self) -> int:
