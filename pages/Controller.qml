@@ -2194,8 +2194,8 @@ Rectangle {
                 id: graphContainer
                 Layout.fillWidth: true
                 Layout.fillHeight: false
-                Layout.preferredHeight: 452
-                Layout.maximumHeight: 460
+                Layout.preferredHeight: 398
+                Layout.maximumHeight: 406
                 Layout.minimumHeight: 320
                 color: "#1E1E20"
                 radius: 10
@@ -2243,7 +2243,8 @@ Rectangle {
             Rectangle {
                 id: statusPanel
                 Layout.fillWidth: true
-                Layout.preferredHeight: 210
+                Layout.preferredHeight: 230
+                Layout.minimumHeight: 230
                 color: "#252525"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -2502,35 +2503,24 @@ Rectangle {
 
                     RowLayout {
                         Layout.fillWidth: true
+                        Layout.minimumHeight: 24
                         spacing: 10
 
                         CheckBox {
                             id: controllerLogCheckbox
+                            implicitHeight: 24
+                            padding: 0
+                            Layout.preferredHeight: 24
+                            Layout.alignment: Qt.AlignVCenter
                             text: "Save temp/voltage log"
                             checked: false
                             enabled: true
-                            indicator: Rectangle {
-                                implicitWidth: 16
-                                implicitHeight: 16
-                                radius: 3
-                                border.width: 1
-                                border.color: "#BDC3C7"
-                                color: controllerLogCheckbox.checked ? "#1f963d" : "#222"
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: controllerLogCheckbox.checked ? "✓" : ""
-                                    color: "white"
-                                    font.pixelSize: 12
-                                    font.bold: true
-                                }
-                            }
                             contentItem: Text {
                                 text: controllerLogCheckbox.text
-                                color: "#BDC3C7"
+                                color: !controllerLogCheckbox.enabled ? "#777" : "#BBB"
                                 font.pixelSize: 12
                                 verticalAlignment: Text.AlignVCenter
-                                leftPadding: controllerLogCheckbox.indicator.width + 8
+                                leftPadding: controllerLogCheckbox.indicator.width + 6
                             }
                             onToggled: {
                                 LIFUConnector.setControllerTelemetryLoggingEnabled(checked)
@@ -2539,12 +2529,16 @@ Rectangle {
 
                         Text {
                             Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
                             text: controllerTelemetryLogPath !== ""
                                   ? ("Log: " + controllerTelemetryLogPath)
                                   : ""
                             color: "#7FA2C7"
                             font.pixelSize: 11
-                            wrapMode: Text.WrapAnywhere
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideMiddle
+                            maximumLineCount: 1
+                            verticalAlignment: Text.AlignVCenter
                             horizontalAlignment: Text.AlignRight
                         }
                     }
