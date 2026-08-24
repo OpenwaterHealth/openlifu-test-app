@@ -1,6 +1,7 @@
 ﻿from PyQt6.QtCore import QObject, QRecursiveMutex, QThread, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import asyncio
 import contextlib
+import csv
 import logging
 import os
 import shutil
@@ -197,6 +198,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # when total is 0.
     sonicationProgressUpdated = pyqtSignal(int, int, int, int)  # (pt_curr, pt_total, p_curr, p_total)
 
+    # Controller-page telemetry logging state (enabled, active log path).
+    controllerTelemetryLoggingChanged = pyqtSignal(bool, str)
+
     # Generic device error signal for surfacing SDK failures to QML as popups.
     # Emitted whenever a LIFUError (or unexpected Exception) is caught while
     # talking to the hardware. The message already includes the [LIFU-<code>]
@@ -211,7 +215,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         of ``__init__``.
         """
         return LIFUInterface(HV_test_mode=hv_test_mode,
-                             run_async=True,
+                             run_async=True)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -265,6 +269,13 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
+
+        # Optional controller-page telemetry CSV logging.
+        self._controller_telemetry_logging_enabled = False
+        self._controller_telemetry_log_path = ""
+        self._controller_telemetry_t0 = 0.0
+        self._controller_telemetry_csv = None
+        self._controller_telemetry_file_handle = None
 
         # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
         self._hv_enable_mode = HV_EN_AUTO
@@ -330,6 +341,13 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self.connectionStatusChanged.connect(self._check_firmware_on_connect)
         self.numModulesUpdated.connect(self._check_tx_firmware_on_modules)
 
+        # Optional CSV capture of Controller telemetry. We subscribe at the
+        # signal layer so all existing emit sites (poll thread and status-frame
+        # parser) are covered without altering their call paths.
+        self.temperatureHvUpdated.connect(self._log_controller_hv_temperature)
+        self.temperatureTxUpdated.connect(self._log_controller_tx_temperature)
+        self.monVoltagesReceived.connect(self._log_controller_voltage_readings)
+
         # Background telemetry polling thread (temperature + HV voltages).
         # QThread is used (not threading.Thread) so Qt's queued-connection
         # mechanism correctly delivers signals from the poll thread to the
@@ -375,6 +393,165 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self.interface.close()
         except Exception as e:
             logger.error(f"Error closing LIFU interface: {e}")
+        self._close_controller_telemetry_logger()
+
+    @pyqtSlot(bool)
+    def setControllerTelemetryLoggingEnabled(self, enabled: bool):
+        """Enable/disable CSV logging of controller temperatures and voltages."""
+        if bool(enabled):
+            if not self._controller_telemetry_logging_enabled:
+                self._start_controller_telemetry_logger()
+            else:
+                self.controllerTelemetryLoggingChanged.emit(
+                    True,
+                    self._controller_telemetry_log_path,
+                )
+            return
+        self._close_controller_telemetry_logger()
+        self.controllerTelemetryLoggingChanged.emit(False, "")
+
+    @pyqtSlot(result=bool)
+    def isControllerTelemetryLoggingEnabled(self):
+        return bool(self._controller_telemetry_logging_enabled)
+
+    @pyqtSlot(result=str)
+    def getControllerTelemetryLogPath(self):
+        return self._controller_telemetry_log_path or ""
+
+    def _start_controller_telemetry_logger(self):
+        """Open a CSV file for controller telemetry samples."""
+        try:
+            logs_dir = os.path.join(os.getcwd(), "logs")
+            os.makedirs(logs_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            log_path = os.path.join(logs_dir, f"controller_telemetry_{stamp}.csv")
+
+            fh = open(log_path, "w", newline="", encoding="utf-8")
+            writer = csv.writer(fh)
+            writer.writerow([
+                "timestamp_utc",
+                "elapsed_s",
+                "reading",
+                "module",
+                "tx_temp_c",
+                "ambient_temp_c",
+                "hv_temp1_c",
+                "hv_temp2_c",
+                "hv_positive_v",
+                "hv_negative_v",
+            ])
+
+            self._controller_telemetry_file_handle = fh
+            self._controller_telemetry_csv = writer
+            self._controller_telemetry_t0 = time.monotonic()
+            self._controller_telemetry_log_path = log_path
+            self._controller_telemetry_logging_enabled = True
+            logger.info("Controller telemetry logging enabled: %s", log_path)
+            self.controllerTelemetryLoggingChanged.emit(True, log_path)
+        except Exception as e:
+            logger.error("Failed to enable controller telemetry logging: %s", e)
+            self._controller_telemetry_logging_enabled = False
+            self._controller_telemetry_log_path = ""
+            self._controller_telemetry_t0 = 0.0
+            self._controller_telemetry_csv = None
+            if self._controller_telemetry_file_handle is not None:
+                try:
+                    self._controller_telemetry_file_handle.close()
+                except Exception:
+                    pass
+            self._controller_telemetry_file_handle = None
+            self.controllerTelemetryLoggingChanged.emit(False, "")
+
+    def _close_controller_telemetry_logger(self):
+        """Close the active controller telemetry CSV file if one is open."""
+        if self._controller_telemetry_file_handle is not None:
+            try:
+                self._controller_telemetry_file_handle.close()
+            except Exception as e:
+                logger.warning("Error closing controller telemetry log: %s", e)
+        if self._controller_telemetry_logging_enabled and self._controller_telemetry_log_path:
+            logger.info("Controller telemetry logging disabled: %s", self._controller_telemetry_log_path)
+        self._controller_telemetry_file_handle = None
+        self._controller_telemetry_csv = None
+        self._controller_telemetry_t0 = 0.0
+        self._controller_telemetry_log_path = ""
+        self._controller_telemetry_logging_enabled = False
+
+    def _append_controller_telemetry_row(
+        self,
+        reading: str,
+        module="",
+        tx_temp=None,
+        ambient_temp=None,
+        hv_temp1=None,
+        hv_temp2=None,
+        hv_positive=None,
+        hv_negative=None,
+    ):
+        if not self._controller_telemetry_logging_enabled or self._controller_telemetry_csv is None:
+            return
+        try:
+            now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            elapsed = time.monotonic() - self._controller_telemetry_t0
+            self._controller_telemetry_csv.writerow([
+                now_utc,
+                f"{elapsed:.3f}",
+                reading,
+                module,
+                "" if tx_temp is None else f"{float(tx_temp):.3f}",
+                "" if ambient_temp is None else f"{float(ambient_temp):.3f}",
+                "" if hv_temp1 is None else f"{float(hv_temp1):.3f}",
+                "" if hv_temp2 is None else f"{float(hv_temp2):.3f}",
+                "" if hv_positive is None else f"{float(hv_positive):.3f}",
+                "" if hv_negative is None else f"{float(hv_negative):.3f}",
+            ])
+            if self._controller_telemetry_file_handle is not None:
+                self._controller_telemetry_file_handle.flush()
+        except Exception as e:
+            logger.warning("Failed to append controller telemetry row: %s", e)
+
+    def _extract_converted_voltage(self, entry):
+        """Best-effort extraction of a voltage value from SDK monitor entries."""
+        if isinstance(entry, dict):
+            value = entry.get("converted_voltage", entry.get("voltage", entry.get("value")))
+            return value
+        for attr in ("converted_voltage", "voltage", "value"):
+            if hasattr(entry, attr):
+                return getattr(entry, attr)
+        return None
+
+    def _log_controller_hv_temperature(self, temp1: float, temp2: float):
+        self._append_controller_telemetry_row(
+            "hv_temperature",
+            hv_temp1=temp1,
+            hv_temp2=temp2,
+        )
+
+    def _log_controller_tx_temperature(self, module: int, tx_temp: float, amb_temp: float):
+        self._append_controller_telemetry_row(
+            "tx_temperature",
+            module=module,
+            tx_temp=tx_temp,
+            ambient_temp=amb_temp,
+        )
+
+    def _log_controller_voltage_readings(self, voltages):
+        hv_positive = None
+        hv_negative = None
+        try:
+            if len(voltages) > 0:
+                hv_positive = self._extract_converted_voltage(voltages[0])
+            if len(voltages) > 3:
+                hv_negative = self._extract_converted_voltage(voltages[3])
+        except Exception:
+            hv_positive = None
+            hv_negative = None
+
+        self._append_controller_telemetry_row(
+            "hv_voltage",
+            hv_positive=hv_positive,
+            hv_negative=hv_negative,
+        )
 
     def _emit_device_error(self, title: str, message: str):
         """Log a device/communication failure and surface it to QML as a popup.
