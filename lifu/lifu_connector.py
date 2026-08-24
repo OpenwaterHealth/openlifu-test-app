@@ -271,11 +271,19 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._solution_name = ""
 
         # Optional controller-page telemetry CSV logging.
+        # ``_controller_telemetry_logging_enabled`` is the user's armed
+        # preference (checkbox state). A CSV file is opened only while
+        # sonication is actively RUNNING.
         self._controller_telemetry_logging_enabled = False
         self._controller_telemetry_log_path = ""
         self._controller_telemetry_t0 = 0.0
         self._controller_telemetry_csv = None
         self._controller_telemetry_file_handle = None
+        self._controller_telemetry_sample_timer = QTimer(self)
+        self._controller_telemetry_sample_timer.setInterval(1000)
+        self._controller_telemetry_sample_timer.timeout.connect(
+            self._controller_telemetry_sample_tick
+        )
 
         # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
         self._hv_enable_mode = HV_EN_AUTO
@@ -397,17 +405,24 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
     @pyqtSlot(bool)
     def setControllerTelemetryLoggingEnabled(self, enabled: bool):
-        """Enable/disable CSV logging of controller temperatures and voltages."""
+        """Arm/disarm controller telemetry logging.
+
+        When armed, logging starts on the next successful Start and stops
+        automatically when the run ends (Stop button or STATUS:STOPPED).
+        """
         if bool(enabled):
-            if not self._controller_telemetry_logging_enabled:
+            self._controller_telemetry_logging_enabled = True
+            # If the user arms logging while already RUNNING, begin
+            # immediately for the active run.
+            if self._state == RUNNING and self._controller_telemetry_csv is None:
                 self._start_controller_telemetry_logger()
             else:
-                self.controllerTelemetryLoggingChanged.emit(
-                    True,
-                    self._controller_telemetry_log_path,
-                )
+                self.controllerTelemetryLoggingChanged.emit(True, self._controller_telemetry_log_path)
             return
-        self._close_controller_telemetry_logger()
+
+        self._controller_telemetry_logging_enabled = False
+        # Disarming always closes any active file.
+        self._close_controller_telemetry_logger(clear_enabled=False)
         self.controllerTelemetryLoggingChanged.emit(False, "")
 
     @pyqtSlot(result=bool)
@@ -417,6 +432,83 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     @pyqtSlot(result=str)
     def getControllerTelemetryLogPath(self):
         return self._controller_telemetry_log_path or ""
+
+    def _start_controller_telemetry_run_if_armed(self):
+        """Open a fresh CSV file for the current run if logging is armed."""
+        if not self._controller_telemetry_logging_enabled:
+            return
+        # Always rotate file per run.
+        self._close_controller_telemetry_logger(clear_enabled=False)
+        self._start_controller_telemetry_logger()
+        self._controller_telemetry_sample_timer.start()
+
+    def _stop_controller_telemetry_run(self):
+        """Close the active run CSV but preserve the armed checkbox state."""
+        self._controller_telemetry_sample_timer.stop()
+        armed = self._controller_telemetry_logging_enabled
+        if self._controller_telemetry_csv is not None:
+            self._append_controller_telemetry_row("run_stopped")
+        self._close_controller_telemetry_logger(clear_enabled=False)
+        self.controllerTelemetryLoggingChanged.emit(bool(armed), "")
+
+    def _controller_telemetry_sample_tick(self):
+        """Periodic run-time telemetry sample while logging is active."""
+        if self._state != RUNNING:
+            return
+        self._capture_controller_telemetry_snapshot("periodic_snapshot")
+
+    def _capture_controller_telemetry_snapshot(self, reading: str):
+        """Best-effort one-shot telemetry sample for run-boundary logging."""
+        if not self._controller_telemetry_logging_enabled or self._controller_telemetry_csv is None:
+            return
+
+        tx_temp = None
+        ambient_temp = None
+        hv_temp1 = None
+        hv_temp2 = None
+        hv_positive = None
+        hv_negative = None
+
+        self._interface_mutex.lock()
+        try:
+            if self._txConnected:
+                try:
+                    tx_temp = self.interface.txdevice.get_temperature(module=0)
+                    ambient_temp = self.interface.txdevice.get_ambient_temperature(module=0)
+                except Exception:
+                    tx_temp = None
+                    ambient_temp = None
+
+            if self._hvConnected:
+                try:
+                    hv_temp1 = self.interface.hvcontroller.get_temperature1()
+                    hv_temp2 = self.interface.hvcontroller.get_temperature2()
+                except Exception:
+                    hv_temp1 = None
+                    hv_temp2 = None
+
+                try:
+                    voltages = self.interface.hvcontroller.get_vmon_values()
+                    if len(voltages) > 0:
+                        hv_positive = self._extract_converted_voltage(voltages[0])
+                    if len(voltages) > 3:
+                        hv_negative = self._extract_converted_voltage(voltages[3])
+                except Exception:
+                    hv_positive = None
+                    hv_negative = None
+        finally:
+            self._interface_mutex.unlock()
+
+        self._append_controller_telemetry_row(
+            reading,
+            module=0,
+            tx_temp=tx_temp,
+            ambient_temp=ambient_temp,
+            hv_temp1=hv_temp1,
+            hv_temp2=hv_temp2,
+            hv_positive=hv_positive,
+            hv_negative=hv_negative,
+        )
 
     def _start_controller_telemetry_logger(self):
         """Open a CSV file for controller telemetry samples."""
@@ -445,12 +537,15 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._controller_telemetry_csv = writer
             self._controller_telemetry_t0 = time.monotonic()
             self._controller_telemetry_log_path = log_path
-            self._controller_telemetry_logging_enabled = True
             logger.info("Controller telemetry logging enabled: %s", log_path)
-            self.controllerTelemetryLoggingChanged.emit(True, log_path)
+            self._append_controller_telemetry_row("run_started")
+            self._capture_controller_telemetry_snapshot("run_start_snapshot")
+            self.controllerTelemetryLoggingChanged.emit(
+                bool(self._controller_telemetry_logging_enabled),
+                log_path,
+            )
         except Exception as e:
             logger.error("Failed to enable controller telemetry logging: %s", e)
-            self._controller_telemetry_logging_enabled = False
             self._controller_telemetry_log_path = ""
             self._controller_telemetry_t0 = 0.0
             self._controller_telemetry_csv = None
@@ -460,10 +555,14 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                 except Exception:
                     pass
             self._controller_telemetry_file_handle = None
-            self.controllerTelemetryLoggingChanged.emit(False, "")
+            self.controllerTelemetryLoggingChanged.emit(
+                bool(self._controller_telemetry_logging_enabled),
+                "",
+            )
 
-    def _close_controller_telemetry_logger(self):
+    def _close_controller_telemetry_logger(self, clear_enabled: bool = True):
         """Close the active controller telemetry CSV file if one is open."""
+        self._controller_telemetry_sample_timer.stop()
         if self._controller_telemetry_file_handle is not None:
             try:
                 self._controller_telemetry_file_handle.close()
@@ -475,7 +574,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._controller_telemetry_csv = None
         self._controller_telemetry_t0 = 0.0
         self._controller_telemetry_log_path = ""
-        self._controller_telemetry_logging_enabled = False
+        if clear_enabled:
+            self._controller_telemetry_logging_enabled = False
 
     def _append_controller_telemetry_row(
         self,
@@ -1063,9 +1163,21 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                         self._trigger_state = new_trigger_state
                         self.triggerStateChanged.emit(self._trigger_state)
                         logger.debug(f"Trigger state updated to: {'RUNNING' if self._trigger_state else 'STOPPED'}")
+
+                    # Log TX status telemetry directly while RUNNING/STOPPED.
+                    # Do this before STOPPED closes the run file.
+                    self._append_controller_telemetry_row(
+                        "tx_status",
+                        module=0,
+                        tx_temp=parsed.get("temp_tx"),
+                        ambient_temp=parsed.get("temp_ambient"),
+                    )
                     
                     if parsed["status"] == "STOPPED":
                         logger.debug("Trigger is stopped.")
+                        self._async_mode_enabled = False
+                        self._capture_controller_telemetry_snapshot("run_stop_snapshot")
+                        self._stop_controller_telemetry_run()
                         self._state = READY
                         self.stateChanged.emit(self._state)
 

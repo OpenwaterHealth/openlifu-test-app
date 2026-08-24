@@ -137,6 +137,8 @@ class TransmitterMixin:
                     self.interface.stop_sonication(turn_hv_off=turn_hv_off)
                     self._state = READY
                     self.stateChanged.emit(self._state)
+                    self._capture_controller_telemetry_snapshot("run_stop_snapshot")
+                    self._stop_controller_telemetry_run()
             except LIFUError as e:
                 logger.warning(f"Failed to query running state during temperature update: {e}")
                 # LIFU-1001 = device not connected; count as a poll failure so

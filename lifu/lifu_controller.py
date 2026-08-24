@@ -650,6 +650,7 @@ class ControllerMixin:
             self._async_mode_enabled = True
             self._state = RUNNING
             self.stateChanged.emit(self._state)
+            self._start_controller_telemetry_run_if_armed()
             logger.info(f"[START] Sonication started "
                         f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
                         f"turn_hv_on={turn_hv_on})")
@@ -702,6 +703,8 @@ class ControllerMixin:
             self._async_mode_enabled = False
             self._state = READY
             self.stateChanged.emit(self._state)
+            self._capture_controller_telemetry_snapshot("run_stop_snapshot")
+            self._stop_controller_telemetry_run()
             logger.info(f"[STOP] Sonication stopped "
                         f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
                         f"turn_hv_off={turn_hv_off})")
