@@ -52,6 +52,7 @@ Rectangle {
     property var presetSolutions: []
     property string saveSolutionPath: ""
     property bool savePathAuto: true
+    property string controllerTelemetryLogPath: ""
 
     // Sonication progress UI state. Driven by Start/Stop button clicks
     // plus unsolicited STATUS frames from the firmware. State machine:
@@ -1528,6 +1529,8 @@ Rectangle {
     Component.onCompleted: {
         applySettingsToUi(LIFUConnector.getDefaultSolutionSettings())
         updateTrainIntervalValidation()
+        controllerLogCheckbox.checked = LIFUConnector.isControllerTelemetryLoggingEnabled()
+        controllerTelemetryLogPath = LIFUConnector.getControllerTelemetryLogPath()
     }
     
     // LAYOUT
@@ -2240,7 +2243,7 @@ Rectangle {
             Rectangle {
                 id: statusPanel
                 Layout.fillWidth: true
-                Layout.preferredHeight: 176
+                Layout.preferredHeight: 210
                 color: "#252525"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -2495,6 +2498,55 @@ Rectangle {
                         ToolTip.text: "Skips the SDK's check_solution() duty-cycle, voltage and "
                                       + "sequence-duration limits at Configure. Bench testing only."
                         HoverHandler { id: safetyBypassHover }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        CheckBox {
+                            id: controllerLogCheckbox
+                            text: "Save temp/voltage log"
+                            checked: false
+                            enabled: true
+                            indicator: Rectangle {
+                                implicitWidth: 16
+                                implicitHeight: 16
+                                radius: 3
+                                border.width: 1
+                                border.color: "#BDC3C7"
+                                color: controllerLogCheckbox.checked ? "#1f963d" : "#222"
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: controllerLogCheckbox.checked ? "✓" : ""
+                                    color: "white"
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
+                            contentItem: Text {
+                                text: controllerLogCheckbox.text
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: controllerLogCheckbox.indicator.width + 8
+                            }
+                            onToggled: {
+                                LIFUConnector.setControllerTelemetryLoggingEnabled(checked)
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: controllerTelemetryLogPath !== ""
+                                  ? ("Log: " + controllerTelemetryLogPath)
+                                  : ""
+                            color: "#7FA2C7"
+                            font.pixelSize: 11
+                            wrapMode: Text.WrapAnywhere
+                            horizontalAlignment: Text.AlignRight
+                        }
                     }
 
                     RowLayout {
@@ -2789,6 +2841,13 @@ Rectangle {
             if (voltages.length >= 4) {
                 hvPositiveRail = voltages[0].converted_voltage
                 hvNegativeRail = voltages[3].converted_voltage
+            }
+        }
+
+        function onControllerTelemetryLoggingChanged(enabled, logPath) {
+            controllerTelemetryLogPath = logPath
+            if (controllerLogCheckbox.checked !== enabled) {
+                controllerLogCheckbox.checked = enabled
             }
         }
 

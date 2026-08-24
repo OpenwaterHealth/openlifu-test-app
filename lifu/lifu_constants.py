@@ -13,7 +13,7 @@ import re
 
 # Import limits from SDK
 from openlifu_sdk.io.LIFUTXDevice import MIN_PROFILE_SWITCH_INTERVAL, VALID_DELAY_PROFILES
-)
+
 
 logger = logging.getLogger(__name__)
 
