@@ -1530,15 +1530,6 @@ Rectangle {
                             color: getStatusColor()
                             horizontalAlignment: Text.AlignHCenter
                             Layout.fillWidth: true
-                            // Re-evaluate when firmware compliance flips so
-                            // text/color stay in sync with the binding.
-                            Connections {
-                                target: LIFUConnector
-                                function onFirmwareComplianceChanged() {
-                                    statusText.text = getStatusText()
-                                    statusText.color = getStatusColor()
-                                }
-                            }
                             SequentialAnimation on opacity {
                                 running: LIFUConnector.state === 3
                                 loops: Animation.Infinite
