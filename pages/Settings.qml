@@ -1634,10 +1634,10 @@ Rectangle {
                                     settingsPage.consoleEffectivePath)
                             enabled: LIFUConnector.hvConnected && !consoleUpdating
                                 && consoleFileSigned
-                            property color baseColor: settingsPage.updateButtonColor(
-                                consoleCurrentVersion.text,
-                                LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath),
-                                LIFUConnector.minConsoleFirmwareVersion)
+property color baseColor: settingsPage.updateButtonColor(
+    consoleCurrentVersion.text,
+    (consoleFileVersion.text === "—" ? "" : consoleFileVersion.text),
+    LIFUConnector.minConsoleFirmwareVersion)
                             color: !enabled ? "#3A3F4B"
                                 : (consoleUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
