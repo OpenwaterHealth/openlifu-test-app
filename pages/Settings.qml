@@ -2023,10 +2023,12 @@ property color baseColor: settingsPage.updateButtonColor(
                                 && !settingsPage.txUpdateBlocked
                             property color baseColor: txForceProduction.checked
                                 ? "#E67E22"
-                                : settingsPage.updateButtonColor(
-                                    txCurrentVersion.text,
-                                    LIFUConnector.getFirmwareFileVersion(settingsPage.transmitterEffectivePath),
-                                    LIFUConnector.minTransmitterFirmwareVersion)
+property color baseColor: txForceProduction.checked
+    ? "#E67E22"
+    : settingsPage.updateButtonColor(
+        txCurrentVersion.text,
+        (txFileVersion.text === "—" ? "" : txFileVersion.text),
+        LIFUConnector.minTransmitterFirmwareVersion)
                             color: !enabled ? "#3A3F4B"
                                 : (txUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
