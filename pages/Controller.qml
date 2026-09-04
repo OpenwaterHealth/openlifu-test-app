@@ -2305,7 +2305,17 @@ Rectangle {
                             Layout.topMargin: 6
                             spacing: 4
 
+                        // Only meaningful for a single focus. In rastering
+                        // mode these would show focus 1 of N with no hint that
+                        // the others exist, and editing them would silently
+                        // move just one point of the raster -- the Foci dialog
+                        // is the place to edit a multi-focus list. The fields
+                        // stay alive while hidden (syncInputsFromFocusOne
+                        // keeps them current), so dropping back to one focus
+                        // shows the right values.
                         RowLayout {
+                            id: inlineFocusRow
+                            visible: fociModel.count <= 1
                             Layout.fillWidth: true
                             spacing: 16
 
