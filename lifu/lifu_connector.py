@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 # starts depending on a new SDK feature/fix. Keep in sync with the
 # `openlifu-sdk>=` pin in pyproject.toml. The parse/check helpers live in
 # the SDK (``openlifu_sdk.ui``); we just pin the version here.
-MIN_SDK_VERSION = "2.0.12"
+MIN_SDK_VERSION = "2.0.16"
 
 from openlifu_sdk.ui import (
     BaseConnector,
