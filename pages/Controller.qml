@@ -131,6 +131,18 @@ Rectangle {
         return palette[index % palette.length]
     }
 
+    // One coordinate of one focus, formatted for the read-only readout under
+    // the delay-profile selector. The selector's closed state only names the
+    // focus, so without this the plot cannot be read without opening the
+    // Focus Points dialog.
+    function focusCoordText(index, role) {
+        if (index < 0 || index >= fociModel.count) {
+            return "--"
+        }
+        var value = parseFloat(fociModel.get(index)[role])
+        return isNaN(value) ? "--" : value + " mm"
+    }
+
     function clampSelectedFocusIndex() {
         var maxIndex = Math.max(0, fociModel.count - 1)
         if (selectedFocusIndex > maxIndex) {
@@ -366,8 +378,13 @@ Rectangle {
         var pulseCount = parseInt(pulseCountText)
         var perEntry = (!isNaN(pulseCount) && pulseCount % parsed.order.length === 0)
                        ? (pulseCount / parsed.order.length) : NaN
-        return model.count + " foci · order " + parsed.order.join("-")
-               + (isNaN(perEntry) ? "" : " · " + perEntry + " pulse" + (perEntry === 1 ? "" : "s") + " each")
+        // Two explicit lines: the order can be long enough to wrap on its
+        // own, and letting the pulse count trail off the end of it made the
+        // two facts hard to tell apart. No focus count -- the button beside
+        // this label already reads "Focus Points (N)".
+        return "order: " + parsed.order.join("-")
+               + (isNaN(perEntry) ? ""
+                  : "\n" + perEntry + " pulse" + (perEntry === 1 ? "" : "s") + " each")
     }
 
     // Function to update the validation
@@ -2502,10 +2519,23 @@ Rectangle {
                                        : fociSummaryHover.containsMouse ? "#CFE0F0" : "#9FB3C8"
                                 font.pixelSize: 11
                                 font.underline: fociSummaryHover.containsMouse
+                                // The text carries its own newline between the
+                                // order and the pulse count; wrapping is the
+                                // backstop for an order too long for one line
+                                // (a custom order may repeat entries, so it
+                                // has no length bound). "AnywhereOrWordBoundary"
+                                // because the order is hyphen-joined with no
+                                // spaces to break on. Height follows the
+                                // content rather than being pinned to 30, so
+                                // the row grows only when it has to -- and in
+                                // rastering mode the inline X/Y/Z row above is
+                                // hidden, leaving room for it.
+                                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                                maximumLineCount: 3
                                 elide: Text.ElideRight
+                                lineHeight: 1.15
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 30
-                                verticalAlignment: Text.AlignVCenter
+                                Layout.alignment: Qt.AlignVCenter
 
                                 MouseArea {
                                     id: fociSummaryHover
@@ -2640,14 +2670,14 @@ Rectangle {
                         text: "Delay profile"
                         font.pixelSize: 11
                         color: "#9FB3C8"
-                        Layout.alignment: Qt.AlignRight
+                        Layout.alignment: Qt.AlignHCenter
                     }
 
                     ComboBox {
                         id: focusSelector
                         Layout.preferredWidth: 110
                         Layout.preferredHeight: 28
-                        Layout.alignment: Qt.AlignRight
+                        Layout.alignment: Qt.AlignHCenter
                         font.pixelSize: 12
                         // An int model (one entry per focus) rather than a
                         // built string list: the list would be rebuilt on
@@ -2763,6 +2793,68 @@ Rectangle {
                             }
                             selectedFocusIndex = index
                             refreshPlot()
+                        }
+                    }
+
+                    // Where the selected profile is steering. Read-only on
+                    // purpose: the focus list is edited in the Focus Points
+                    // dialog, and an editable field here would be a second
+                    // path into the same data. Depends on fociRevision
+                    // because ListModel row edits are not observable.
+                    GridLayout {
+                        id: focusCoordReadout
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.topMargin: 2
+                        columns: 2
+                        columnSpacing: 8
+                        rowSpacing: 0
+
+                        Text {
+                            text: "X"
+                            font.pixelSize: 11
+                            color: "#9FB3C8"
+                        }
+                        Text {
+                            id: focusReadoutX
+                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fx") : ""
+                            font.pixelSize: 11
+                            color: "#D0D8E0"
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: 74
+                            Layout.maximumWidth: 74
+                        }
+
+                        Text {
+                            text: "Y"
+                            font.pixelSize: 11
+                            color: "#9FB3C8"
+                        }
+                        Text {
+                            id: focusReadoutY
+                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fy") : ""
+                            font.pixelSize: 11
+                            color: "#D0D8E0"
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: 74
+                            Layout.maximumWidth: 74
+                        }
+
+                        Text {
+                            text: "Z"
+                            font.pixelSize: 11
+                            color: "#9FB3C8"
+                        }
+                        Text {
+                            id: focusReadoutZ
+                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fz") : ""
+                            font.pixelSize: 11
+                            color: "#D0D8E0"
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: 74
+                            Layout.maximumWidth: 74
                         }
                     }
                 }
