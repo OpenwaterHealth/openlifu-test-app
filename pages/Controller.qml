@@ -118,6 +118,19 @@ Rectangle {
         return "Focus " + (index + 1) + "  (" + row.fx + ", " + row.fy + ", " + row.fz + ")"
     }
 
+    // Per-focus colours, straight from the plot module so a swatch here is
+    // the same colour as that focus's marker on the element map. The map
+    // carries no numbers, so this is what ties an entry to a marker.
+    readonly property var focusProfileColors: LIFUConnector.focusProfileColors
+
+    function focusColorFor(index) {
+        var palette = focusProfileColors
+        if (!palette || palette.length === 0 || index < 0) {
+            return "#9FB3C8"
+        }
+        return palette[index % palette.length]
+    }
+
     function clampSelectedFocusIndex() {
         var maxIndex = Math.max(0, fociModel.count - 1)
         if (selectedFocusIndex > maxIndex) {
@@ -1304,6 +1317,88 @@ Rectangle {
         }
     }
 
+    // One coordinate cell in the Focus Points list: a numeric field flanked
+    // by small -/+ steppers, so a focus can be walked to position by
+    // clicking instead of retyping. Declared once rather than six times.
+    //
+    // Communicates by signal rather than reaching for the dialog directly:
+    // an inline component is its own type and does not share this file's
+    // id scope.
+    component FocusCoordinateCell: RowLayout {
+        id: cell
+        property string value: ""
+        spacing: 2
+
+        signal editedText(string newText)
+        signal stepped(real delta)
+
+        Button {
+            id: cellMinus
+            text: "−"
+            autoRepeat: true   // hold to keep stepping
+            implicitWidth: 20
+            implicitHeight: 30
+            // Material sets leftPadding/rightPadding to 24 and 6 px vertical
+            // insets of its own; `padding: 0` does not override those, so at
+            // this size the glyph lands outside its 20 px background and the
+            // background shrinks to 18 px tall. Zero them explicitly.
+            leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+            leftInset: 0; rightInset: 0; topInset: 0; bottomInset: 0
+            contentItem: Text {
+                text: cellMinus.text
+                color: "white"
+                font.pixelSize: 15
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                color: cellMinus.down ? "#2F333D" : "#3A3F4B"
+                border.color: "#7A8290"
+                radius: 3
+            }
+            onClicked: cell.stepped(-1)
+        }
+
+        TextField {
+            id: cellField
+            Layout.preferredWidth: 66
+            Layout.preferredHeight: 30
+            font.pixelSize: 13
+            horizontalAlignment: TextInput.AlignHCenter
+            text: cell.value
+            color: isNaN(parseFloat(text)) ? "#E67E22" : "white"
+            background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
+            onTextEdited: cell.editedText(text)
+        }
+
+        Button {
+            id: cellPlus
+            text: "+"
+            autoRepeat: true
+            implicitWidth: 20
+            implicitHeight: 30
+            // Material sets leftPadding/rightPadding to 24 and 6 px vertical
+            // insets of its own; `padding: 0` does not override those, so at
+            // this size the glyph lands outside its 20 px background and the
+            // background shrinks to 18 px tall. Zero them explicitly.
+            leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+            leftInset: 0; rightInset: 0; topInset: 0; bottomInset: 0
+            contentItem: Text {
+                text: cellPlus.text
+                color: "white"
+                font.pixelSize: 15
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                color: cellPlus.down ? "#2F333D" : "#3A3F4B"
+                border.color: "#7A8290"
+                radius: 3
+            }
+            onClicked: cell.stepped(1)
+        }
+    }
+
     // Focus-list editor. Works on a copy of fociModel so Cancel is a true
     // no-op; OK is disabled until the configuration would actually program.
     Dialog {
@@ -1365,6 +1460,23 @@ Rectangle {
             touch()
         }
 
+        // Nudge one coordinate of one focus by +/- one step. Rounded to
+        // millimetre-thousandths so repeated clicks don't accumulate binary
+        // float dust into "4.999999999999999".
+        function stepCoordinate(index, role, delta) {
+            var row = fociEditModel.get(index)
+            if (!row) {
+                return
+            }
+            var current = parseFloat(row[role])
+            if (isNaN(current)) {
+                current = 0
+            }
+            var next = Math.round((current + delta) * 1000) / 1000
+            fociEditModel.setProperty(index, role, next.toString())
+            touch()
+        }
+
         // Round the working pulse count up to the next programmable value.
         function snapWorkingPulseCount() {
             if (workingCycleLength <= 0) {
@@ -1391,14 +1503,19 @@ Rectangle {
                 wrapMode: Text.WordWrap
             }
 
-            // Column headers
+            // Column headers. Widths track FocusCoordinateCell (20 px stepper
+            // + 66 px field + 20 px stepper + 2x2 px spacing = 110) so the
+            // labels stay over their columns.
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
                 Text { text: "#"; color: "#9FB3C8"; font.pixelSize: 11; Layout.preferredWidth: 22 }
-                Text { text: "X (mm)"; color: "#9FB3C8"; font.pixelSize: 11; Layout.preferredWidth: 90 }
-                Text { text: "Y (mm)"; color: "#9FB3C8"; font.pixelSize: 11; Layout.preferredWidth: 90 }
-                Text { text: "Z (mm)"; color: "#9FB3C8"; font.pixelSize: 11; Layout.preferredWidth: 90 }
+                Text { text: "X (mm)"; color: "#9FB3C8"; font.pixelSize: 11
+                       horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 110 }
+                Text { text: "Y (mm)"; color: "#9FB3C8"; font.pixelSize: 11
+                       horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 110 }
+                Text { text: "Z (mm)"; color: "#9FB3C8"; font.pixelSize: 11
+                       horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 110 }
                 Item { Layout.fillWidth: true }
             }
 
@@ -1432,42 +1549,36 @@ Rectangle {
                                 Layout.preferredWidth: 22
                             }
 
-                            TextField {
-                                Layout.preferredWidth: 90
-                                Layout.preferredHeight: 30
-                                font.pixelSize: 13
-                                text: focusRow.fx
-                                color: isNaN(parseFloat(text)) ? "#E67E22" : "white"
-                                background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
-                                onTextEdited: {
-                                    fociEditModel.setProperty(focusRow.index, "fx", text)
+                            FocusCoordinateCell {
+                                value: focusRow.fx
+                                onEditedText: function(newText) {
+                                    fociEditModel.setProperty(focusRow.index, "fx", newText)
                                     fociDialog.touch()
+                                }
+                                onStepped: function(delta) {
+                                    fociDialog.stepCoordinate(focusRow.index, "fx", delta)
                                 }
                             }
 
-                            TextField {
-                                Layout.preferredWidth: 90
-                                Layout.preferredHeight: 30
-                                font.pixelSize: 13
-                                text: focusRow.fy
-                                color: isNaN(parseFloat(text)) ? "#E67E22" : "white"
-                                background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
-                                onTextEdited: {
-                                    fociEditModel.setProperty(focusRow.index, "fy", text)
+                            FocusCoordinateCell {
+                                value: focusRow.fy
+                                onEditedText: function(newText) {
+                                    fociEditModel.setProperty(focusRow.index, "fy", newText)
                                     fociDialog.touch()
+                                }
+                                onStepped: function(delta) {
+                                    fociDialog.stepCoordinate(focusRow.index, "fy", delta)
                                 }
                             }
 
-                            TextField {
-                                Layout.preferredWidth: 90
-                                Layout.preferredHeight: 30
-                                font.pixelSize: 13
-                                text: focusRow.fz
-                                color: isNaN(parseFloat(text)) ? "#E67E22" : "white"
-                                background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
-                                onTextEdited: {
-                                    fociEditModel.setProperty(focusRow.index, "fz", text)
+                            FocusCoordinateCell {
+                                value: focusRow.fz
+                                onEditedText: function(newText) {
+                                    fociEditModel.setProperty(focusRow.index, "fz", newText)
                                     fociDialog.touch()
+                                }
+                                onStepped: function(delta) {
+                                    fociDialog.stepCoordinate(focusRow.index, "fz", delta)
                                 }
                             }
 
@@ -1740,6 +1851,11 @@ Rectangle {
         updateTrainIntervalValidation()
         controllerLogCheckbox.checked = LIFUConnector.isControllerTelemetryLoggingEnabled()
         controllerTelemetryLogPath = LIFUConnector.getControllerTelemetryLogPath()
+        // Draw the default solution straight away rather than parking on
+        // the "no data" placeholder. The plot is built entirely from the
+        // on-screen parameters, so it is meaningful before any device is
+        // connected -- and an empty panel reads as "something is broken".
+        refreshPlot()
     }
     
     // LAYOUT
@@ -2361,8 +2477,16 @@ Rectangle {
                             // The summary/error text opens the same dialog, so
                             // the whole row is one target instead of a 158 px
                             // button next to dead text.
+                            //
+                            // At a single focus the summary would only say
+                            // "single focus", which the button beside it
+                            // ("Add Focus Points…") already implies -- so it
+                            // is dropped entirely in that state. An error
+                            // still shows: a bad coordinate blocks Configure
+                            // and this row is where that is explained.
                             Text {
                                 id: fociSummaryText
+                                visible: fociError !== "" || fociModel.count > 1
                                 text: fociError !== "" ? fociError : fociSummary
                                 color: fociError !== "" ? "#E67E22"
                                        : fociSummaryHover.containsMouse ? "#CFE0F0" : "#9FB3C8"
@@ -2489,25 +2613,31 @@ Rectangle {
                 // delays are coloured in and highlighted. Hidden entirely
                 // for single-focus solutions, where there is nothing to
                 // choose between.
-                RowLayout {
-                    id: focusSelectorRow
-                    anchors.top: parent.top
-                    anchors.left: parent.left
-                    anchors.margins: 8
-                    spacing: 6
+                //
+                // Stacked above Refresh in the right-hand gutter: the plot
+                // image is aspect-fit and centred, so the corners are the
+                // only areas guaranteed not to sit on top of an axis.
+                ColumnLayout {
+                    id: focusSelectorColumn
+                    anchors.right: parent.right
+                    anchors.bottom: refreshPlotButton.top
+                    anchors.rightMargin: 6
+                    anchors.bottomMargin: 8
+                    spacing: 2
                     visible: fociModel.count > 1
 
                     Text {
-                        text: "Delay profile:"
-                        font.pixelSize: 12
+                        text: "Delay profile"
+                        font.pixelSize: 11
                         color: "#9FB3C8"
-                        verticalAlignment: Text.AlignVCenter
+                        Layout.alignment: Qt.AlignRight
                     }
 
                     ComboBox {
                         id: focusSelector
-                        implicitWidth: 190
-                        implicitHeight: 28
+                        Layout.preferredWidth: 110
+                        Layout.preferredHeight: 28
+                        Layout.alignment: Qt.AlignRight
                         font.pixelSize: 12
                         // An int model (one entry per focus) rather than a
                         // built string list: the list would be rebuilt on
@@ -2531,7 +2661,37 @@ Rectangle {
                             function onSelectedFocusIndexChanged() { focusSelector.syncFromPage() }
                         }
 
-                        displayText: fociRevision >= 0 ? focusLabelFor(currentIndex) : ""
+                        // Closed state stays deliberately terse -- it has to
+                        // fit the gutter beside the plot, and the coordinates
+                        // are only needed while choosing.
+                        displayText: currentIndex >= 0 ? "Focus " + (currentIndex + 1) : ""
+
+                        // Custom content item so the closed state carries the
+                        // focus's colour swatch: with the numbers gone from
+                        // the element map, colour is the only thing tying the
+                        // selection to a marker on the plot.
+                        contentItem: Row {
+                            leftPadding: 8
+                            spacing: 6
+
+                            Rectangle {
+                                width: 10
+                                height: 10
+                                radius: 2
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: focusColorFor(focusSelector.currentIndex)
+                                border.color: "#DDDDDD"
+                                border.width: 1
+                            }
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: focusSelector.displayText
+                                color: "white"
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+                        }
 
                         background: Rectangle {
                             color: "#222"
@@ -2540,20 +2700,50 @@ Rectangle {
                             opacity: 0.9
                         }
 
+                        // The open list is wider than the control so each
+                        // entry can carry its coordinates. It is right-aligned
+                        // and opens upward so it lands over the plot -- which
+                        // is transient and harmless -- instead of spilling out
+                        // of the panel's bottom-right corner. Qt clamps both
+                        // axes to the window, so a long focus list still fits.
+                        popup.width: 210
+                        popup.x: width - 210
+                        popup.y: -popup.height - 2
+
                         delegate: ItemDelegate {
+                            id: focusEntry
                             required property int index
-                            width: focusSelector.width
+                            width: focusSelector.popup.width
                             height: 26
                             highlighted: focusSelector.highlightedIndex === index
-                            contentItem: Text {
-                                text: fociRevision >= 0 ? focusLabelFor(index) : ""
-                                color: "white"
-                                font.pixelSize: 12
-                                verticalAlignment: Text.AlignVCenter
-                                elide: Text.ElideRight
+
+                            contentItem: Row {
+                                leftPadding: 8
+                                spacing: 8
+
+                                Rectangle {
+                                    width: 10
+                                    height: 10
+                                    radius: 2
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: focusColorFor(focusEntry.index)
+                                    border.color: "#DDDDDD"
+                                    border.width: 1
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: fociRevision >= 0 ? focusLabelFor(focusEntry.index) : ""
+                                    color: focusSelector.currentIndex === focusEntry.index
+                                           ? "white" : "#D0D8E0"
+                                    font.pixelSize: 12
+                                    font.bold: focusSelector.currentIndex === focusEntry.index
+                                    elide: Text.ElideRight
+                                }
                             }
+
                             background: Rectangle {
-                                color: highlighted ? "#333" : "#222"
+                                color: focusEntry.highlighted ? "#333" : "#222"
                             }
                         }
 
@@ -2564,11 +2754,6 @@ Rectangle {
                             selectedFocusIndex = index
                             refreshPlot()
                         }
-
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 400
-                        ToolTip.text: "Choose which delay profile the element map below shows. "
-                                      + "All focus points stay marked on the map either way."
                     }
                 }
 
@@ -3035,8 +3220,13 @@ Rectangle {
                                     if (LIFUConnector.hvConnected) {
                                         LIFUConnector.directSetVoltage(voltage.text)
                                     }
-                                    // Clear the plot back to the placeholder.
-                                    ultrasoundGraph.source = "../assets/images/empty_graph.png"
+                                    // Redraw at the defaults just restored,
+                                    // matching what the page shows on load.
+                                    // Blanking to the placeholder here would
+                                    // put "no data" back on screen even though
+                                    // there is a perfectly good solution in
+                                    // the fields.
+                                    refreshPlot()
                                 })
                             }
                         }

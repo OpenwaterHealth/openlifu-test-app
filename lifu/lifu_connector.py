@@ -20,7 +20,7 @@ import time
 import numpy as np
 import json
 import copy
-from plot.plot import generate_ultrasound_plot_from_solution  # Import the function directly
+from plot.plot import generate_ultrasound_plot_from_solution, profile_color_hex  # Import the function directly
 from test_reports.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface, LIFUInterfaceStatus
 from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
@@ -1582,6 +1582,17 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def maxFocusPoints(self):
         """Delay-RAM profile slots available for foci (SDK-derived)."""
         return MAX_FOCUS_POINTS
+
+    @pyqtProperty('QStringList', constant=True)
+    def focusProfileColors(self):
+        """Per-focus colours as '#rrggbb', indexed 0-based by focus.
+
+        Comes from the plot module so the dropdown swatches and the markers
+        on the element map are the same colours by construction. Long enough
+        to cover every programmable focus; the cycle repeats past 10, exactly
+        as the plot's does.
+        """
+        return profile_color_hex(MAX_FOCUS_POINTS)
 
     @pyqtProperty(float, constant=True)
     def minProfileSwitchIntervalMs(self):

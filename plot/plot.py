@@ -11,8 +11,27 @@ import logging
 # ✅ Fix: Set the non-GUI backend before using matplotlib
 import matplotlib
 matplotlib.use("Agg")  # Prevents QWidget errors
+from matplotlib.colors import to_hex
 
 logger = logging.getLogger(__name__)
+
+# Focus/delay-profile colour cycle. Matplotlib's tab10 is the source of
+# truth: profile i (1-based) is drawn in ``tab10[(i - 1) % 10]`` in both
+# the pulse-train envelope and the element map.
+PROFILE_COLORMAP = "tab10"
+PROFILE_COLOR_COUNT = 10
+
+
+def profile_color_hex(count):
+    """The first *count* profile colours as '#rrggbb' strings.
+
+    Exposed to QML (via the connector) so the focus dropdown's swatches are
+    the same colours as the plot markers by construction, rather than by a
+    hand-copied palette that silently drifts if the colormap changes.
+    """
+    cmap = plt.get_cmap(PROFILE_COLORMAP)
+    return [to_hex(cmap(i % PROFILE_COLOR_COUNT)) for i in range(max(0, int(count)))]
+
 
 def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0):
     """Render the pulse / pulse-train / element-map figure for *solution*.
@@ -127,6 +146,10 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
         focus_positions = [entry.get('position') for entry in (solution.get('foci') or [])
                            if isinstance(entry, dict) and entry.get('position') is not None]
         if len(focus_positions) > 1:
+            # Foci are identified by colour alone -- the same tab10 sequence
+            # the pulse-train legend and the UI's focus dropdown use. No
+            # numeric annotations: at close focus spacing the labels collide
+            # with each other and with the element grid.
             for index, position in enumerate(focus_positions, start=1):
                 is_selected = index == focus_index + 1
                 ax[2].plot(position[0], position[1], marker='x',
@@ -140,24 +163,8 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
                     ax[2].plot(position[0], position[1], marker='o', markersize=20,
                                markerfacecolor='none', markeredgewidth=1.5,
                                color=profile_colors((index - 1) % 10))
-                ax[2].annotate(str(index), (position[0], position[1]),
-                               textcoords="offset points", xytext=(8, 6),
-                               fontsize=9 if is_selected else 8,
-                               fontweight='bold' if is_selected else 'normal',
-                               color='white' if is_selected else '#BBBBBB')
                 xs = [min(xs[0], position[0] - 5), max(xs[1], position[0] + 5)]
                 ys = [min(ys[0], position[1] - 5), max(ys[1], position[1] + 5)]
-            # Drawn inside the axes rather than as a title: the element map
-            # sits directly under the pulse-train panel's x-label, and a
-            # title would collide with it at this figure height.
-            ax[2].text(
-                0.5, 0.985,
-                f"Delays: focus {focus_index + 1} of {n_profiles}  |  order: "
-                + "-".join(str(p) for p in execution_order),
-                transform=ax[2].transAxes, ha='center', va='top',
-                fontsize=8, color='white',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='#1E1E20',
-                          edgecolor='#3E4E6F', alpha=0.85))
 
         ax[2].set_xlim(xs)
         ax[2].set_ylim(ys)
