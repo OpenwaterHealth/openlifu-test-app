@@ -180,15 +180,21 @@ class ControllerMixin:
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList')
-    def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer", foci=None, executionOrder=None):
-        """Generates an ultrasound plot and emits data to QML."""
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList', int)
+    def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer", foci=None, executionOrder=None, focusIndex=0):
+        """Generates an ultrasound plot and emits data to QML.
+
+        *focusIndex* is the 0-based delay profile the element map should
+        show; the plot clamps it, so QML never has to guard against a
+        selection that outlived the focus list.
+        """
         try:
             #logger.info(f"Generating plot: X={x}, Y={y}, Z={z}, Frequency={freq}, Cycles={cycles}, Trigger={trigger}, Mode={mode}")
             solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=self._txConnected, foci=foci, executionOrder=executionOrder)
             if solution is None:
                 logger.error("Plot generation skipped: no valid solution.")
                 return
-            image_data = generate_ultrasound_plot_from_solution(solution, mode)
+            image_data = generate_ultrasound_plot_from_solution(solution, mode, focus_index=focusIndex)
             #image_data = generate_ultrasound_plot(x, y, z, freq, cycles, trigger, mode)
             if image_data == "ERROR":
                 logger.error("Plot generation failed")

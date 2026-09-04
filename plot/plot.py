@@ -14,7 +14,16 @@ matplotlib.use("Agg")  # Prevents QWidget errors
 
 logger = logging.getLogger(__name__)
 
-def generate_ultrasound_plot_from_solution(solution, mode="file"):
+def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0):
+    """Render the pulse / pulse-train / element-map figure for *solution*.
+
+    *focus_index* is the 0-based delay profile whose per-element delays are
+    drawn on the element map, and which is emphasised in the pulse-train
+    envelope. Every focus stays visible in both panels regardless -- the
+    selection only decides which one is shown in full detail. Out-of-range
+    values are clamped rather than raising, so a stale UI selection (e.g.
+    after foci were removed) still renders.
+    """
     plt.style.use('dark_background')
     fig, ax = plt.subplots(3, 1, figsize=(7.5, 6.5), gridspec_kw={'height_ratios': [1, 1, 3], 'hspace': 0.35})
     fig.set_facecolor('#1E1E20')  # Match QML dark theme background
@@ -24,6 +33,15 @@ def generate_ultrasound_plot_from_solution(solution, mode="file"):
     delays = np.atleast_2d(np.array(solution["delays"]))
     apodizations = np.atleast_2d(np.array(solution["apodizations"]))
     n_profiles = delays.shape[0]
+    try:
+        focus_index = int(focus_index)
+    except (TypeError, ValueError):
+        focus_index = 0
+    focus_index = min(max(focus_index, 0), n_profiles - 1)
+    # Apodization rows can be fewer than delay rows only in malformed
+    # solutions; clamp separately so a bad file degrades to a plot rather
+    # than an exception.
+    apod_index = min(focus_index, apodizations.shape[0] - 1)
     execution_order = list(solution.get("execution_order") or range(1, n_profiles + 1))
     profile_colors = plt.get_cmap("tab10")
     transducer = solution.get('transducer', {})
@@ -70,16 +88,21 @@ def generate_ultrasound_plot_from_solution(solution, mode="file"):
                            np.full_like(pulse_train_t, A/100),
                            np.full_like(pulse_train_t, -A/100),
                            color="#888888", alpha=1.0)
+        selected_profile = focus_index + 1
         for profile in sorted(set(execution_order)):
             mask = firing & (profile_at_t == profile)
             if not mask.any():
                 continue
+            # Every focus stays drawn; the selected one is fully opaque so
+            # the panel doubles as a legend for the element map below.
+            is_selected = profile == selected_profile
             ax[1].fill_between(pulse_train_t * 1e3,
                                pulse_train_waveform_posenv,
                                pulse_train_waveform_negenv,
                                where=mask,
                                color=profile_colors((profile - 1) % 10),
-                               label=f"Focus {profile}")
+                               alpha=1.0 if is_selected else 0.5,
+                               label=f"Focus {profile}" + (" ◀" if is_selected else ""))
         ax[1].legend(loc="upper right", fontsize=7, ncol=min(4, len(set(execution_order))))
     else:
         ax[1].fill_between(pulse_train_t * 1e3, pulse_train_waveform_posenv, pulse_train_waveform_negenv, alpha=1.0)
@@ -91,10 +114,10 @@ def generate_ultrasound_plot_from_solution(solution, mode="file"):
 
     if 'elements' in transducer:
         element_positions = np.array([elem.get('position', [0, 0, 0]) for elem in transducer['elements']])
-        # The element map can only show one delay pattern at a time; show
-        # the first profile and mark every focus so the raster pattern is
-        # still legible.
-        ax[2].scatter(element_positions[:, 0], element_positions[:, 1], c=delays[0], marker='s', s=apodizations[0]*100, cmap='turbo', edgecolors='white')
+        # The element map can only show one delay pattern at a time; draw
+        # the selected profile and mark every focus so the raster pattern
+        # stays legible in the same view.
+        ax[2].scatter(element_positions[:, 0], element_positions[:, 1], c=delays[focus_index], marker='s', s=apodizations[apod_index]*100, cmap='turbo', edgecolors='white')
         ax[2].set_xlabel("X (mm)")
         ax[2].set_ylabel("Y (mm)")
         ax[2].set_aspect('equal', adjustable='box')
@@ -105,17 +128,36 @@ def generate_ultrasound_plot_from_solution(solution, mode="file"):
                            if isinstance(entry, dict) and entry.get('position') is not None]
         if len(focus_positions) > 1:
             for index, position in enumerate(focus_positions, start=1):
-                ax[2].plot(position[0], position[1], marker='x', markersize=9, markeredgewidth=2,
+                is_selected = index == focus_index + 1
+                ax[2].plot(position[0], position[1], marker='x',
+                           markersize=15 if is_selected else 9,
+                           markeredgewidth=3 if is_selected else 2,
+                           alpha=1.0 if is_selected else 0.7,
                            color=profile_colors((index - 1) % 10))
+                if is_selected:
+                    # A ring around the focus whose delays are on screen, so
+                    # the selection is readable even where foci overlap.
+                    ax[2].plot(position[0], position[1], marker='o', markersize=20,
+                               markerfacecolor='none', markeredgewidth=1.5,
+                               color=profile_colors((index - 1) % 10))
                 ax[2].annotate(str(index), (position[0], position[1]),
-                               textcoords="offset points", xytext=(6, 4),
-                               fontsize=8, color='white')
+                               textcoords="offset points", xytext=(8, 6),
+                               fontsize=9 if is_selected else 8,
+                               fontweight='bold' if is_selected else 'normal',
+                               color='white' if is_selected else '#BBBBBB')
                 xs = [min(xs[0], position[0] - 5), max(xs[1], position[0] + 5)]
                 ys = [min(ys[0], position[1] - 5), max(ys[1], position[1] + 5)]
-            ax[2].set_title(
-                f"Delays: focus 1 of {n_profiles}  |  order: "
+            # Drawn inside the axes rather than as a title: the element map
+            # sits directly under the pulse-train panel's x-label, and a
+            # title would collide with it at this figure height.
+            ax[2].text(
+                0.5, 0.985,
+                f"Delays: focus {focus_index + 1} of {n_profiles}  |  order: "
                 + "-".join(str(p) for p in execution_order),
-                fontsize=8)
+                transform=ax[2].transAxes, ha='center', va='top',
+                fontsize=8, color='white',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#1E1E20',
+                          edgecolor='#3E4E6F', alpha=0.85))
 
         ax[2].set_xlim(xs)
         ax[2].set_ylim(ys)
