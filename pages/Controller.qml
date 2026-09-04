@@ -93,6 +93,39 @@ Rectangle {
     property string executionOrderText: ""
     property string fociError: ""
     property string fociSummary: "single focus"
+    // Sub-error of fociError, kept separate so the Pulse Count field can
+    // flag itself as the thing that needs fixing rather than leaving the
+    // operator to read it off the Foci row.
+    property string pulseCountError: ""
+
+    // 0-based delay profile shown on the plot's element map. Every focus
+    // is drawn on that map regardless; this only selects whose per-element
+    // delays are coloured in. Clamped whenever the focus list shrinks.
+    property int selectedFocusIndex: 0
+
+    // ListModel row edits are not observable, so anything that renders
+    // focus coordinates (the delay-profile selector) depends on this
+    // counter instead. Bumped by updateFociValidation, which every focus
+    // edit already routes through.
+    property int fociRevision: 0
+
+    // "Focus 2  (0, 5, 50)" -- the selector's entry label.
+    function focusLabelFor(index) {
+        if (index < 0 || index >= fociModel.count) {
+            return ""
+        }
+        var row = fociModel.get(index)
+        return "Focus " + (index + 1) + "  (" + row.fx + ", " + row.fy + ", " + row.fz + ")"
+    }
+
+    function clampSelectedFocusIndex() {
+        var maxIndex = Math.max(0, fociModel.count - 1)
+        if (selectedFocusIndex > maxIndex) {
+            selectedFocusIndex = maxIndex
+        } else if (selectedFocusIndex < 0) {
+            selectedFocusIndex = 0
+        }
+    }
 
     // ----- Execution-order parsing -----
     //
@@ -177,12 +210,56 @@ Rectangle {
         return parsed.error === "" ? parsed.order : []
     }
 
+    // How many pulses each execution-order entry gets, i.e. the divisor the
+    // pulse count has to be a multiple of. Returns 0 when the order cannot
+    // be parsed or a single focus makes the question moot.
+    function cycleLengthFor(model, orderText) {
+        if (model.count <= 1) {
+            return 0
+        }
+        var parsed = parseExecutionOrder(effectiveOrderTextFor(orderText, model.count), model.count)
+        return parsed.error === "" ? parsed.order.length : 0
+    }
+
+    // Smallest programmable pulse count >= `pulseCount` for the given cycle
+    // length. Used by the "snap" affordances so the operator never has to
+    // work the arithmetic out by hand.
+    function nearestValidPulseCount(pulseCount, cycleLength) {
+        if (cycleLength <= 0) {
+            return pulseCount
+        }
+        if (isNaN(pulseCount) || pulseCount < cycleLength) {
+            return cycleLength
+        }
+        return Math.ceil(pulseCount / cycleLength) * cycleLength
+    }
+
+    // The divisibility interlock on its own, so the Pulse Count field and
+    // the Foci dialog can both flag it in place. Empty string means the
+    // pulse count is programmable against this focus/order configuration.
+    function pulseCountErrorFor(model, orderText, pulseCountText) {
+        var cycleLength = cycleLengthFor(model, orderText)
+        if (cycleLength <= 0) {
+            return ""
+        }
+        var pulseCount = parseInt(pulseCountText)
+        if (isNaN(pulseCount) || pulseCount < 1) {
+            return "Pulse count must be a whole number of at least " + cycleLength + "."
+        }
+        if (pulseCount % cycleLength !== 0) {
+            return "Pulse count (" + pulseCount + ") must be a multiple of the execution order length ("
+                   + cycleLength + "). Nearest valid: "
+                   + nearestValidPulseCount(pulseCount, cycleLength) + "."
+        }
+        return ""
+    }
+
     // Full validation of a focus list against the current sequence
     // parameters. Mirrors the checks in lifu_controller.get_solution so
     // the operator sees the problem before a device write is attempted.
-    // Takes the model explicitly so the Foci dialog can validate its
-    // working copy before committing it.
-    function computeFociErrorFor(model, orderText) {
+    // Takes the model and pulse count explicitly so the Foci dialog can
+    // validate its working copy before committing it.
+    function computeFociErrorFor(model, orderText, pulseCountText) {
         if (model.count < 1) {
             return "At least one focus is required."
         }
@@ -204,11 +281,9 @@ Rectangle {
         // The interlocks below only apply when the firmware actually has
         // to switch profiles between pulses.
         if (model.count > 1) {
-            var cycleLength = parsed.order.length
-            var pulseCount = parseInt(triggerPulseCount.text)
-            if (!isNaN(pulseCount) && pulseCount % cycleLength !== 0) {
-                return "Pulse count (" + pulseCount + ") must be a multiple of the execution order length ("
-                       + cycleLength + ")."
+            var pulseCountProblem = pulseCountErrorFor(model, orderText, pulseCountText)
+            if (pulseCountProblem !== "") {
+                return pulseCountProblem
             }
             // Duration is entered in microseconds, pulse interval in
             // milliseconds -- convert so the dead-time comparison below is
@@ -230,8 +305,32 @@ Rectangle {
             return
         }
         syncFocusOneFromInputs()
-        fociError = computeFociErrorFor(fociModel, executionOrderText)
-        fociSummary = fociSummaryTextFor(fociModel, executionOrderText)
+        clampSelectedFocusIndex()
+        fociRevision++
+        fociError = computeFociErrorFor(fociModel, executionOrderText, triggerPulseCount.text)
+        pulseCountError = pulseCountErrorFor(fociModel, executionOrderText, triggerPulseCount.text)
+        fociSummary = fociSummaryTextFor(fociModel, executionOrderText, triggerPulseCount.text)
+    }
+
+    // Snap the live Pulse Count up to the next programmable value and push
+    // it if the device is already configured.
+    function snapPulseCountToCycle() {
+        var cycleLength = cycleLengthFor(fociModel, executionOrderText)
+        if (cycleLength <= 0) {
+            return
+        }
+        var snapped = nearestValidPulseCount(parseInt(triggerPulseCount.text), cycleLength)
+        if (snapped.toString() === triggerPulseCount.text) {
+            return
+        }
+        triggerPulseCount.text = snapped.toString()
+        triggerPulseCount.dirty = true
+        updateFociValidation()
+        if (everConfigured && !controlsReadOnly) {
+            commitDirtyField(triggerPulseCount, commitSequence)
+        } else {
+            refreshPlot()
+        }
     }
 
     // Seed the dialog before opening rather than relying solely on
@@ -243,7 +342,7 @@ Rectangle {
 
     // Compact one-line description of a focus configuration, shown next to
     // the Foci button and inside the dialog.
-    function fociSummaryTextFor(model, orderText) {
+    function fociSummaryTextFor(model, orderText, pulseCountText) {
         if (model.count <= 1) {
             return "single focus"
         }
@@ -251,7 +350,7 @@ Rectangle {
         if (parsed.error !== "") {
             return model.count + " foci"
         }
-        var pulseCount = parseInt(triggerPulseCount.text)
+        var pulseCount = parseInt(pulseCountText)
         var perEntry = (!isNaN(pulseCount) && pulseCount % parsed.order.length === 0)
                        ? (pulseCount / parsed.order.length) : NaN
         return model.count + " foci · order " + parsed.order.join("-")
@@ -282,11 +381,13 @@ Rectangle {
     // Single entry point for plot refreshes so every caller sends the
     // same focus list and execution order.
     function refreshPlot() {
+        clampSelectedFocusIndex()
         LIFUConnector.generate_plot(
             xInput.text, yInput.text, zInput.text,
             frequencyInput.text, voltage.text, triggerPulseInterval.text,
             triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-            durationInput.text, "buffer", fociArray(), executionOrderArray()
+            durationInput.text, "buffer", fociArray(), executionOrderArray(),
+            selectedFocusIndex
         )
     }
 
@@ -375,6 +476,9 @@ Rectangle {
             executionOrderText = ""
         }
         syncInputsFromFocusOne()
+        // A different solution means a different focus list; a carried-over
+        // selection would point at an unrelated profile.
+        selectedFocusIndex = 0
 
         frequencyInput.text = settings.frequency.toString()
         durationInput.text = settings.duration.toString()
@@ -437,6 +541,13 @@ Rectangle {
         if (!everConfigured) {
             return false
         }
+        // Same gate as the Configure button: a focus/order/pulse-count
+        // combination the firmware cannot cycle must not reach the device
+        // through the direct-edit path either. Returning false keeps the
+        // field dirty (orange) so it is visibly un-applied.
+        if (fociError !== "") {
+            return false
+        }
         resetProgressIdle()
         // Duration and voltage are passed so the connector can re-check the
         // duty-cycle envelope; this path writes straight to the TX device.
@@ -457,6 +568,9 @@ Rectangle {
 
     function commitPulse() {
         if (!everConfigured) {
+            return false
+        }
+        if (fociError !== "") {
             return false
         }
         resetProgressIdle()
@@ -1204,11 +1318,22 @@ Rectangle {
 
         // Working copy; committed to fociModel only on OK.
         property string workingOrderText: ""
+        // The pulse count lives here too: it has to be a multiple of the
+        // execution-order length, and requiring the operator to guess that
+        // multiple *before* opening this dialog is the whole problem.
+        property string workingPulseCount: "1"
         property int workingRevision: 0
         readonly property string workingError:
-            workingRevision >= 0 ? computeFociErrorFor(fociEditModel, workingOrderText) : ""
+            workingRevision >= 0
+            ? computeFociErrorFor(fociEditModel, workingOrderText, workingPulseCount) : ""
         readonly property string workingSummary:
-            workingRevision >= 0 ? fociSummaryTextFor(fociEditModel, workingOrderText) : ""
+            workingRevision >= 0
+            ? fociSummaryTextFor(fociEditModel, workingOrderText, workingPulseCount) : ""
+        readonly property int workingCycleLength:
+            workingRevision >= 0 ? cycleLengthFor(fociEditModel, workingOrderText) : 0
+        readonly property string workingPulseCountError:
+            workingRevision >= 0
+            ? pulseCountErrorFor(fociEditModel, workingOrderText, workingPulseCount) : ""
 
         background: Rectangle {
             color: "#1E1E20"
@@ -1235,6 +1360,19 @@ Rectangle {
             }
             workingOrderText = executionOrderText
             fociOrderField.text = executionOrderText
+            workingPulseCount = triggerPulseCount.text
+            fociPulseCountField.text = triggerPulseCount.text
+            touch()
+        }
+
+        // Round the working pulse count up to the next programmable value.
+        function snapWorkingPulseCount() {
+            if (workingCycleLength <= 0) {
+                return
+            }
+            var snapped = nearestValidPulseCount(parseInt(workingPulseCount), workingCycleLength)
+            workingPulseCount = snapped.toString()
+            fociPulseCountField.text = workingPulseCount
             touch()
         }
 
@@ -1452,6 +1590,66 @@ Rectangle {
                 }
             }
 
+            // Pulse count is edited here as well as on the main page: the
+            // value that works depends on the order length being chosen a
+            // few rows up, so making it round-trip through the page would
+            // force the operator to guess and come back.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Pulses per pulse train:"
+                    color: "white"
+                    font.pixelSize: 12
+                }
+
+                TextField {
+                    id: fociPulseCountField
+                    Layout.preferredWidth: 90
+                    Layout.preferredHeight: 30
+                    font.pixelSize: 13
+                    color: fociDialog.workingPulseCountError !== "" ? "#E74C3C" : "white"
+                    background: Rectangle {
+                        color: "#222"
+                        border.color: fociDialog.workingPulseCountError !== "" ? "#E74C3C" : "#999"
+                        border.width: fociDialog.workingPulseCountError !== "" ? 2 : 1
+                        radius: 4
+                    }
+                    onTextEdited: {
+                        fociDialog.workingPulseCount = text
+                        fociDialog.touch()
+                    }
+                }
+
+                Button {
+                    text: "Snap"
+                    font.pixelSize: 11
+                    implicitHeight: 30
+                    implicitWidth: 64
+                    leftPadding: 8
+                    rightPadding: 8
+                    enabled: fociDialog.workingCycleLength > 0
+                             && fociDialog.workingPulseCountError !== ""
+                    ToolTip.visible: hovered && fociDialog.workingCycleLength > 0
+                    ToolTip.delay: 400
+                    ToolTip.text: "Round up to the next multiple of "
+                                  + fociDialog.workingCycleLength + "."
+                    onClicked: fociDialog.snapWorkingPulseCount()
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: fociDialog.workingCycleLength > 0
+                          ? "must be a multiple of " + fociDialog.workingCycleLength
+                            + " (execution order length)"
+                          : "no constraint with a single focus"
+                    color: "#9FB3C8"
+                    font.pixelSize: 11
+                    elide: Text.ElideRight
+                }
+            }
+
             Text {
                 Layout.fillWidth: true
                 text: fociDialog.workingError !== "" ? fociDialog.workingError : fociDialog.workingSummary
@@ -1486,13 +1684,24 @@ Rectangle {
                     if (executionOrderText.trim() === defaultExecutionOrderText()) {
                         executionOrderText = ""
                     }
+                    if (fociDialog.workingPulseCount !== triggerPulseCount.text) {
+                        triggerPulseCount.text = fociDialog.workingPulseCount
+                        triggerPulseCount.dirty = true
+                    }
                     syncInputsFromFocusOne()
+                    clampSelectedFocusIndex()
                     updateFociValidation()
                     // Focus geometry changed: the device needs a re-Configure
                     // (or a direct pulse push if it is already configured).
+                    // directSetPulse rewrites the sequence alongside the
+                    // delays, so this covers the pulse-count edit too.
                     fociDialog.close()
                     if (everConfigured && !controlsReadOnly) {
-                        runBusy(function() { commitPulse() })
+                        runBusy(function() {
+                            if (commitPulse()) {
+                                triggerPulseCount.dirty = false
+                            }
+                        })
                     } else {
                         refreshPlot()
                     }
@@ -1713,23 +1922,26 @@ Rectangle {
                             onEditingFinished: commitDirtyField(triggerPulseInterval, commitSequence)
                         }
 
-                        Text { 
-                            text: "Pulses per Pulse Train:" 
-                            color: pulseCountActive ? "white" : "#888" 
+                        Text {
+                            text: pulseCountError !== "" ? "Pulses per Pulse Train*:" : "Pulses per Pulse Train:"
+                            color: pulseCountError !== "" ? "#E74C3C"
+                                   : pulseCountActive ? "white" : "#888"
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
-                            
+
                             HoverHandler {
                                 id: pulseCountHover
                             }
-                            
+
                             ToolTip {
                                 visible: pulseCountHover.hovered
-                                text: "Number of pulses repeated in a Pulse Train"
+                                text: pulseCountError !== ""
+                                      ? pulseCountError
+                                      : "Number of pulses repeated in a Pulse Train"
                                 delay: 500
                             }
                         }
-                        TextField { 
+                        TextField {
                             id: triggerPulseCount
                             property bool dirty: false
                             Layout.preferredWidth: solutionConfigInputWidth
@@ -1737,16 +1949,70 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
-                            color: getFieldColor(dirty, sequenceGroup.sectionReadOnly, pulseCountActive)
+                            // A pulse count that is not a multiple of the
+                            // execution-order length cannot be programmed at
+                            // all, so it outranks the dirty/in-sync colouring.
+                            color: pulseCountError !== ""
+                                   ? "#E74C3C"
+                                   : getFieldColor(dirty, sequenceGroup.sectionReadOnly, pulseCountActive)
                             enabled: !sequenceGroup.sectionReadOnly
                             background: Rectangle {
                                 color: sequenceGroup.sectionReadOnly ? "#333" : "#222"
-                                border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
+                                border.color: pulseCountError !== "" ? "#E74C3C"
+                                              : sequenceGroup.sectionReadOnly ? "#777" : "#999"
+                                border.width: pulseCountError !== "" ? 2 : 1
                                 radius: 4
                             }
                             onTextChanged: { updateTrainIntervalValidation(); updateFociValidation() }
                             onTextEdited: dirty = true
                             onEditingFinished: commitDirtyField(triggerPulseCount, commitSequence)
+                        }
+
+                        // Full-width explanation of the divisibility interlock,
+                        // shown only while it is violated. Configure stays
+                        // disabled until this clears.
+                        RowLayout {
+                            Layout.columnSpan: 2
+                            Layout.fillWidth: true
+                            spacing: 8
+                            visible: pulseCountError !== ""
+
+                            Text {
+                                text: "⚠ " + pulseCountError
+                                color: "#E74C3C"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+
+                            Button {
+                                id: snapPulseCountButton
+                                text: "Fix"
+                                implicitHeight: 26
+                                implicitWidth: 64
+                                Layout.alignment: Qt.AlignVCenter
+                                enabled: !sequenceGroup.sectionReadOnly
+                                         && cycleLengthFor(fociModel, executionOrderText) > 0
+                                // Material's default padding elides a short
+                                // label at this width, so the content item is
+                                // spelled out rather than left to the style.
+                                contentItem: Text {
+                                    text: snapPulseCountButton.text
+                                    font.pixelSize: 11
+                                    color: snapPulseCountButton.enabled ? "white" : "#888"
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    color: snapPulseCountButton.down ? "#2F333D" : "#3A3F4B"
+                                    radius: 4
+                                    border.color: snapPulseCountButton.enabled ? "#BDC3C7" : "#777"
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.delay: 400
+                                ToolTip.text: "Round the pulse count up to the next multiple of the execution order length."
+                                onClicked: snapPulseCountToCycle()
+                            }
                         }
 
                         Text { 
@@ -2215,6 +2481,94 @@ Rectangle {
                         } else {
                             source = base64data;
                         }
+                    }
+                }
+
+                // Delay-profile selector. Every focus is plotted on the
+                // element map regardless; this picks whose per-element
+                // delays are coloured in and highlighted. Hidden entirely
+                // for single-focus solutions, where there is nothing to
+                // choose between.
+                RowLayout {
+                    id: focusSelectorRow
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.margins: 8
+                    spacing: 6
+                    visible: fociModel.count > 1
+
+                    Text {
+                        text: "Delay profile:"
+                        font.pixelSize: 12
+                        color: "#9FB3C8"
+                        verticalAlignment: Text.AlignVCenter
+                    }
+
+                    ComboBox {
+                        id: focusSelector
+                        implicitWidth: 190
+                        implicitHeight: 28
+                        font.pixelSize: 12
+                        // An int model (one entry per focus) rather than a
+                        // built string list: the list would be rebuilt on
+                        // every coordinate keystroke, and each rebuild resets
+                        // currentIndex. Labels come from the delegate instead.
+                        model: fociModel.count
+
+                        // currentIndex is assigned, not bound: ComboBox
+                        // resets it imperatively when its model changes,
+                        // which would tear a declarative binding down for
+                        // good the first time a focus is added or removed.
+                        function syncFromPage() {
+                            if (currentIndex !== selectedFocusIndex) {
+                                currentIndex = selectedFocusIndex
+                            }
+                        }
+                        onCountChanged: syncFromPage()
+                        Component.onCompleted: syncFromPage()
+                        Connections {
+                            target: controllerPage
+                            function onSelectedFocusIndexChanged() { focusSelector.syncFromPage() }
+                        }
+
+                        displayText: fociRevision >= 0 ? focusLabelFor(currentIndex) : ""
+
+                        background: Rectangle {
+                            color: "#222"
+                            border.color: "#999"
+                            radius: 4
+                            opacity: 0.9
+                        }
+
+                        delegate: ItemDelegate {
+                            required property int index
+                            width: focusSelector.width
+                            height: 26
+                            highlighted: focusSelector.highlightedIndex === index
+                            contentItem: Text {
+                                text: fociRevision >= 0 ? focusLabelFor(index) : ""
+                                color: "white"
+                                font.pixelSize: 12
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            background: Rectangle {
+                                color: highlighted ? "#333" : "#222"
+                            }
+                        }
+
+                        onActivated: {
+                            if (index === selectedFocusIndex) {
+                                return
+                            }
+                            selectedFocusIndex = index
+                            refreshPlot()
+                        }
+
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: "Choose which delay profile the element map below shows. "
+                                      + "All focus points stay marked on the map either way."
                     }
                 }
 
