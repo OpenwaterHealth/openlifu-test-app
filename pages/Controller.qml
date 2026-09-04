@@ -1153,7 +1153,6 @@ Rectangle {
                 }
             }
 
-
         }
 
         footer: Item {
@@ -1220,117 +1219,6 @@ Rectangle {
                     }
                 }
             }
-        }
-    }
-
-    // Confirmation gate for the safety-limit bypass. The checkbox never
-    // arms the override itself -- only this dialog calls setSafetyBypass(true).
-    Dialog {
-        id: safetyBypassDialog
-        title: "Bypass safety limits?"
-        modal: true
-        focus: true
-        width: 560
-        height: 340
-        x: (controllerPage.width - width) / 2
-        y: (controllerPage.height - height) / 2
-        closePolicy: Popup.NoAutoClose   // require an explicit choice
-
-        background: Rectangle {
-            color: "#1E1E20"
-            border.color: "#E67E22"
-            border.width: 2
-            radius: 8
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 12
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 10
-                Text {
-                    text: "⚠"
-                    color: "#E67E22"
-                    font.pixelSize: 30
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: "Configure will skip the SDK's check_solution() safety pass."
-                    color: "#E67E22"
-                    font.pixelSize: 14
-                    font.bold: true
-                    wrapMode: Text.WordWrap
-                }
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: "The duty-cycle, voltage and sequence-duration limits will not be enforced, "
-                      + "so the array can be driven at up to 100% duty cycle."
-                color: "#DDD"
-                font.pixelSize: 12
-                wrapMode: Text.WordWrap
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: "Sustained operation outside the rated envelope can permanently damage the "
-                      + "transducer and the transmit electronics, and surfaces may become hot enough "
-                      + "to burn. Only continue for instrumented bench testing where you are "
-                      + "monitoring module temperature and drive level yourself."
-                color: "#DDD"
-                font.pixelSize: 12
-                wrapMode: Text.WordWrap
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: "The bypass clears automatically when the transmitter disconnects or the "
-                      + "application restarts. The HV controller's 5–100 V rail limit still applies."
-                color: "#9FB3C8"
-                font.pixelSize: 11
-                wrapMode: Text.WordWrap
-            }
-
-            Item { Layout.fillHeight: true }
-        }
-
-        footer: RowLayout {
-            spacing: 8
-            Item { Layout.fillWidth: true }
-
-            Button {
-                text: "Cancel"
-                onClicked: safetyBypassDialog.close()
-            }
-
-            Button {
-                id: confirmBypassButton
-                text: "Bypass safety limits"
-                background: Rectangle {
-                    color: confirmBypassButton.down ? "#A85B18" : "#E67E22"
-                    radius: 4
-                    border.color: "#F0A050"
-                }
-                contentItem: Text {
-                    text: confirmBypassButton.text
-                    color: "white"
-                    font: confirmBypassButton.font
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-                onClicked: {
-                    LIFUConnector.setSafetyBypass(true)
-                    // setSafetyBypass drops the configured flag, so the
-                    // operator must re-Configure for this to take effect.
-                    everConfigured = false
-                    resetProgressIdle()
-                    safetyBypassDialog.close()
-                }
-            }
-
-            Item { Layout.preferredWidth: 6 }
         }
     }
 
@@ -2624,8 +2512,12 @@ Rectangle {
                 id: graphContainer
                 Layout.fillWidth: true
                 Layout.fillHeight: false
-                Layout.preferredHeight: 398
-                Layout.maximumHeight: 406
+                // Grew by the 34 px (row + spacing) that the safety-bypass
+                // checkbox used to occupy in the status panel below; the
+                // column's total is fixed at 648, so the two must stay in
+                // step.
+                Layout.preferredHeight: 424
+                Layout.maximumHeight: 432
                 Layout.minimumHeight: 320
                 color: "#1E1E20"
                 radius: 10
@@ -2884,8 +2776,8 @@ Rectangle {
             Rectangle {
                 id: statusPanel
                 Layout.fillWidth: true
-                Layout.preferredHeight: 230
-                Layout.minimumHeight: 230
+                Layout.preferredHeight: 204
+                Layout.minimumHeight: 204
                 color: "#252525"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -3097,50 +2989,10 @@ Rectangle {
                         }
                     }
 
-                    // Engineering override, deliberately next to Configure --
-                    // the action it changes -- and on the right panel so it
-                    // stays visible (and legible) while a sonication runs and
-                    // the solution controls are read-only.
-                    CheckBox {
-                        id: safetyBypassCheck
-                        Layout.fillWidth: true
-                        implicitHeight: 24
-                        padding: 0
-                        checked: LIFUConnector.safetyBypassEnabled
-                        enabled: LIFUConnector.state !== 3
-                        text: LIFUConnector.safetyBypassEnabled
-                              ? "⚠  Safety limits BYPASSED — up to 100% duty cycle"
-                              : "Bypass duty-cycle / voltage safety limits"
-                        font.pixelSize: 12
-                        contentItem: Text {
-                            text: safetyBypassCheck.text
-                            font.pixelSize: safetyBypassCheck.font.pixelSize
-                            font.bold: LIFUConnector.safetyBypassEnabled
-                            color: !safetyBypassCheck.enabled ? "#777"
-                                   : LIFUConnector.safetyBypassEnabled ? "#E67E22" : "#BBB"
-                            verticalAlignment: Text.AlignVCenter
-                            elide: Text.ElideRight
-                            leftPadding: safetyBypassCheck.indicator.width + 6
-                        }
-
-                        // Driven purely from the connector: the box only moves
-                        // once the bypass is actually armed, so a cancelled
-                        // dialog cannot leave it showing a state we are not in.
-                        onToggled: {
-                            if (checked && !LIFUConnector.safetyBypassEnabled) {
-                                checked = Qt.binding(function() { return LIFUConnector.safetyBypassEnabled })
-                                safetyBypassDialog.open()
-                            } else if (!checked && LIFUConnector.safetyBypassEnabled) {
-                                LIFUConnector.setSafetyBypass(false)
-                            }
-                        }
-
-                        ToolTip.visible: safetyBypassHover.hovered
-                        ToolTip.delay: 400
-                        ToolTip.text: "Skips the SDK's check_solution() duty-cycle, voltage and "
-                                      + "sequence-duration limits at Configure. Bench testing only."
-                        HoverHandler { id: safetyBypassHover }
-                    }
+                    // The safety-limit bypass is armed on the Settings page.
+                    // While it is armed the window header shows a badge next
+                    // to the Openwater logo, and the System State line below
+                    // carries "LIMITS BYPASSED".
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -3342,6 +3194,16 @@ Rectangle {
     Connections {
         target: LIFUConnector
 
+        // Arming or clearing the bypass (now done from the Settings page)
+        // drops the device's configured flag inside setSafetyBypass. This
+        // page has to let go of its own "already configured" state to
+        // match, or the parameter fields stay green and Start stays
+        // enabled for a device that is no longer programmed.
+        function onSafetyBypassChanged(enabled) {
+            everConfigured = false
+            resetProgressIdle()
+        }
+
         function onSignalConnected(descriptor, port) {
             console.log(descriptor + " connected on " + port);
             if (descriptor === "HV") {
@@ -3541,7 +3403,6 @@ Rectangle {
             }
         }
     }
-
 
     Component.onDestruction: {
         console.log("Closing UI, clearing LIFUConnector...");
