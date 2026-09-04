@@ -15,6 +15,10 @@ Rectangle {
     property string logoSource: "" // Default to no logo
     property string appVerText: "v0.0.0" // Default
     property string sdkVerText: "v0.0.0" // Default
+    // Raises the safety-bypass badge beside the logo. A property rather
+    // than a direct LIFUConnector read so this component stays as
+    // self-contained as its title/logo/version inputs; main.qml binds it.
+    property bool safetyBypassActive: false
 
     // Drag functionality
     //
@@ -58,6 +62,46 @@ Rectangle {
                 fillMode: Image.PreserveAspectFit
                 smooth: true
                 visible: windowMenu.logoSource !== "" // Show only if a logo is provided
+            }
+        }
+
+        // Safety-bypass badge. Lives in the header rather than on the
+        // Controller page so the warning follows the operator across every
+        // tab -- the override is global to the device, and the page that
+        // used to carry the checkbox now has no other indication.
+        Rectangle {
+            id: safetyBypassBadge
+            objectName: "safetyBypassBadge"
+            visible: windowMenu.safetyBypassActive
+            Layout.alignment: Qt.AlignVCenter
+            implicitWidth: 30
+            implicitHeight: 30
+            radius: 5
+            color: "#7A1F1F"
+            border.color: "#E74C3C"
+            border.width: 2
+
+            Text {
+                anchors.centerIn: parent
+                text: "!"
+                color: "#FF6B6B"
+                font.pixelSize: 20
+                font.bold: true
+            }
+
+            MouseArea {
+                id: safetyBypassBadgeArea
+                objectName: "safetyBypassBadgeArea"
+                anchors.fill: parent
+                hoverEnabled: true
+                acceptedButtons: Qt.NoButton
+                ToolTip.visible: containsMouse
+                ToolTip.delay: 200
+                ToolTip.text: "Safety limits are BYPASSED.\n\n"
+                              + "Configure skips the SDK's duty-cycle, voltage and "
+                              + "sequence-duration checks, so the array can be driven at up "
+                              + "to 100% duty cycle. Bench testing only.\n\n"
+                              + "Turn this off under Settings → Engineering Overrides."
             }
         }
 
