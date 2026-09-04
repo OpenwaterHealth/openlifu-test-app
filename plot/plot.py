@@ -15,11 +15,27 @@ from matplotlib.colors import to_hex
 
 logger = logging.getLogger(__name__)
 
-# Focus/delay-profile colour cycle. Matplotlib's tab10 is the source of
-# truth: profile i (1-based) is drawn in ``tab10[(i - 1) % 10]`` in both
-# the pulse-train envelope and the element map.
-PROFILE_COLORMAP = "tab10"
-PROFILE_COLOR_COUNT = 10
+# Focus/delay-profile colour cycle.
+#
+# tab20 rather than tab10 because the transmitter has 16 delay-profile
+# slots: a 10-colour cycle gives foci 11-16 the same colours as 1-6, and
+# colour is the only thing identifying a focus on the element map.
+#
+# tab20 interleaves a dark and a light variant of each tab10 hue (dark
+# blue, light blue, dark orange, light orange, ...), so consecutive
+# entries share a hue. Taking the darks first keeps foci 1-10 on the
+# well-separated tab10 hues and pushes the lighter variants to 11-20 --
+# neighbouring foci never share a hue, and the two variants of one hue are
+# always 10 apart.
+PROFILE_COLORMAP = "tab20"
+_PROFILE_COLOR_ORDER = list(range(0, 20, 2)) + list(range(1, 20, 2))
+PROFILE_COLOR_COUNT = len(_PROFILE_COLOR_ORDER)
+
+
+def profile_color(index):
+    """RGBA colour for the 0-based delay-profile *index*."""
+    cmap = plt.get_cmap(PROFILE_COLORMAP)
+    return cmap(_PROFILE_COLOR_ORDER[int(index) % PROFILE_COLOR_COUNT])
 
 
 def profile_color_hex(count):
@@ -29,8 +45,7 @@ def profile_color_hex(count):
     the same colours as the plot markers by construction, rather than by a
     hand-copied palette that silently drifts if the colormap changes.
     """
-    cmap = plt.get_cmap(PROFILE_COLORMAP)
-    return [to_hex(cmap(i % PROFILE_COLOR_COUNT)) for i in range(max(0, int(count)))]
+    return [to_hex(profile_color(i)) for i in range(max(0, int(count)))]
 
 
 def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0):
@@ -62,7 +77,6 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
     # than an exception.
     apod_index = min(focus_index, apodizations.shape[0] - 1)
     execution_order = list(solution.get("execution_order") or range(1, n_profiles + 1))
-    profile_colors = plt.get_cmap("tab10")
     transducer = solution.get('transducer', {})
     sequence = solution["sequence"]
     voltage = solution["voltage"]
@@ -107,22 +121,45 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
                            np.full_like(pulse_train_t, A/100),
                            np.full_like(pulse_train_t, -A/100),
                            color="#888888", alpha=1.0)
+        # No legend here. At the 16-profile maximum it needs four rows of
+        # entries and covers the whole panel, hiding the very pulses it
+        # labels. This panel answers one question instead -- "where in the
+        # train does the focus I picked fire?" -- so everything else is
+        # drawn in one muted grey and the selection gets the colour. That
+        # colour is named by the swatch in the UI's focus dropdown, which
+        # is what drives the selection in the first place.
         selected_profile = focus_index + 1
-        for profile in sorted(set(execution_order)):
-            mask = firing & (profile_at_t == profile)
-            if not mask.any():
-                continue
-            # Every focus stays drawn; the selected one is fully opaque so
-            # the panel doubles as a legend for the element map below.
-            is_selected = profile == selected_profile
+        selected_color = profile_color(selected_profile - 1)
+
+        other_mask = firing & (profile_at_t != selected_profile)
+        if other_mask.any():
             ax[1].fill_between(pulse_train_t * 1e3,
                                pulse_train_waveform_posenv,
                                pulse_train_waveform_negenv,
-                               where=mask,
-                               color=profile_colors((profile - 1) % 10),
-                               alpha=1.0 if is_selected else 0.5,
-                               label=f"Focus {profile}" + (" ◀" if is_selected else ""))
-        ax[1].legend(loc="upper right", fontsize=7, ncol=min(4, len(set(execution_order))))
+                               where=other_mask, color="#6E7480")
+        selected_mask = firing & (profile_at_t == selected_profile)
+        if selected_mask.any():
+            ax[1].fill_between(pulse_train_t * 1e3,
+                               pulse_train_waveform_posenv,
+                               pulse_train_waveform_negenv,
+                               where=selected_mask, color=selected_color)
+
+        # A pulse lasts microseconds on an axis measured in milliseconds, so
+        # each bar is sub-pixel wide and colour alone cannot be seen. Tag the
+        # selected focus's pulses with a marker above the envelope. Skipped
+        # past a threshold where the markers would merge into a smear and
+        # stop being a highlight.
+        total_pulses = int(sequence['pulse_count'])
+        selected_times_ms = [
+            k * pulse_interval * 1e3
+            for k in range(total_pulses)
+            if execution_order[(k // pulses_per_entry) % cycle_length] == selected_profile
+        ]
+        if 0 < len(selected_times_ms) <= 64:
+            ax[1].plot(selected_times_ms, [A * 1.22] * len(selected_times_ms),
+                       linestyle='none', marker='v', markersize=5,
+                       markeredgecolor='white', markeredgewidth=0.5,
+                       color=selected_color)
     else:
         ax[1].fill_between(pulse_train_t * 1e3, pulse_train_waveform_posenv, pulse_train_waveform_negenv, alpha=1.0)
         ax[1].legend(["Pulse Train Envelope"], loc="upper right")
@@ -156,13 +193,13 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
                            markersize=15 if is_selected else 9,
                            markeredgewidth=3 if is_selected else 2,
                            alpha=1.0 if is_selected else 0.7,
-                           color=profile_colors((index - 1) % 10))
+                           color=profile_color(index - 1))
                 if is_selected:
                     # A ring around the focus whose delays are on screen, so
                     # the selection is readable even where foci overlap.
                     ax[2].plot(position[0], position[1], marker='o', markersize=20,
                                markerfacecolor='none', markeredgewidth=1.5,
-                               color=profile_colors((index - 1) % 10))
+                               color=profile_color(index - 1))
                 xs = [min(xs[0], position[0] - 5), max(xs[1], position[0] + 5)]
                 ys = [min(ys[0], position[1] - 5), max(ys[1], position[1] + 5)]
 
