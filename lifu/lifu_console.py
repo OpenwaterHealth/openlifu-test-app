@@ -39,6 +39,7 @@ class ConsoleMixin:
         if self._cached_hv_info is not None:
             fw_version, device_id = self._cached_hv_info
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
+            self._update_firmware_compliance("HV", fw_version)
             return
         self._interface_mutex.lock()
         try:
@@ -51,7 +52,9 @@ class ConsoleMixin:
             else:
                 device_id = 'N/A'
             self._cached_hv_info = (fw_version, device_id)
+            self._cached_hv_fw_version = fw_version
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
+            self._update_firmware_compliance("HV", fw_version)
             logger.info(f"Console - Firmware Version: {fw_version}, HWID: {device_id}")
         except LIFUError as e:
             self._handle_lifu_error("Console Info", e)
@@ -125,7 +128,14 @@ class ConsoleMixin:
 
     @pyqtSlot()
     def queryPowerStatus(self):
-        """Fetch and emit HV state."""
+        """Fetch and emit HV state.
+
+        No-ops while telemetry is paused (see :meth:`pauseMonitoring`) so
+        page-enter refreshes from QML -- which run on the main thread, not
+        the poll thread -- also stay off the wire while paused.
+        """
+        if self._monitoring_paused:
+            return
         self._interface_mutex.lock()
         try:
             hv_state = self.interface.hvcontroller.get_hv_status()

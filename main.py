@@ -4,11 +4,15 @@ import asyncio
 import warnings
 import logging
 import argparse
-from PyQt6.QtGui import QGuiApplication, QIcon
+from PyQt6.QtCore import QtMsgType, qInstallMessageHandler
+from PyQt6.QtGui import QIcon
 from PyQt6.QtQml import QQmlApplicationEngine
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
 from lifu.lifu_connector import LIFUConnector, MIN_SDK_VERSION, check_sdk_version
+from lifu.lifu_constants import validate_firmware_version_pins
 from lifu.lifu_support import LIFUSupportConnector
+from openlifu_sdk.io.exceptions import LIFUHardwareInUseError
 from pathlib import Path
 
 from version import get_version
@@ -25,6 +29,47 @@ def resource_path(rel: str) -> str:
     import sys, os
     base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.dirname(sys.executable if getattr(sys,"frozen",False) else __file__)))
     return os.path.join(base, rel)
+
+
+def _construct_connector_with_hw_in_use_retry(factory):
+    """Construct a connector via ``factory()``, looping on
+    :class:`LIFUHardwareInUseError` with a Retry / Close Application dialog.
+
+    Returns the constructed connector. Does not return when the user
+    chooses to close the application.
+
+    Requires that a :class:`QApplication` already exist in the process
+    (constructed in ``main()`` before this is called).
+    """
+    while True:
+        try:
+            return factory()
+        except LIFUHardwareInUseError as exc:
+            pid = getattr(exc, "pid", None)
+            pid_text = f" (PID {pid})" if pid else ""
+            text = (
+                "Another process appears to be using the LIFU hardware "
+                f"interface{pid_text}.\n\n"
+                "Only one application can talk to the LIFU device at a "
+                "time. Close the other application (or stop the process) "
+                "and click 'Retry' to try connecting again, or click "
+                "'Close Application' to quit."
+            )
+            logger.error(
+                "LIFU hardware in use by another process (PID %s); prompting user.",
+                pid,
+            )
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("LIFU Hardware In Use")
+            box.setText(text)
+            retry_btn = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Close Application", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(retry_btn)
+            box.exec()
+            if box.clickedButton() is retry_btn:
+                continue
+            sys.exit(2)
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -52,8 +97,26 @@ def parse_arguments():
         default="info",
         type=str,
         help=(
-            "Logging level for the lifu_connector logger "
-            "(debug, info, warning, error, critical). Default: info."
+            "Logging level for the application's own loggers "
+            "(``lifu.*`` and ``qt``): debug, info, warning, error, "
+            "critical. Default: info."
+        ),
+    )
+    parser.add_argument(
+        "--sdk-loglevel",
+        default="derive",
+        type=str,
+        help=(
+            "Logging level for the openlifu_sdk transport logger. "
+            "The SDK is a low-level component whose ``info`` and "
+            "``debug`` levels are much more verbose per unit of "
+            "operator-visible value than the app's own levels, so by "
+            "default it is configured one step quieter than --loglevel "
+            "(floored at WARNING). Pass an explicit level (debug, "
+            "info, warning, error, critical) to override -- e.g. "
+            "``--loglevel=info --sdk-loglevel=debug`` for a deep dive "
+            "into UART traffic while keeping the app's own logs at "
+            "INFO. Default: derive."
         ),
     )
     return parser.parse_args()
@@ -85,6 +148,13 @@ def build_app_tabs():
 def main():
     args = parse_arguments()
 
+    # Developer/dependency guardrail: refuse to start if the pinned
+    # minimum firmware versions exceed the versions bundled with the
+    # SDK. A misconfigured release would otherwise lock operators out
+    # of configuration with an in-app "Firmware Update Required" status
+    # that the bundled installer cannot satisfy.
+    validate_firmware_version_pins()
+
     # Apply the requested log level to the lifu package logger before
     # any of its modules log anything interesting. The handler is
     # attached to the ``lifu`` package logger in ``lifu_connector.py``
@@ -99,7 +169,91 @@ def main():
             file=sys.stderr,
         )
         level = logging.INFO
+
+    # Resolve --sdk-loglevel. ``derive`` (default) keeps the SDK one
+    # step quieter than the app's level, with a floor of WARNING so
+    # routine operation stays uncluttered even if the app is at DEBUG.
+    # An explicit value (debug/info/warning/error/critical) bypasses
+    # the derivation -- useful for targeted UART traces.
+    sdk_arg = str(args.sdk_loglevel).lower()
+    if sdk_arg == "derive":
+        # One step quieter than the app, floored at WARNING.
+        # logging level numbers go up as severity goes up (DEBUG=10,
+        # INFO=20, WARNING=30), so "one step quieter" = +10.
+        sdk_level = max(level + 10, logging.WARNING)
+    else:
+        sdk_level = logging.getLevelName(sdk_arg.upper())
+        if not isinstance(sdk_level, int):
+            print(
+                f"WARNING: invalid --sdk-loglevel '{args.sdk_loglevel}', "
+                "falling back to derive.",
+                file=sys.stderr,
+            )
+            sdk_level = max(level + 10, logging.WARNING)
+
+    # Root logging configuration. Without this, library loggers (e.g.
+    # ``openlifu_sdk.io.uart`` -- the source of "TX id=... timed out"
+    # WARNINGs) fall through to Python's "last resort" handler which
+    # emits records as bare "LEVEL:logger:message" with no timestamp.
+    # Configure root once, with a timestamped format, so every logger in
+    # the process (ours + the SDK) is timestamped and consistently
+    # formatted. ``force=True`` replaces any handler a prior import may
+    # have installed (basicConfig is a no-op if root already has one).
+    #
+    # Root threshold is the most permissive of the configured levels so
+    # the handler does not silently drop records that a per-logger
+    # level would otherwise allow through.
+    root_level = min(level, sdk_level)
+    logging.basicConfig(
+        level=root_level,
+        format="%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s [%(threadName)s] %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+        force=True,
+    )
+    # Per-package levels: app code at --loglevel, SDK at --sdk-loglevel
+    # (or its derived default). This decoupling matters because the
+    # SDK's INFO/DEBUG is much more verbose per unit of operator-visible
+    # value than the app's own levels -- so e.g. --loglevel=info should
+    # not flood stderr with per-packet framing chatter from the
+    # transport layer.
     logging.getLogger("lifu").setLevel(level)
+    logging.getLogger("openlifu_sdk").setLevel(sdk_level)
+    # Tame known-noisy third-party libraries that would otherwise drown
+    # the operator at INFO/DEBUG (Qt internals, PIL, matplotlib, etc.).
+    for noisy in ("PIL", "matplotlib", "asyncio", "qasync"):
+        logging.getLogger(noisy).setLevel(max(level, logging.WARNING))
+
+    # Replace Qt's default message handler. Two goals:
+    #   1. Drop QML ``console.log(...)`` (QtDebugMsg) entirely -- it's
+    #      unstructured developer-trace clutter that gets emitted with a
+    #      ``qml:`` prefix bypassing Python's logging config (no
+    #      timestamps, no level filtering). Any QML-side event worth
+    #      surfacing has an equivalent Python-side INFO log in
+    #      lifu_connector.* mixins.
+    #   2. Funnel real Qt warnings/criticals through the Python logging
+    #      pipeline so they pick up timestamps and the same formatting
+    #      as everything else (and are searchable in log files).
+    _qt_logger = logging.getLogger("qt")
+    _QT_LEVEL_MAP = {
+        QtMsgType.QtDebugMsg: None,      # drop entirely
+        QtMsgType.QtInfoMsg: logging.INFO,
+        QtMsgType.QtWarningMsg: logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg: logging.CRITICAL,
+    }
+    def _qt_message_handler(mode, ctx, msg):
+        py_level = _QT_LEVEL_MAP.get(mode)
+        if py_level is None:
+            return  # silently drop QML console.log noise
+        # Include the Qt logging category if present (e.g. ``qt.qpa.*``)
+        # so filterable categories remain visible.
+        category = getattr(ctx, "category", None) or ""
+        if category and category != "default":
+            _qt_logger.log(py_level, "[%s] %s", category, msg)
+        else:
+            _qt_logger.log(py_level, "%s", msg)
+    qInstallMessageHandler(_qt_message_handler)
 
     # Tell Windows to treat this as its own app (not python.exe) so the
     # taskbar shows our icon instead of the Python icon.
@@ -116,7 +270,11 @@ def main():
     os.environ["QT_QUICK_CONTROLS_MATERIAL_THEME"] = "Dark"
     os.environ["QT_LOGGING_RULES"] = "qt.qpa.fonts=false"
 
-    app = QGuiApplication(sys.argv)
+    # Use QApplication (not QGuiApplication) so we can show QMessageBox
+    # popups for the SDK-version mismatch and hardware-in-use paths
+    # below. QApplication is a superset of QGuiApplication and works
+    # fine for QML-only apps.
+    app = QApplication(sys.argv)
 
     # Verify the installed openlifu-sdk meets our minimum required version
     # before we start touching hardware. Editable installs from GitHub may
@@ -128,11 +286,6 @@ def main():
     else:
         logger.error(sdk_message)
         try:
-            from PyQt6.QtWidgets import QApplication, QMessageBox
-            # QGuiApplication doesn't own QWidget; spin up a temporary
-            # QApplication only for the dialog. If QtWidgets isn't
-            # available (slim install) we still have the stderr path.
-            _msg_app = QApplication.instance() or QApplication(sys.argv)
             QMessageBox.critical(
                 None,
                 "Incompatible openlifu-sdk version",
@@ -161,7 +314,9 @@ def main():
 
         lifu_connector = SimulatedLIFUConnector(num_modules=sim_modules)
     else:
-        lifu_connector = LIFUConnector(hv_test_mode=args.hv_test_mode)
+        lifu_connector = _construct_connector_with_hw_in_use_retry(
+            lambda: LIFUConnector(hv_test_mode=args.hv_test_mode),
+        )
     lifu_support_connector = LIFUSupportConnector(interface=lifu_connector.interface)
 
     # Expose to QML

@@ -38,9 +38,19 @@ class TransmitterMixin:
         Cached after first call; cleared on TX disconnect or after a
         successful transmitter firmware update so a re-flashed module's
         new version replaces the cached entry.
+
+        Skipped outright during a firmware update: a console update
+        power-cycles the modules, so the query would only block until it
+        times out (see ``_fw_update_active``).
         """
+        if self._fw_update_active:
+            return
         if self._cached_tx_info is not None:
             self.txDeviceInfoReceived.emit(self._cached_tx_info)
+            for entry in self._cached_tx_info:
+                self._update_firmware_compliance(
+                    "TX", entry.get("firmwareVersion"), module=entry.get("module"),
+                )
             return
         self._interface_mutex.lock()
         try:
@@ -49,6 +59,7 @@ class TransmitterMixin:
             for module_idx in range(module_count):
                 try:
                     fw_version = self.interface.txdevice.get_version(module=module_idx)
+                    self._cached_tx_fw_version[module_idx] = fw_version
                 except LIFUError as e:
                     logger.warning(f"Module {module_idx}: failed to read firmware version: {e}")
                     fw_version = "N/A"
@@ -71,6 +82,11 @@ class TransmitterMixin:
                     "firmwareVersion": fw_version,
                     "deviceId": device_id
                 })
+                self._update_firmware_compliance(
+                    "TX",
+                    fw_version if fw_version != "N/A" else None,
+                    module=module_idx,
+                )
             self._cached_tx_info = modules_info
             self.txDeviceInfoReceived.emit(modules_info)
         except LIFUError as e:
@@ -82,7 +98,16 @@ class TransmitterMixin:
 
     @pyqtSlot()
     def queryTxTemperature(self, warn_after_consecutive_failures=3):
-        """Fetch and emit temperature data for all connected modules."""
+        """Fetch and emit temperature data for all connected modules.
+
+        No-ops while telemetry is paused (see ``pauseMonitoring``). The guard
+        lives here rather than only in the poll thread because this slot is
+        also invoked from QML on the main thread (page-enter refreshes), and
+        those bursts would otherwise still hit the device while a page that
+        pauses telemetry -- e.g. Settings, during a firmware update -- is up.
+        """
+        if self._monitoring_paused:
+            return
         if self._num_modules_connected <= 0:
             return
         self._interface_mutex.lock()
@@ -126,7 +151,13 @@ class TransmitterMixin:
 
     @pyqtSlot()
     def queryNumModules(self):
-        """Fetch and emit number of connected TX modules."""
+        """Fetch and emit number of connected TX modules.
+
+        Skipped during a firmware update -- a console update power-cycles the
+        TX modules, so this would only time out while they re-enumerate.
+        """
+        if self._fw_update_active:
+            return
         self._interface_mutex.lock()
         try:
             count = self.interface.txdevice.get_tx_module_count()
@@ -208,9 +239,14 @@ class TransmitterMixin:
     def queryTriggerInfo(self):
         """Query the trigger status and update the state accordingly.
 
+        No-ops while telemetry is paused -- see :meth:`queryTxTemperature`
+        for why the guard is here and not only in the poll thread.
+
         Returns:
             bool: True if the query was successful, False otherwise.
         """
+        if self._monitoring_paused:
+            return False
         self._interface_mutex.lock()
         try:
             trigger_data = self.interface.txdevice.get_trigger_json()
