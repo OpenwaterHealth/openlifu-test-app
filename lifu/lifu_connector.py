@@ -1,6 +1,7 @@
 ﻿from PyQt6.QtCore import QObject, QRecursiveMutex, QThread, QTimer, pyqtSignal, pyqtProperty, pyqtSlot
 import asyncio
 import contextlib
+import csv
 import logging
 import os
 import shutil
@@ -19,7 +20,7 @@ import time
 import numpy as np
 import json
 import copy
-from plot.plot import generate_ultrasound_plot_from_solution  # Import the function directly
+from plot.plot import generate_ultrasound_plot_from_solution, profile_color_hex  # Import the function directly
 from test_reports.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface, LIFUInterfaceStatus
 from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
@@ -98,6 +99,8 @@ from lifu.lifu_constants import (
     HV_EN_WHILE_RUNNING,
     SPEED_OF_SOUND,
     NUM_ELEMENTS_PER_MODULE,
+    MAX_FOCUS_POINTS,
+    MIN_PROFILE_SWITCH_INTERVAL_S,
     MAX_TIMEOUT_RETRIES,
     FW_COMPLIANCE_OK,
     FW_COMPLIANCE_UNKNOWN,
@@ -178,6 +181,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # HV enable mode signals
     hvEnableModeChanged = pyqtSignal(int)  # Notifies when HV enable mode changes
 
+    # Emitted when the solution safety-limit bypass is turned on or off.
+    safetyBypassChanged = pyqtSignal(bool)
+
     # Firmware-compliance signal. Emitted whenever the per-device
     # compliance buckets (consoleFirmwareCompliance,
     # transmitterFirmwareCompliance) change, so QML rebinds the System
@@ -191,6 +197,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # current firmware (PULSE field is reserved); QML should ignore them
     # when total is 0.
     sonicationProgressUpdated = pyqtSignal(int, int, int, int)  # (pt_curr, pt_total, p_curr, p_total)
+
+    # Controller-page telemetry logging state (enabled, active log path).
+    controllerTelemetryLoggingChanged = pyqtSignal(bool, str)
 
     # Generic device error signal for surfacing SDK failures to QML as popups.
     # Emitted whenever a LIFUError (or unexpected Exception) is caught while
@@ -206,8 +215,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         of ``__init__``.
         """
         return LIFUInterface(HV_test_mode=hv_test_mode,
-                             run_async=True,
-                             voltage_table_selection="evt0")
+                             run_async=True)
 
     def __init__(self, hv_test_mode=False):
         super().__init__()
@@ -262,8 +270,31 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._loaded_solution_data = None
         self._solution_name = ""
 
+        # Optional controller-page telemetry CSV logging.
+        # ``_controller_telemetry_logging_enabled`` is the user's armed
+        # preference (checkbox state). A CSV file is opened only while
+        # sonication is actively RUNNING.
+        self._controller_telemetry_logging_enabled = False
+        self._controller_telemetry_log_path = ""
+        self._controller_telemetry_t0 = 0.0
+        self._controller_telemetry_csv = None
+        self._controller_telemetry_file_handle = None
+        self._controller_telemetry_sample_timer = QTimer(self)
+        self._controller_telemetry_sample_timer.setInterval(1000)
+        self._controller_telemetry_sample_timer.timeout.connect(
+            self._controller_telemetry_sample_tick
+        )
+
         # HV enable mode: 0=AUTO (only while running), 1=ON, 2=OFF
         self._hv_enable_mode = HV_EN_AUTO
+
+        # Engineering override: when True, Configure skips the SDK's
+        # check_solution() safety pass (duty-cycle / voltage / sequence-
+        # duration limits), allowing drive levels up to 100% duty cycle.
+        # Deliberately in-memory only -- it must never survive a restart,
+        # and it is cleared whenever the TX device disconnects. The HV
+        # controller's hard 5-100 V rail clamp is unaffected.
+        self._bypass_safety_checks = False
 
         # Per-device firmware compliance buckets (FW_COMPLIANCE_*).
         # ``_console_fw_compliance`` covers the HV/console; the TX dict
@@ -318,6 +349,13 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self.connectionStatusChanged.connect(self._check_firmware_on_connect)
         self.numModulesUpdated.connect(self._check_tx_firmware_on_modules)
 
+        # Optional CSV capture of Controller telemetry. We subscribe at the
+        # signal layer so all existing emit sites (poll thread and status-frame
+        # parser) are covered without altering their call paths.
+        self.temperatureHvUpdated.connect(self._log_controller_hv_temperature)
+        self.temperatureTxUpdated.connect(self._log_controller_tx_temperature)
+        self.monVoltagesReceived.connect(self._log_controller_voltage_readings)
+
         # Background telemetry polling thread (temperature + HV voltages).
         # QThread is used (not threading.Thread) so Qt's queued-connection
         # mechanism correctly delivers signals from the poll thread to the
@@ -363,6 +401,257 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self.interface.close()
         except Exception as e:
             logger.error(f"Error closing LIFU interface: {e}")
+        self._close_controller_telemetry_logger()
+
+    @pyqtSlot(bool)
+    def setControllerTelemetryLoggingEnabled(self, enabled: bool):
+        """Arm/disarm controller telemetry logging.
+
+        When armed, logging starts on the next successful Start and stops
+        automatically when the run ends (Stop button or STATUS:STOPPED).
+        """
+        if bool(enabled):
+            self._controller_telemetry_logging_enabled = True
+            # If the user arms logging while already RUNNING, begin
+            # immediately for the active run.
+            if self._state == RUNNING and self._controller_telemetry_csv is None:
+                self._start_controller_telemetry_logger()
+            else:
+                self.controllerTelemetryLoggingChanged.emit(True, self._controller_telemetry_log_path)
+            return
+
+        self._controller_telemetry_logging_enabled = False
+        # Disarming always closes any active file.
+        self._close_controller_telemetry_logger(clear_enabled=False)
+        self.controllerTelemetryLoggingChanged.emit(False, "")
+
+    @pyqtSlot(result=bool)
+    def isControllerTelemetryLoggingEnabled(self):
+        return bool(self._controller_telemetry_logging_enabled)
+
+    @pyqtSlot(result=str)
+    def getControllerTelemetryLogPath(self):
+        return self._controller_telemetry_log_path or ""
+
+    def _start_controller_telemetry_run_if_armed(self):
+        """Open a fresh CSV file for the current run if logging is armed."""
+        if not self._controller_telemetry_logging_enabled:
+            return
+        # Always rotate file per run.
+        self._close_controller_telemetry_logger(clear_enabled=False)
+        self._start_controller_telemetry_logger()
+        self._controller_telemetry_sample_timer.start()
+
+    def _stop_controller_telemetry_run(self):
+        """Close the active run CSV but preserve the armed checkbox state."""
+        self._controller_telemetry_sample_timer.stop()
+        armed = self._controller_telemetry_logging_enabled
+        if self._controller_telemetry_csv is not None:
+            self._append_controller_telemetry_row("run_stopped")
+        self._close_controller_telemetry_logger(clear_enabled=False)
+        self.controllerTelemetryLoggingChanged.emit(bool(armed), "")
+
+    def _controller_telemetry_sample_tick(self):
+        """Periodic run-time telemetry sample while logging is active."""
+        if self._state != RUNNING:
+            return
+        self._capture_controller_telemetry_snapshot("periodic_snapshot")
+
+    def _capture_controller_telemetry_snapshot(self, reading: str):
+        """Best-effort one-shot telemetry sample for run-boundary logging."""
+        if not self._controller_telemetry_logging_enabled or self._controller_telemetry_csv is None:
+            return
+
+        tx_temp = None
+        ambient_temp = None
+        hv_temp1 = None
+        hv_temp2 = None
+        hv_positive = None
+        hv_negative = None
+
+        self._interface_mutex.lock()
+        try:
+            if self._txConnected:
+                try:
+                    tx_temp = self.interface.txdevice.get_temperature(module=0)
+                    ambient_temp = self.interface.txdevice.get_ambient_temperature(module=0)
+                except Exception:
+                    tx_temp = None
+                    ambient_temp = None
+
+            if self._hvConnected:
+                try:
+                    hv_temp1 = self.interface.hvcontroller.get_temperature1()
+                    hv_temp2 = self.interface.hvcontroller.get_temperature2()
+                except Exception:
+                    hv_temp1 = None
+                    hv_temp2 = None
+
+                try:
+                    voltages = self.interface.hvcontroller.get_vmon_values()
+                    if len(voltages) > 0:
+                        hv_positive = self._extract_converted_voltage(voltages[0])
+                    if len(voltages) > 3:
+                        hv_negative = self._extract_converted_voltage(voltages[3])
+                except Exception:
+                    hv_positive = None
+                    hv_negative = None
+        finally:
+            self._interface_mutex.unlock()
+
+        self._append_controller_telemetry_row(
+            reading,
+            module=0,
+            tx_temp=tx_temp,
+            ambient_temp=ambient_temp,
+            hv_temp1=hv_temp1,
+            hv_temp2=hv_temp2,
+            hv_positive=hv_positive,
+            hv_negative=hv_negative,
+        )
+
+    def _start_controller_telemetry_logger(self):
+        """Open a CSV file for controller telemetry samples."""
+        try:
+            logs_dir = os.path.join(os.getcwd(), "logs")
+            os.makedirs(logs_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            log_path = os.path.join(logs_dir, f"controller_telemetry_{stamp}.csv")
+
+            fh = open(log_path, "w", newline="", encoding="utf-8")
+            writer = csv.writer(fh)
+            writer.writerow([
+                "timestamp_utc",
+                "elapsed_s",
+                "reading",
+                "module",
+                "tx_temp_c",
+                "ambient_temp_c",
+                "hv_temp1_c",
+                "hv_temp2_c",
+                "hv_positive_v",
+                "hv_negative_v",
+            ])
+
+            self._controller_telemetry_file_handle = fh
+            self._controller_telemetry_csv = writer
+            self._controller_telemetry_t0 = time.monotonic()
+            self._controller_telemetry_log_path = log_path
+            logger.info("Controller telemetry logging enabled: %s", log_path)
+            self._append_controller_telemetry_row("run_started")
+            self._capture_controller_telemetry_snapshot("run_start_snapshot")
+            self.controllerTelemetryLoggingChanged.emit(
+                bool(self._controller_telemetry_logging_enabled),
+                log_path,
+            )
+        except Exception as e:
+            logger.error("Failed to enable controller telemetry logging: %s", e)
+            self._controller_telemetry_log_path = ""
+            self._controller_telemetry_t0 = 0.0
+            self._controller_telemetry_csv = None
+            if self._controller_telemetry_file_handle is not None:
+                try:
+                    self._controller_telemetry_file_handle.close()
+                except Exception:
+                    pass
+            self._controller_telemetry_file_handle = None
+            self.controllerTelemetryLoggingChanged.emit(
+                bool(self._controller_telemetry_logging_enabled),
+                "",
+            )
+
+    def _close_controller_telemetry_logger(self, clear_enabled: bool = True):
+        """Close the active controller telemetry CSV file if one is open."""
+        self._controller_telemetry_sample_timer.stop()
+        if self._controller_telemetry_file_handle is not None:
+            try:
+                self._controller_telemetry_file_handle.close()
+            except Exception as e:
+                logger.warning("Error closing controller telemetry log: %s", e)
+        if self._controller_telemetry_logging_enabled and self._controller_telemetry_log_path:
+            logger.info("Controller telemetry logging disabled: %s", self._controller_telemetry_log_path)
+        self._controller_telemetry_file_handle = None
+        self._controller_telemetry_csv = None
+        self._controller_telemetry_t0 = 0.0
+        self._controller_telemetry_log_path = ""
+        if clear_enabled:
+            self._controller_telemetry_logging_enabled = False
+
+    def _append_controller_telemetry_row(
+        self,
+        reading: str,
+        module="",
+        tx_temp=None,
+        ambient_temp=None,
+        hv_temp1=None,
+        hv_temp2=None,
+        hv_positive=None,
+        hv_negative=None,
+    ):
+        if not self._controller_telemetry_logging_enabled or self._controller_telemetry_csv is None:
+            return
+        try:
+            now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            elapsed = time.monotonic() - self._controller_telemetry_t0
+            self._controller_telemetry_csv.writerow([
+                now_utc,
+                f"{elapsed:.3f}",
+                reading,
+                module,
+                "" if tx_temp is None else f"{float(tx_temp):.3f}",
+                "" if ambient_temp is None else f"{float(ambient_temp):.3f}",
+                "" if hv_temp1 is None else f"{float(hv_temp1):.3f}",
+                "" if hv_temp2 is None else f"{float(hv_temp2):.3f}",
+                "" if hv_positive is None else f"{float(hv_positive):.3f}",
+                "" if hv_negative is None else f"{float(hv_negative):.3f}",
+            ])
+            if self._controller_telemetry_file_handle is not None:
+                self._controller_telemetry_file_handle.flush()
+        except Exception as e:
+            logger.warning("Failed to append controller telemetry row: %s", e)
+
+    def _extract_converted_voltage(self, entry):
+        """Best-effort extraction of a voltage value from SDK monitor entries."""
+        if isinstance(entry, dict):
+            value = entry.get("converted_voltage", entry.get("voltage", entry.get("value")))
+            return value
+        for attr in ("converted_voltage", "voltage", "value"):
+            if hasattr(entry, attr):
+                return getattr(entry, attr)
+        return None
+
+    def _log_controller_hv_temperature(self, temp1: float, temp2: float):
+        self._append_controller_telemetry_row(
+            "hv_temperature",
+            hv_temp1=temp1,
+            hv_temp2=temp2,
+        )
+
+    def _log_controller_tx_temperature(self, module: int, tx_temp: float, amb_temp: float):
+        self._append_controller_telemetry_row(
+            "tx_temperature",
+            module=module,
+            tx_temp=tx_temp,
+            ambient_temp=amb_temp,
+        )
+
+    def _log_controller_voltage_readings(self, voltages):
+        hv_positive = None
+        hv_negative = None
+        try:
+            if len(voltages) > 0:
+                hv_positive = self._extract_converted_voltage(voltages[0])
+            if len(voltages) > 3:
+                hv_negative = self._extract_converted_voltage(voltages[3])
+        except Exception:
+            hv_positive = None
+            hv_negative = None
+
+        self._append_controller_telemetry_row(
+            "hv_voltage",
+            hv_positive=hv_positive,
+            hv_negative=hv_negative,
+        )
 
     def _emit_device_error(self, title: str, message: str):
         """Log a device/communication failure and surface it to QML as a popup.
@@ -810,6 +1099,12 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._num_modules_connected = 0
             self._configured = False
             self._invalidate_device_caches("TX")
+            # Re-enable safety checks on disconnect 
+            if self._bypass_safety_checks:
+                self._bypass_safety_checks = False
+                self.safetyBypassChanged.emit(False)
+                logger.warning("[SAFETY] Solution safety limits re-enabled "
+                               "automatically on TX disconnect")
         elif descriptor == "HV":
             self._hvConnected = False
             self._hv_poll_failures = 0
@@ -868,9 +1163,21 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                         self._trigger_state = new_trigger_state
                         self.triggerStateChanged.emit(self._trigger_state)
                         logger.debug(f"Trigger state updated to: {'RUNNING' if self._trigger_state else 'STOPPED'}")
+
+                    # Log TX status telemetry directly while RUNNING/STOPPED.
+                    # Do this before STOPPED closes the run file.
+                    self._append_controller_telemetry_row(
+                        "tx_status",
+                        module=0,
+                        tx_temp=parsed.get("temp_tx"),
+                        ambient_temp=parsed.get("temp_ambient"),
+                    )
                     
                     if parsed["status"] == "STOPPED":
                         logger.debug("Trigger is stopped.")
+                        self._async_mode_enabled = False
+                        self._capture_controller_telemetry_snapshot("run_stop_snapshot")
+                        self._stop_controller_telemetry_run()
                         self._state = READY
                         self.stateChanged.emit(self._state)
 
@@ -991,6 +1298,36 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def _get_default_solution_path(self) -> str:
         return os.path.join(self._get_runtime_preset_solutions_path(), "default_solution.json")
 
+    @staticmethod
+    def _extract_focus_points(data, fallback_position):
+        """Return a solution's foci as ``[{'x':, 'y':, 'z':}, ...]`` for QML.
+
+        Prefers the ``foci`` list (present on multi-focus solutions and on
+        anything this app has saved); falls back to the single ``target``
+        position for older or hand-written files.
+        """
+        points = []
+        for entry in data.get('foci', []) or []:
+            position = entry.get('position') if isinstance(entry, dict) else entry
+            if position is None or len(position) < 3:
+                continue
+            try:
+                points.append({
+                    'x': round(float(position[0]), 3),
+                    'y': round(float(position[1]), 3),
+                    'z': round(float(position[2]), 3),
+                })
+            except (TypeError, ValueError):
+                logger.warning(f"Skipping focus with non-numeric position: {position}")
+
+        if not points:
+            points = [{
+                'x': round(float(fallback_position[0]), 3),
+                'y': round(float(fallback_position[1]), 3),
+                'z': round(float(fallback_position[2]), 3),
+            }]
+        return points
+
     def _extract_solution_settings(self, data):
         """Extract UI-editable settings from a solution-like dict."""
         target = data.get('target', {})
@@ -1011,10 +1348,24 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         def _r(value, digits):
             return round(float(value), digits)
 
+        focus_points = self._extract_focus_points(data, focus_position)
+        try:
+            execution_order = [int(v) for v in (data.get('execution_order') or [])]
+        except (TypeError, ValueError):
+            logger.warning("Solution has a non-integer execution_order; using the default order.")
+            execution_order = []
+        if not execution_order:
+            execution_order = list(range(1, len(focus_points) + 1))
+
         return {
-            'xInput': _r(focus_position[0], 3),
-            'yInput': _r(focus_position[1], 3),
-            'zInput': _r(focus_position[2], 3),
+            # xInput/yInput/zInput mirror the first focus. Kept for the
+            # single-focus callers (Transmitter page, operator interface)
+            # that predate multi-focus support.
+            'xInput': focus_points[0]['x'],
+            'yInput': focus_points[0]['y'],
+            'zInput': focus_points[0]['z'],
+            'foci': focus_points,
+            'executionOrder': execution_order,
             'frequency': _r(float(frequency) / 1e3, 3),
             'duration': _r(float(duration) * 1e6, 3),
             'voltage': _r(voltage, 3),
@@ -1027,12 +1378,14 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
     def _build_solution_export_data(self, solution_id, solution_name, num_modules,
                                     xInput, yInput, zInput, freq, voltage,
-                                    pulseInterval, pulseCount, trainInterval, trainCount, durationS):
+                                    pulseInterval, pulseCount, trainInterval, trainCount, durationS,
+                                    foci=None, executionOrder=None):
         solution = self.get_solution(
             xInput, yInput, zInput,
             freq, voltage, pulseInterval, pulseCount,
             trainInterval, trainCount, durationS,
-            validate=True
+            validate=True,
+            foci=foci, executionOrder=executionOrder
         )
         if solution is None:
             raise ValueError("failed to build a valid solution")
@@ -1040,7 +1393,13 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         solution_data = self._to_json_compatible(solution)
         cleaned_id = (solution_id or "").strip() or "solution"
         cleaned_name = (solution_name or "").strip() or cleaned_id
-        target_position = [float(xInput), float(yInput), float(zInput)]
+
+        # get_solution already populated "foci" and "execution_order" from
+        # the focus list; "target" mirrors the first focus so single-focus
+        # files keep the exact shape older readers expect.
+        exported_foci = solution_data.get("foci") or []
+        target_position = (exported_foci[0]["position"] if exported_foci
+                           else [float(xInput), float(yInput), float(zInput)])
 
         pinmap_data = self._load_pinmap_data(num_modules)
         solution_data["id"] = cleaned_id
@@ -1049,10 +1408,6 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             "position": target_position,
             "units": "mm"
         }
-        solution_data["foci"] = [{
-            "position": target_position,
-            "units": "mm"
-        }]
         solution_data["transducer"] = self._build_transducer_from_pinmap(pinmap_data)
         return solution_data
 
@@ -1131,13 +1486,19 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             return {}
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, str, str, str, result=bool)
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, str, str, str,
+              'QVariantList', 'QVariantList', result=bool)
     def saveSolutionToFile(self, solution_id, solution_name, file_path, num_modules_str,
                            xInput, yInput, zInput, freq, voltage,
-                           pulseInterval, pulseCount, trainInterval, trainCount, durationS):
+                           pulseInterval, pulseCount, trainInterval, trainCount, durationS,
+                           foci=None, executionOrder=None):
         """Save the current solution to a JSON file.
 
         num_modules_str: number of TX modules to use for the transducer field.
         When TX is connected, this is read from hardware; when offline it comes from the UI spinbox.
+
+        foci/executionOrder: optional multi-focus configuration. When
+        omitted the single focus given by xInput/yInput/zInput is saved.
         """
         try:
             try:
@@ -1158,7 +1519,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                 solution_id, solution_name, num_modules,
                 xInput, yInput, zInput,
                 freq, voltage, pulseInterval, pulseCount,
-                trainInterval, trainCount, durationS
+                trainInterval, trainCount, durationS,
+                foci=foci, executionOrder=executionOrder
             )
             normalized_path = self._write_solution_json(file_path, solution_data)
 
@@ -1206,6 +1568,39 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def hvEnableMode(self):
         """Expose HV enable mode to QML."""
         return self._hv_enable_mode
+
+    @pyqtProperty(bool, notify=safetyBypassChanged)
+    def safetyBypassEnabled(self):
+        """Expose the solution safety-limit bypass to QML."""
+        return self._bypass_safety_checks
+
+    # Hardware limits, surfaced so QML validates against the SDK's numbers
+    # instead of restating them. ``constant=True`` -- these cannot change
+    # for the lifetime of the process, so QML binds them once.
+
+    @pyqtProperty(int, constant=True)
+    def maxFocusPoints(self):
+        """Delay-RAM profile slots available for foci (SDK-derived)."""
+        return MAX_FOCUS_POINTS
+
+    @pyqtProperty('QStringList', constant=True)
+    def focusProfileColors(self):
+        """Per-focus colours as '#rrggbb', indexed 0-based by focus.
+
+        Comes from the plot module so the dropdown swatches and the element
+        map markers are the same colours by construction. Covers every
+        programmable focus, repeating past 10 exactly as the plot does.
+        """
+        return profile_color_hex(MAX_FOCUS_POINTS)
+
+    @pyqtProperty(float, constant=True)
+    def minProfileSwitchIntervalMs(self):
+        """Inter-pulse dead time the firmware needs to switch focus, in ms.
+
+        Exposed in milliseconds because the Controller page works in the
+        units of its own fields (pulse interval in ms), not SI seconds.
+        """
+        return MIN_PROFILE_SWITCH_INTERVAL_S * 1e3
 
     @pyqtProperty(int, notify=firmwareComplianceChanged)
     def consoleFirmwareCompliance(self) -> int:

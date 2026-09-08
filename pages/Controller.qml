@@ -52,6 +52,7 @@ Rectangle {
     property var presetSolutions: []
     property string saveSolutionPath: ""
     property bool savePathAuto: true
+    property string controllerTelemetryLogPath: ""
 
     // Sonication progress UI state. Driven by Start/Stop button clicks
     // plus unsolicited STATUS frames from the firmware. State machine:
@@ -65,7 +66,310 @@ Rectangle {
     // Cached at Start time so a mid-run mode change doesn't break the
     // denominator display.
     property string progressMode: "Sequence"
-    
+
+    // ----- Multi-focus (rastered) sonication -----
+    //
+    // fociModel is the source of truth for the focus list. Row 0 mirrors
+    // the inline Lateral/Elevation/Axial fields (kept for the common
+    // single-focus case); rows beyond it are only editable in the Foci
+    // dialog. Each focus becomes one delay profile on the transmitter and
+    // the firmware cycles through the execution order at pulse
+    // boundaries, so a multi-focus run auto-rasters with no host
+    // involvement once Start is pressed.
+    //
+    // Hardware limits come from the SDK via the connector -- never restate
+    // them here, or the UI silently diverges from what the device enforces.
+    readonly property int maxFocusPoints: LIFUConnector.maxFocusPoints
+
+    // Roles are fx/fy/fz rather than x/y/z: a Repeater delegate is an
+    // Item, and required properties named x/y would shadow its geometry.
+    ListModel {
+        id: fociModel
+        ListElement { fx: "0"; fy: "0"; fz: "50" }
+    }
+
+    // Empty means "use the default order" (1,2,...,N). A user-supplied
+    // order may repeat and reorder entries freely, e.g. "1,2,1,3".
+    property string executionOrderText: ""
+    property string fociError: ""
+    property string fociSummary: "single focus"
+    // Split out of fociError so the Pulse Count field can flag itself.
+    property string pulseCountError: ""
+
+    // 0-based profile whose delays the element map colours in. Every focus
+    // is drawn either way. Clamped when the focus list shrinks.
+    property int selectedFocusIndex: 0
+
+    // ListModel row edits are not observable, so anything that renders focus
+    // coordinates depends on this counter instead.
+    property int fociRevision: 0
+
+    // "Focus 2  (0, 5, 50)" -- the selector's entry label.
+    function focusLabelFor(index) {
+        if (index < 0 || index >= fociModel.count) {
+            return ""
+        }
+        var row = fociModel.get(index)
+        return "Focus " + (index + 1) + "  (" + row.fx + ", " + row.fy + ", " + row.fz + ")"
+    }
+
+    // From the plot module, so a swatch matches that focus's marker. The
+    // map carries no numbers, so colour is the only link.
+    readonly property var focusProfileColors: LIFUConnector.focusProfileColors
+
+    function focusColorFor(index) {
+        var palette = focusProfileColors
+        if (!palette || palette.length === 0 || index < 0) {
+            return "#9FB3C8"
+        }
+        return palette[index % palette.length]
+    }
+
+    function focusCoordText(index, role) {
+        if (index < 0 || index >= fociModel.count) {
+            return "--"
+        }
+        var value = parseFloat(fociModel.get(index)[role])
+        return isNaN(value) ? "--" : value + " mm"
+    }
+
+    function clampSelectedFocusIndex() {
+        var maxIndex = Math.max(0, fociModel.count - 1)
+        if (selectedFocusIndex > maxIndex) {
+            selectedFocusIndex = maxIndex
+        } else if (selectedFocusIndex < 0) {
+            selectedFocusIndex = 0
+        }
+    }
+
+    // ----- Execution-order parsing -----
+    //
+    // Parameterized by focus count so the same code validates the live
+    // configuration and the Foci dialog's working copy.
+
+    function defaultOrderTextFor(count) {
+        var parts = []
+        for (var i = 1; i <= count; i++) {
+            parts.push(i)
+        }
+        return parts.join(",")
+    }
+
+    function effectiveOrderTextFor(orderText, count) {
+        return orderText.trim() === "" ? defaultOrderTextFor(count) : orderText
+    }
+
+    // Returns {order: [int], error: string}. A non-empty error means the
+    // text could not be parsed against a focus list of `count` entries.
+    function parseExecutionOrder(text, count) {
+        var tokens = text.split(/[,\s]+/).filter(function(token) { return token.length > 0 })
+        if (tokens.length === 0) {
+            return { order: [], error: "Execution order is empty." }
+        }
+        var order = []
+        for (var i = 0; i < tokens.length; i++) {
+            if (!/^\d+$/.test(tokens[i])) {
+                return { order: [], error: "\"" + tokens[i] + "\" is not a focus number." }
+            }
+            var value = parseInt(tokens[i])
+            if (value < 1 || value > count) {
+                return { order: [], error: "Focus " + value + " does not exist (valid: 1-" + count + ")." }
+            }
+            order.push(value)
+        }
+        return { order: order, error: "" }
+    }
+
+    function defaultExecutionOrderText() {
+        return defaultOrderTextFor(fociModel.count)
+    }
+
+    function effectiveExecutionOrderText() {
+        return effectiveOrderTextFor(executionOrderText, fociModel.count)
+    }
+
+    // Mirror the inline X/Y/Z fields into focus 1. Called before anything
+    // reads the focus list so inline edits are never lost.
+    function syncFocusOneFromInputs() {
+        if (fociModel.count === 0) {
+            fociModel.append({ fx: xInput.text, fy: yInput.text, fz: zInput.text })
+        } else {
+            fociModel.set(0, { fx: xInput.text, fy: yInput.text, fz: zInput.text })
+        }
+    }
+
+    function syncInputsFromFocusOne() {
+        if (fociModel.count === 0) {
+            return
+        }
+        var first = fociModel.get(0)
+        xInput.text = first.fx
+        yInput.text = first.fy
+        zInput.text = first.fz
+    }
+
+    function fociArray() {
+        syncFocusOneFromInputs()
+        var points = []
+        for (var i = 0; i < fociModel.count; i++) {
+            var row = fociModel.get(i)
+            points.push({ x: parseFloat(row.fx), y: parseFloat(row.fy), z: parseFloat(row.fz) })
+        }
+        return points
+    }
+
+    function executionOrderArray() {
+        var parsed = parseExecutionOrder(effectiveExecutionOrderText(), fociModel.count)
+        // An empty list tells Python to fall back to the default order.
+        // fociError blocks Configure before it can get here.
+        return parsed.error === "" ? parsed.order : []
+    }
+
+    // The divisor the pulse count must be a multiple of. Returns 0 when the
+    // order will not parse, or when a single focus makes it moot.
+    function cycleLengthFor(model, orderText) {
+        if (model.count <= 1) {
+            return 0
+        }
+        var parsed = parseExecutionOrder(effectiveOrderTextFor(orderText, model.count), model.count)
+        return parsed.error === "" ? parsed.order.length : 0
+    }
+
+    function nearestValidPulseCount(pulseCount, cycleLength) {
+        if (cycleLength <= 0) {
+            return pulseCount
+        }
+        if (isNaN(pulseCount) || pulseCount < cycleLength) {
+            return cycleLength
+        }
+        return Math.ceil(pulseCount / cycleLength) * cycleLength
+    }
+
+    // The divisibility interlock alone, so the field and the dialog can
+    // both flag it in place. Empty means programmable.
+    function pulseCountErrorFor(model, orderText, pulseCountText) {
+        var cycleLength = cycleLengthFor(model, orderText)
+        if (cycleLength <= 0) {
+            return ""
+        }
+        var pulseCount = parseInt(pulseCountText)
+        if (isNaN(pulseCount) || pulseCount < 1) {
+            return "Pulse count must be a whole number of at least " + cycleLength + "."
+        }
+        if (pulseCount % cycleLength !== 0) {
+            return "Pulse count (" + pulseCount + ") must be a multiple of the execution order length ("
+                   + cycleLength + "). Nearest valid: "
+                   + nearestValidPulseCount(pulseCount, cycleLength) + "."
+        }
+        return ""
+    }
+
+    // Full validation of a focus list against the current sequence
+    // parameters. Mirrors the checks in lifu_controller.get_solution so
+    // the operator sees the problem before a device write is attempted.
+    // Takes the model and pulse count explicitly so the Foci dialog can
+    // validate its working copy before committing it.
+    function computeFociErrorFor(model, orderText, pulseCountText) {
+        if (model.count < 1) {
+            return "At least one focus is required."
+        }
+        if (model.count > maxFocusPoints) {
+            return "At most " + maxFocusPoints + " foci are supported (have " + model.count + ")."
+        }
+        for (var i = 0; i < model.count; i++) {
+            var row = model.get(i)
+            if (isNaN(parseFloat(row.fx)) || isNaN(parseFloat(row.fy)) || isNaN(parseFloat(row.fz))) {
+                return "Focus " + (i + 1) + " has a non-numeric coordinate."
+            }
+        }
+
+        var parsed = parseExecutionOrder(effectiveOrderTextFor(orderText, model.count), model.count)
+        if (parsed.error !== "") {
+            return parsed.error
+        }
+
+        // The interlocks below only apply when the firmware actually has
+        // to switch profiles between pulses.
+        if (model.count > 1) {
+            var pulseCountProblem = pulseCountErrorFor(model, orderText, pulseCountText)
+            if (pulseCountProblem !== "") {
+                return pulseCountProblem
+            }
+            // Duration is entered in microseconds, pulse interval in
+            // milliseconds -- convert so the dead-time comparison below is
+            // in one unit.
+            var pulseIntervalMs = parseFloat(triggerPulseInterval.text)
+            var durationMs = parseFloat(durationInput.text) / 1000.0
+            var minSwitchMs = LIFUConnector.minProfileSwitchIntervalMs
+            if (!isNaN(pulseIntervalMs) && !isNaN(durationMs)
+                    && (pulseIntervalMs - durationMs) < minSwitchMs) {
+                return "Pulse interval must exceed pulse duration by at least "
+                       + minSwitchMs + " ms so the firmware can switch focus."
+            }
+        }
+        return ""
+    }
+
+    function updateFociValidation() {
+        if (!triggerPulseCount || !triggerPulseInterval || !durationInput) {
+            return
+        }
+        syncFocusOneFromInputs()
+        clampSelectedFocusIndex()
+        fociRevision++
+        fociError = computeFociErrorFor(fociModel, executionOrderText, triggerPulseCount.text)
+        pulseCountError = pulseCountErrorFor(fociModel, executionOrderText, triggerPulseCount.text)
+        fociSummary = fociSummaryTextFor(fociModel, executionOrderText, triggerPulseCount.text)
+    }
+
+    // Snap Pulse Count up to the next programmable value, pushing it if
+    // already configured.
+    function snapPulseCountToCycle() {
+        var cycleLength = cycleLengthFor(fociModel, executionOrderText)
+        if (cycleLength <= 0) {
+            return
+        }
+        var snapped = nearestValidPulseCount(parseInt(triggerPulseCount.text), cycleLength)
+        if (snapped.toString() === triggerPulseCount.text) {
+            return
+        }
+        triggerPulseCount.text = snapped.toString()
+        triggerPulseCount.dirty = true
+        updateFociValidation()
+        if (everConfigured && !controlsReadOnly) {
+            commitDirtyField(triggerPulseCount, commitSequence)
+        } else {
+            refreshPlot()
+        }
+    }
+
+    // Seed the dialog before opening rather than relying solely on
+    // onOpened, which only fires once the enter transition finishes.
+    function openFociDialog() {
+        fociDialog.loadFromPage()
+        fociDialog.open()
+    }
+
+    // Compact one-line description of a focus configuration, shown next to
+    // the Foci button and inside the dialog.
+    function fociSummaryTextFor(model, orderText, pulseCountText) {
+        if (model.count <= 1) {
+            return "single focus"
+        }
+        var parsed = parseExecutionOrder(effectiveOrderTextFor(orderText, model.count), model.count)
+        if (parsed.error !== "") {
+            return model.count + " foci"
+        }
+        var pulseCount = parseInt(pulseCountText)
+        var perEntry = (!isNaN(pulseCount) && pulseCount % parsed.order.length === 0)
+                       ? (pulseCount / parsed.order.length) : NaN
+        // Two lines: a long order wraps, and the pulse count trailing off
+        // its end was hard to read. The button already shows the count.
+        return "order: " + parsed.order.join("-")
+               + (isNaN(perEntry) ? ""
+                  : "\n" + perEntry + " pulse" + (perEntry === 1 ? "" : "s") + " each")
+    }
+
     // Function to update the validation
     function updateTrainIntervalValidation() {
         if (!triggerPulseInterval || !triggerPulseCount || !triggerPulseTrainInterval) {
@@ -87,18 +391,26 @@ Rectangle {
         trainIntervalTooShort = trainInterval < (pulseIntervalSeconds * pulseCount)
     }
 
+    // Single entry point for plot refreshes so every caller sends the
+    // same focus list and execution order.
+    function refreshPlot() {
+        clampSelectedFocusIndex()
+        LIFUConnector.generate_plot(
+            xInput.text, yInput.text, zInput.text,
+            frequencyInput.text, voltage.text, triggerPulseInterval.text,
+            triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+            durationInput.text, "buffer", fociArray(), executionOrderArray(),
+            selectedFocusIndex
+        )
+    }
+
     function loadSolutionAndRefreshPlot(filePath) {
         if (!filePath || filePath === "") {
             return
         }
 
         LIFUConnector.loadSolutionFromFile(filePath)
-        LIFUConnector.generate_plot(
-                xInput.text, yInput.text, zInput.text,
-                frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                durationInput.text, "buffer"
-        )
+        refreshPlot()
     }
 
     function refreshPresetSolutions() {
@@ -148,9 +460,38 @@ Rectangle {
             return
         }
 
-        xInput.text = settings.xInput.toString()
-        yInput.text = settings.yInput.toString()
-        zInput.text = settings.zInput.toString()
+        // Rebuild the focus list from the solution. Older files without a
+        // "foci" array come back as a single focus, which keeps row 0 (and
+        // therefore the inline X/Y/Z fields) behaving exactly as before.
+        fociModel.clear()
+        var loadedFoci = settings.foci
+        if (loadedFoci && loadedFoci.length > 0) {
+            for (var i = 0; i < loadedFoci.length; i++) {
+                fociModel.append({
+                    fx: loadedFoci[i].x.toString(),
+                    fy: loadedFoci[i].y.toString(),
+                    fz: loadedFoci[i].z.toString()
+                })
+            }
+        } else {
+            fociModel.append({
+                fx: settings.xInput.toString(),
+                fy: settings.yInput.toString(),
+                fz: settings.zInput.toString()
+            })
+        }
+        // Only keep an explicit order when it differs from the default,
+        // so adding a focus later extends the order automatically.
+        var loadedOrder = settings.executionOrder
+        executionOrderText = (loadedOrder && loadedOrder.length > 0)
+                             ? loadedOrder.join(",") : ""
+        if (executionOrderText === defaultExecutionOrderText()) {
+            executionOrderText = ""
+        }
+        syncInputsFromFocusOne()
+        // A new solution means a new focus list, so a carried-over selection
+        // would point at an unrelated profile.
+        selectedFocusIndex = 0
 
         frequencyInput.text = settings.frequency.toString()
         durationInput.text = settings.duration.toString()
@@ -162,6 +503,7 @@ Rectangle {
         triggerPulseTrainCount.text = settings.trainCount.toString()
 
         updateTrainIntervalValidation()
+        updateFociValidation()
     }
 
     // ----- Direct-edit-on-commit helpers -----
@@ -203,12 +545,7 @@ Rectangle {
         resetProgressIdle()
         var ok = LIFUConnector.directSetVoltage(voltage.text)
         if (ok) {
-            LIFUConnector.generate_plot(
-                xInput.text, yInput.text, zInput.text,
-                frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                durationInput.text, "buffer"
-            )
+            refreshPlot()
         }
         return ok
     }
@@ -217,21 +554,25 @@ Rectangle {
         if (!everConfigured) {
             return false
         }
+        // Same gate as Configure: an unprogrammable combination must not
+        // reach the device here either. False keeps the field dirty.
+        if (fociError !== "") {
+            return false
+        }
         resetProgressIdle()
+        // Duration and voltage are passed so the connector can re-check the
+        // duty-cycle envelope; this path writes straight to the TX device.
         var ok = LIFUConnector.directSetSequence(
             triggerPulseInterval.text,
             triggerPulseCount.text,
             triggerPulseTrainInterval.text,
             triggerPulseTrainCount.text,
-            triggerModeDropdown.currentText
+            triggerModeDropdown.currentText,
+            durationInput.text,
+            voltage.text
         )
         if (ok) {
-            LIFUConnector.generate_plot(
-                xInput.text, yInput.text, zInput.text,
-                frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                durationInput.text, "buffer"
-            )
+            refreshPlot()
         }
         return ok
     }
@@ -240,21 +581,20 @@ Rectangle {
         if (!everConfigured) {
             return false
         }
+        if (fociError !== "") {
+            return false
+        }
         resetProgressIdle()
         var ok = LIFUConnector.directSetPulse(
             xInput.text, yInput.text, zInput.text,
             frequencyInput.text, voltage.text,
             triggerPulseInterval.text, triggerPulseCount.text,
             triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-            durationInput.text, triggerModeDropdown.currentText
+            durationInput.text, triggerModeDropdown.currentText,
+            fociArray(), executionOrderArray()
         )
         if (ok) {
-            LIFUConnector.generate_plot(
-                xInput.text, yInput.text, zInput.text,
-                frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                durationInput.text, "buffer"
-            )
+            refreshPlot()
         }
         return ok
     }
@@ -274,19 +614,26 @@ Rectangle {
     // button; below the SDK-packaged version (but >= minimum) we show
     // "Firmware Update Available" in yellow as advisory only.
     function getStatusText() {
+        // The bypass outranks everything else here: the left panel is
+        // read-only while running, so this line is the only place the
+        // operator can see the override is still armed mid-sonication.
+        var bypass = LIFUConnector.safetyBypassEnabled ? "  ⚠ LIMITS BYPASSED" : ""
         if (statusOverrideText !== "") {
-            return statusOverrideText
+            return statusOverrideText + bypass
         }
         if (LIFUConnector.firmwareUpdateRequired) {
-            return "Status: Firmware Update Required"
+            return "Status: Firmware Update Required" + bypass
         }
         if (LIFUConnector.firmwareUpdateAvailable) {
-            return "Status: Firmware Update Available"
+            return "Status: Firmware Update Available" + bypass
         }
-        return getSystemStateText()
+        return getSystemStateText() + bypass
     }
 
     function getStatusColor() {
+        if (LIFUConnector.safetyBypassEnabled) {
+            return "#E67E22"  // orange: safety limits are not being enforced
+        }
         if (statusOverrideText !== "") {
             return getTXIndicatorColor()
         }
@@ -787,7 +1134,6 @@ Rectangle {
                 }
             }
 
-
         }
 
         footer: Item {
@@ -818,7 +1164,8 @@ Rectangle {
                             frequencyInput.text, voltage.text,
                             triggerPulseInterval.text, triggerPulseCount.text,
                             triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                            durationInput.text
+                            durationInput.text,
+                            fociArray(), executionOrderArray()
                         )
                         if (saveDefaultOk) {
                             saveSolutionDialog.close()
@@ -844,7 +1191,8 @@ Rectangle {
                             frequencyInput.text, voltage.text,
                             triggerPulseInterval.text, triggerPulseCount.text,
                             triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                            durationInput.text
+                            durationInput.text,
+                            fociArray(), executionOrderArray()
                         )
                         if (saveOk) {
                             saveSolutionDialog.close()
@@ -852,6 +1200,500 @@ Rectangle {
                     }
                 }
             }
+        }
+    }
+
+    // Numeric field with -/+ steppers. Signals rather than touching the
+    // dialog directly: an inline component has its own id scope.
+    component FocusCoordinateCell: RowLayout {
+        id: cell
+        property string value: ""
+        spacing: 2
+
+        signal editedText(string newText)
+        signal stepped(real delta)
+
+        Button {
+            id: cellMinus
+            text: "−"
+            autoRepeat: true   // hold to keep stepping
+            implicitWidth: 20
+            implicitHeight: 30
+            // `padding: 0` does not override Material's own 24 px side
+            // padding and 6 px insets, which push the glyph out of the
+            // background at this size.
+            leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+            leftInset: 0; rightInset: 0; topInset: 0; bottomInset: 0
+            contentItem: Text {
+                text: cellMinus.text
+                color: "white"
+                font.pixelSize: 15
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                color: cellMinus.down ? "#2F333D" : "#3A3F4B"
+                border.color: "#7A8290"
+                radius: 3
+            }
+            onClicked: cell.stepped(-1)
+        }
+
+        TextField {
+            id: cellField
+            Layout.preferredWidth: 66
+            Layout.preferredHeight: 30
+            font.pixelSize: 13
+            horizontalAlignment: TextInput.AlignHCenter
+            text: cell.value
+            color: isNaN(parseFloat(text)) ? "#E67E22" : "white"
+            background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
+            onTextEdited: cell.editedText(text)
+        }
+
+        Button {
+            id: cellPlus
+            text: "+"
+            autoRepeat: true
+            implicitWidth: 20
+            implicitHeight: 30
+            // `padding: 0` does not override Material's own 24 px side
+            // padding and 6 px insets, which push the glyph out of the
+            // background at this size.
+            leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+            leftInset: 0; rightInset: 0; topInset: 0; bottomInset: 0
+            contentItem: Text {
+                text: cellPlus.text
+                color: "white"
+                font.pixelSize: 15
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                color: cellPlus.down ? "#2F333D" : "#3A3F4B"
+                border.color: "#7A8290"
+                radius: 3
+            }
+            onClicked: cell.stepped(1)
+        }
+    }
+
+    // Focus-list editor. Works on a copy of fociModel so Cancel is a true
+    // no-op; OK is disabled until the configuration would actually program.
+    Dialog {
+        id: fociDialog
+        title: "Focus Points"
+        modal: true
+        focus: true
+        width: 700
+        height: 520
+        x: (controllerPage.width - width) / 2
+        y: (controllerPage.height - height) / 2
+
+        // Working copy; committed to fociModel only on OK.
+        property string workingOrderText: ""
+        // Pulse count lives here too -- it has to be a multiple of the
+        // order length, which is chosen in this dialog.
+        property string workingPulseCount: "1"
+        property int workingRevision: 0
+        readonly property string workingError:
+            workingRevision >= 0
+            ? computeFociErrorFor(fociEditModel, workingOrderText, workingPulseCount) : ""
+        readonly property string workingSummary:
+            workingRevision >= 0
+            ? fociSummaryTextFor(fociEditModel, workingOrderText, workingPulseCount) : ""
+        readonly property int workingCycleLength:
+            workingRevision >= 0 ? cycleLengthFor(fociEditModel, workingOrderText) : 0
+        readonly property string workingPulseCountError:
+            workingRevision >= 0
+            ? pulseCountErrorFor(fociEditModel, workingOrderText, workingPulseCount) : ""
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#3E4E6F"
+            border.width: 2
+            radius: 8
+        }
+
+        ListModel { id: fociEditModel }
+
+        function touch() {
+            // ListModel row edits are not observable; bump a counter that
+            // the workingError/workingSummary bindings depend on.
+            workingRevision++
+        }
+
+        // Seed the working copy from the live configuration.
+        function loadFromPage() {
+            syncFocusOneFromInputs()
+            fociEditModel.clear()
+            for (var i = 0; i < fociModel.count; i++) {
+                var row = fociModel.get(i)
+                fociEditModel.append({ fx: row.fx, fy: row.fy, fz: row.fz })
+            }
+            workingOrderText = executionOrderText
+            fociOrderField.text = executionOrderText
+            workingPulseCount = triggerPulseCount.text
+            fociPulseCountField.text = triggerPulseCount.text
+            touch()
+        }
+
+        // Rounded so repeated clicks do not accumulate float dust.
+        function stepCoordinate(index, role, delta) {
+            var row = fociEditModel.get(index)
+            if (!row) {
+                return
+            }
+            var current = parseFloat(row[role])
+            if (isNaN(current)) {
+                current = 0
+            }
+            var next = Math.round((current + delta) * 1000) / 1000
+            fociEditModel.setProperty(index, role, next.toString())
+            touch()
+        }
+
+        // Round the working pulse count up to the next programmable value.
+        function snapWorkingPulseCount() {
+            if (workingCycleLength <= 0) {
+                return
+            }
+            var snapped = nearestValidPulseCount(parseInt(workingPulseCount), workingCycleLength)
+            workingPulseCount = snapped.toString()
+            fociPulseCountField.text = workingPulseCount
+            touch()
+        }
+
+        onOpened: loadFromPage()
+
+        contentItem: ColumnLayout {
+            spacing: 8
+
+            Text {
+                Layout.fillWidth: true
+                text: "Each focus is programmed as its own delay profile. During sonication the "
+                      + "transmitter cycles through the execution order at pulse boundaries, "
+                      + "restarting at the top of every pulse train."
+                color: "#9FB3C8"
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+
+            // Column headers. Widths track FocusCoordinateCell (20 px stepper
+            // + 66 px field + 20 px stepper + 2x2 px spacing = 110) so the
+            // labels stay over their columns.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Text { text: "#"; color: "#9FB3C8"; font.pixelSize: 11; Layout.preferredWidth: 22 }
+                Text { text: "X (mm)"; color: "#9FB3C8"; font.pixelSize: 11
+                       horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 110 }
+                Text { text: "Y (mm)"; color: "#9FB3C8"; font.pixelSize: 11
+                       horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 110 }
+                Text { text: "Z (mm)"; color: "#9FB3C8"; font.pixelSize: 11
+                       horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 110 }
+                Item { Layout.fillWidth: true }
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 4
+
+                    Repeater {
+                        model: fociEditModel
+
+                        RowLayout {
+                            id: focusRow
+                            required property int index
+                            required property string fx
+                            required property string fy
+                            required property string fz
+
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            Text {
+                                text: (focusRow.index + 1).toString()
+                                color: "white"
+                                font.pixelSize: 12
+                                Layout.preferredWidth: 22
+                            }
+
+                            FocusCoordinateCell {
+                                value: focusRow.fx
+                                onEditedText: function(newText) {
+                                    fociEditModel.setProperty(focusRow.index, "fx", newText)
+                                    fociDialog.touch()
+                                }
+                                onStepped: function(delta) {
+                                    fociDialog.stepCoordinate(focusRow.index, "fx", delta)
+                                }
+                            }
+
+                            FocusCoordinateCell {
+                                value: focusRow.fy
+                                onEditedText: function(newText) {
+                                    fociEditModel.setProperty(focusRow.index, "fy", newText)
+                                    fociDialog.touch()
+                                }
+                                onStepped: function(delta) {
+                                    fociDialog.stepCoordinate(focusRow.index, "fy", delta)
+                                }
+                            }
+
+                            FocusCoordinateCell {
+                                value: focusRow.fz
+                                onEditedText: function(newText) {
+                                    fociEditModel.setProperty(focusRow.index, "fz", newText)
+                                    fociDialog.touch()
+                                }
+                                onStepped: function(delta) {
+                                    fociDialog.stepCoordinate(focusRow.index, "fz", delta)
+                                }
+                            }
+
+                            Button {
+                                text: "Duplicate"
+                                font.pixelSize: 11
+                                implicitHeight: 30
+                                implicitWidth: 84
+                                leftPadding: 8
+                                rightPadding: 8
+                                enabled: fociEditModel.count < maxFocusPoints
+                                onClicked: {
+                                    var row = fociEditModel.get(focusRow.index)
+                                    fociEditModel.insert(focusRow.index + 1,
+                                                         { fx: row.fx, fy: row.fy, fz: row.fz })
+                                    fociDialog.touch()
+                                }
+                            }
+
+                            Button {
+                                text: "Remove"
+                                font.pixelSize: 11
+                                implicitHeight: 30
+                                implicitWidth: 76
+                                leftPadding: 8
+                                rightPadding: 8
+                                // Focus 1 backs the inline X/Y/Z fields, so
+                                // the list can never be emptied.
+                                enabled: fociEditModel.count > 1
+                                onClicked: {
+                                    fociEditModel.remove(focusRow.index)
+                                    fociDialog.touch()
+                                }
+                            }
+
+                            Item { Layout.fillWidth: true }
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Button {
+                    text: "+ Add Focus"
+                    font.pixelSize: 12
+                    implicitHeight: 30
+                    enabled: fociEditModel.count < maxFocusPoints
+                    onClicked: {
+                        // Seed from the last focus so incremental rasters
+                        // are a small edit rather than a full retype.
+                        var last = fociEditModel.count > 0
+                                   ? fociEditModel.get(fociEditModel.count - 1)
+                                   : { fx: "0", fy: "0", fz: "50" }
+                        fociEditModel.append({ fx: last.fx, fy: last.fy, fz: last.fz })
+                        fociDialog.touch()
+                    }
+                }
+
+                Text {
+                    text: fociEditModel.count + " / " + maxFocusPoints + " profiles"
+                    color: "#9FB3C8"
+                    font.pixelSize: 11
+                }
+
+                Item { Layout.fillWidth: true }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Execution order:"
+                    color: "white"
+                    font.pixelSize: 12
+                }
+
+                TextField {
+                    id: fociOrderField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 30
+                    font.pixelSize: 13
+                    placeholderText: defaultOrderTextFor(fociEditModel.count) + "  (default)"
+                    background: Rectangle { color: "#222"; border.color: "#999"; radius: 4 }
+                    onTextEdited: {
+                        fociDialog.workingOrderText = text
+                        fociDialog.touch()
+                    }
+
+                    ToolTip.visible: orderHoverArea.containsMouse
+                    ToolTip.delay: 400
+                    ToolTip.text: "Comma-separated focus numbers. Entries may repeat and appear in any "
+                                  + "order, e.g. \"1,2,1,3\" dwells twice on focus 1 per cycle. "
+                                  + "Leave blank for one pass over every focus."
+                    MouseArea {
+                        id: orderHoverArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.NoButton
+                        propagateComposedEvents: true
+                    }
+                }
+
+                Button {
+                    text: "Reset"
+                    font.pixelSize: 11
+                    implicitHeight: 30
+                    implicitWidth: 64
+                    leftPadding: 8
+                    rightPadding: 8
+                    enabled: fociDialog.workingOrderText !== ""
+                    onClicked: {
+                        fociDialog.workingOrderText = ""
+                        fociOrderField.text = ""
+                        fociDialog.touch()
+                    }
+                }
+            }
+
+            // Edited here as well as on the main page, because the value that
+            // works depends on the order length chosen a few rows up.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Text {
+                    text: "Pulses per pulse train:"
+                    color: "white"
+                    font.pixelSize: 12
+                }
+
+                TextField {
+                    id: fociPulseCountField
+                    Layout.preferredWidth: 90
+                    Layout.preferredHeight: 30
+                    font.pixelSize: 13
+                    color: fociDialog.workingPulseCountError !== "" ? "#E74C3C" : "white"
+                    background: Rectangle {
+                        color: "#222"
+                        border.color: fociDialog.workingPulseCountError !== "" ? "#E74C3C" : "#999"
+                        border.width: fociDialog.workingPulseCountError !== "" ? 2 : 1
+                        radius: 4
+                    }
+                    onTextEdited: {
+                        fociDialog.workingPulseCount = text
+                        fociDialog.touch()
+                    }
+                }
+
+                Button {
+                    text: "Snap"
+                    font.pixelSize: 11
+                    implicitHeight: 30
+                    implicitWidth: 64
+                    leftPadding: 8
+                    rightPadding: 8
+                    enabled: fociDialog.workingCycleLength > 0
+                             && fociDialog.workingPulseCountError !== ""
+                    ToolTip.visible: hovered && fociDialog.workingCycleLength > 0
+                    ToolTip.delay: 400
+                    ToolTip.text: "Round up to the next multiple of "
+                                  + fociDialog.workingCycleLength + "."
+                    onClicked: fociDialog.snapWorkingPulseCount()
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: fociDialog.workingCycleLength > 0
+                          ? "must be a multiple of " + fociDialog.workingCycleLength
+                            + " (execution order length)"
+                          : "no constraint with a single focus"
+                    color: "#9FB3C8"
+                    font.pixelSize: 11
+                    elide: Text.ElideRight
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: fociDialog.workingError !== "" ? fociDialog.workingError : fociDialog.workingSummary
+                color: fociDialog.workingError !== "" ? "#E67E22" : "#43BB57"
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+
+            Item { Layout.fillWidth: true }
+
+            Button {
+                text: "Cancel"
+                onClicked: fociDialog.close()
+            }
+
+            Button {
+                text: "OK"
+                enabled: fociDialog.workingError === ""
+                onClicked: {
+                    fociModel.clear()
+                    for (var i = 0; i < fociEditModel.count; i++) {
+                        var row = fociEditModel.get(i)
+                        fociModel.append({ fx: row.fx, fy: row.fy, fz: row.fz })
+                    }
+                    executionOrderText = fociDialog.workingOrderText
+                    // A hand-typed order identical to the default is stored
+                    // as blank so later focus edits keep extending it.
+                    if (executionOrderText.trim() === defaultExecutionOrderText()) {
+                        executionOrderText = ""
+                    }
+                    if (fociDialog.workingPulseCount !== triggerPulseCount.text) {
+                        triggerPulseCount.text = fociDialog.workingPulseCount
+                        triggerPulseCount.dirty = true
+                    }
+                    syncInputsFromFocusOne()
+                    clampSelectedFocusIndex()
+                    updateFociValidation()
+                    // Focus geometry changed: the device needs a re-Configure
+                    // (or a direct pulse push if it is already configured).
+                    // directSetPulse rewrites the sequence alongside the
+                    // delays, so this covers the pulse-count edit too.
+                    fociDialog.close()
+                    if (everConfigured && !controlsReadOnly) {
+                        runBusy(function() {
+                            if (commitPulse()) {
+                                triggerPulseCount.dirty = false
+                            }
+                        })
+                    } else {
+                        refreshPlot()
+                    }
+                }
+            }
+
+            Item { Layout.preferredWidth: 6 }
         }
     }
 
@@ -881,19 +1723,33 @@ Rectangle {
     Component.onCompleted: {
         applySettingsToUi(LIFUConnector.getDefaultSolutionSettings())
         updateTrainIntervalValidation()
+        controllerLogCheckbox.checked = LIFUConnector.isControllerTelemetryLoggingEnabled()
+        controllerTelemetryLogPath = LIFUConnector.getControllerTelemetryLogPath()
+        // Draw the defaults rather than parking on the "no data" placeholder.
+        // The plot is built from the fields, so it needs no device.
+        refreshPlot()
     }
     
     // LAYOUT
     RowLayout {
         anchors.fill: parent
         anchors.margins: 20
+        // Clear the "Device Controller" header: the columns are now tall
+        // enough that centring no longer leaves a gap at the top.
+        anchors.topMargin: 38
+        anchors.bottomMargin: 14
         spacing: 20
 
         // Left Column (Input Panel)
         Rectangle {
             id: inputContainer
-            width: 500
-            height: 630
+            // A layout hint, not a raw `width`: the RowLayout owns the
+            // width and overwrites a plain assignment. Floor is ~450 -- the
+            // Lateral/Elevation/Axial row needs 388 px.
+            Layout.preferredWidth: 500
+            // The old 630 left the solution controls over budget once the
+            // focus row was added, pushing Load/Save outside the panel.
+            height: 648
             color: "#1E1E20"
             radius: 10
             border.color: "#3E4E6F"
@@ -902,7 +1758,7 @@ Rectangle {
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 20
-                spacing: 15
+                spacing: 12
 
                 GroupBox {
                     id: voltageGroup
@@ -1052,28 +1908,31 @@ Rectangle {
                                 border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
-                            onTextChanged: updateTrainIntervalValidation()
+                            onTextChanged: { updateTrainIntervalValidation(); updateFociValidation() }
                             onTextEdited: dirty = true
                             onEditingFinished: commitDirtyField(triggerPulseInterval, commitSequence)
                         }
 
-                        Text { 
-                            text: "Pulses per Pulse Train:" 
-                            color: pulseCountActive ? "white" : "#888" 
+                        Text {
+                            text: pulseCountError !== "" ? "Pulses per Pulse Train*:" : "Pulses per Pulse Train:"
+                            color: pulseCountError !== "" ? "#E74C3C"
+                                   : pulseCountActive ? "white" : "#888"
                             Layout.preferredWidth: solutionConfigLabelWidth
                             Layout.alignment: Qt.AlignLeft
-                            
+
                             HoverHandler {
                                 id: pulseCountHover
                             }
-                            
+
                             ToolTip {
                                 visible: pulseCountHover.hovered
-                                text: "Number of pulses repeated in a Pulse Train"
+                                text: pulseCountError !== ""
+                                      ? pulseCountError
+                                      : "Number of pulses repeated in a Pulse Train"
                                 delay: 500
                             }
                         }
-                        TextField { 
+                        TextField {
                             id: triggerPulseCount
                             property bool dirty: false
                             Layout.preferredWidth: solutionConfigInputWidth
@@ -1081,16 +1940,63 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
-                            color: getFieldColor(dirty, sequenceGroup.sectionReadOnly, pulseCountActive)
+                            // Unprogrammable outranks the dirty/in-sync colour.
+                            color: pulseCountError !== ""
+                                   ? "#E74C3C"
+                                   : getFieldColor(dirty, sequenceGroup.sectionReadOnly, pulseCountActive)
                             enabled: !sequenceGroup.sectionReadOnly
                             background: Rectangle {
                                 color: sequenceGroup.sectionReadOnly ? "#333" : "#222"
-                                border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
+                                border.color: pulseCountError !== "" ? "#E74C3C"
+                                              : sequenceGroup.sectionReadOnly ? "#777" : "#999"
+                                border.width: pulseCountError !== "" ? 2 : 1
                                 radius: 4
                             }
-                            onTextChanged: updateTrainIntervalValidation()
+                            onTextChanged: { updateTrainIntervalValidation(); updateFociValidation() }
                             onTextEdited: dirty = true
                             onEditingFinished: commitDirtyField(triggerPulseCount, commitSequence)
+                        }
+
+                        RowLayout {
+                            Layout.columnSpan: 2
+                            Layout.fillWidth: true
+                            spacing: 8
+                            visible: pulseCountError !== ""
+
+                            Text {
+                                text: "⚠ " + pulseCountError
+                                color: "#E74C3C"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
+                            }
+
+                            Button {
+                                id: snapPulseCountButton
+                                text: "Fix"
+                                implicitHeight: 26
+                                implicitWidth: 64
+                                Layout.alignment: Qt.AlignVCenter
+                                enabled: !sequenceGroup.sectionReadOnly
+                                         && cycleLengthFor(fociModel, executionOrderText) > 0
+                                // Material padding elides a short label here.
+                                contentItem: Text {
+                                    text: snapPulseCountButton.text
+                                    font.pixelSize: 11
+                                    color: snapPulseCountButton.enabled ? "white" : "#888"
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    color: snapPulseCountButton.down ? "#2F333D" : "#3A3F4B"
+                                    radius: 4
+                                    border.color: snapPulseCountButton.enabled ? "#BDC3C7" : "#777"
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.delay: 400
+                                ToolTip.text: "Round the pulse count up to the next multiple of the execution order length."
+                                onClicked: snapPulseCountToCycle()
+                            }
                         }
 
                         Text { 
@@ -1124,7 +2030,7 @@ Rectangle {
                                 border.color: sequenceGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
-                            onTextChanged: updateTrainIntervalValidation()
+                            onTextChanged: { updateTrainIntervalValidation(); updateFociValidation() }
                             onTextEdited: dirty = true
                             onEditingFinished: commitDirtyField(triggerPulseTrainInterval, commitSequence)
                         }
@@ -1252,15 +2158,28 @@ Rectangle {
                                 border.color: pulseGroup.sectionReadOnly ? "#777" : "#999"
                                 radius: 4
                             }
+                            onTextChanged: updateFociValidation()
                             onTextEdited: dirty = true
                             onEditingFinished: commitDirtyField(durationInput, commitPulse)
                         }
 
                         // Beam Focus spans the full grid width below the Frequency/Duration rows.
-                        RowLayout {
+                        // The X/Y/Z fields edit focus 1; additional foci (and
+                        // the execution order the firmware cycles through) live
+                        // in the Foci dialog on the row below.
+                        ColumnLayout {
                             Layout.columnSpan: 2
                             Layout.fillWidth: true
                             Layout.topMargin: 6
+                            spacing: 4
+
+                        // Single focus only: in rastering mode these would
+                        // show focus 1 of N and edit just that one point.
+                        // Hidden, not destroyed -- they still back focus 1.
+                        RowLayout {
+                            id: inlineFocusRow
+                            visible: fociModel.count <= 1
+                            Layout.fillWidth: true
                             spacing: 16
 
                             RowLayout {
@@ -1377,6 +2296,90 @@ Rectangle {
                                 }
                             }
                         }
+
+                        // Multi-focus row: opens the focus list editor and
+                        // summarizes the resulting firing pattern.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Button {
+                                id: fociButton
+                                // Name the action rather than the state: at one
+                                // focus the label invites adding more, which is
+                                // how the feature gets discovered at all.
+                                text: (fociModel.count > 1
+                                       ? "Focus Points (" + fociModel.count + ")"
+                                       : "Add Focus Points…")
+                                implicitHeight: 30
+                                implicitWidth: 158
+                                font.pixelSize: 12
+                                // Material's default button padding elides
+                                // the label at this size.
+                                leftPadding: 10
+                                rightPadding: 10
+                                enabled: !pulseGroup.sectionReadOnly
+                                background: Rectangle {
+                                    color: !fociButton.enabled ? "#2A2D34"
+                                           : fociButton.down ? "#2F333D"
+                                           : fociHoverArea.containsMouse ? "#4A5162"
+                                           : "#3A3F4B"
+                                    radius: 4
+                                    border.width: 1
+                                    border.color: !fociButton.enabled ? "#777"
+                                                  : fociHoverArea.containsMouse ? "#7FA6D9"
+                                                  : "#BDC3C7"
+                                    Behavior on color { ColorAnimation { duration: 90 } }
+                                }
+                                onClicked: openFociDialog()
+
+                                ToolTip.visible: fociHoverArea.containsMouse
+                                ToolTip.delay: 400
+                                ToolTip.text: "Add up to " + maxFocusPoints + " focus points. The transmitter "
+                                              + "cycles through them automatically during sonication."
+                                MouseArea {
+                                    id: fociHoverArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    acceptedButtons: Qt.NoButton
+                                    cursorShape: Qt.PointingHandCursor
+                                    propagateComposedEvents: true
+                                }
+                            }
+
+                            // The summary opens the same dialog, so the whole
+                            // row is one target. Dropped at a single focus,
+                            // where it would only say "single focus", but
+                            // errors still show since they block Configure.
+                            Text {
+                                id: fociSummaryText
+                                visible: fociError !== "" || fociModel.count > 1
+                                text: fociError !== "" ? fociError : fociSummary
+                                color: fociError !== "" ? "#E67E22"
+                                       : fociSummaryHover.containsMouse ? "#CFE0F0" : "#9FB3C8"
+                                font.pixelSize: 11
+                                font.underline: fociSummaryHover.containsMouse
+                                // Wrapping is the backstop for a long custom
+                                // order. It breaks anywhere because the order
+                                // is hyphen-joined with no spaces.
+                                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                                maximumLineCount: 3
+                                elide: Text.ElideRight
+                                lineHeight: 1.15
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignVCenter
+
+                                MouseArea {
+                                    id: fociSummaryHover
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    enabled: fociButton.enabled
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: openFociDialog()
+                                }
+                            }
+                        }
+                        }
                     }
                 }
 
@@ -1446,15 +2449,17 @@ Rectangle {
         // RIGHT COLUMN (Graph + Status Panel)
         ColumnLayout {
             width: 500
-            height: 630
+            height: 648
             spacing: 20
 
             Rectangle {
                 id: graphContainer
                 Layout.fillWidth: true
                 Layout.fillHeight: false
-                Layout.preferredHeight: 440
-                Layout.maximumHeight: 460
+                // Took the 34 px the safety-bypass checkbox used to occupy
+                // below. The column totals 648, so the two move together.
+                Layout.preferredHeight: 424
+                Layout.maximumHeight: 432
                 Layout.minimumHeight: 320
                 color: "#1E1E20"
                 radius: 10
@@ -1477,6 +2482,197 @@ Rectangle {
                     }
                 }
 
+                // Picks which profile's delays the element map colours in.
+                // Every focus is drawn either way. Sits in the right-hand
+                // gutter, the only area the aspect-fit plot leaves clear.
+                ColumnLayout {
+                    id: focusSelectorColumn
+                    anchors.right: parent.right
+                    anchors.bottom: refreshPlotButton.top
+                    anchors.rightMargin: 6
+                    anchors.bottomMargin: 8
+                    spacing: 2
+                    visible: fociModel.count > 1
+
+                    Text {
+                        text: "Delay profile"
+                        font.pixelSize: 11
+                        color: "#9FB3C8"
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+
+                    ComboBox {
+                        id: focusSelector
+                        Layout.preferredWidth: 110
+                        Layout.preferredHeight: 28
+                        Layout.alignment: Qt.AlignHCenter
+                        font.pixelSize: 12
+                        // Int model, not a string list: a list would be
+                        // rebuilt on every keystroke, resetting currentIndex.
+                        model: fociModel.count
+
+                        // Assigned, not bound: ComboBox resets currentIndex
+                        // imperatively on model change, tearing a binding down.
+                        function syncFromPage() {
+                            if (currentIndex !== selectedFocusIndex) {
+                                currentIndex = selectedFocusIndex
+                            }
+                        }
+                        onCountChanged: syncFromPage()
+                        Component.onCompleted: syncFromPage()
+                        Connections {
+                            target: controllerPage
+                            function onSelectedFocusIndexChanged() { focusSelector.syncFromPage() }
+                        }
+
+                        // Terse: it has to fit the gutter beside the plot.
+                        displayText: currentIndex >= 0 ? "Focus " + (currentIndex + 1) : ""
+
+                        // Carries the focus's colour swatch. The element map
+                        // has no numbers, so colour is the only thing tying a
+                        // selection to a marker.
+                        contentItem: Row {
+                            leftPadding: 8
+                            spacing: 6
+
+                            Rectangle {
+                                width: 10
+                                height: 10
+                                radius: 2
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: focusColorFor(focusSelector.currentIndex)
+                                border.color: "#DDDDDD"
+                                border.width: 1
+                            }
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: focusSelector.displayText
+                                color: "white"
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        background: Rectangle {
+                            color: "#222"
+                            border.color: "#999"
+                            radius: 4
+                            opacity: 0.9
+                        }
+
+                        // Wider than the control so entries can carry their
+                        // coordinates. Right-aligned and opening upward to
+                        // stay inside the panel.
+                        popup.width: 210
+                        popup.x: width - 210
+                        popup.y: -popup.height - 2
+
+                        delegate: ItemDelegate {
+                            id: focusEntry
+                            required property int index
+                            width: focusSelector.popup.width
+                            height: 26
+                            highlighted: focusSelector.highlightedIndex === index
+
+                            contentItem: Row {
+                                leftPadding: 8
+                                spacing: 8
+
+                                Rectangle {
+                                    width: 10
+                                    height: 10
+                                    radius: 2
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: focusColorFor(focusEntry.index)
+                                    border.color: "#DDDDDD"
+                                    border.width: 1
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: fociRevision >= 0 ? focusLabelFor(focusEntry.index) : ""
+                                    color: focusSelector.currentIndex === focusEntry.index
+                                           ? "white" : "#D0D8E0"
+                                    font.pixelSize: 12
+                                    font.bold: focusSelector.currentIndex === focusEntry.index
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            background: Rectangle {
+                                color: focusEntry.highlighted ? "#333" : "#222"
+                            }
+                        }
+
+                        onActivated: {
+                            if (index === selectedFocusIndex) {
+                                return
+                            }
+                            selectedFocusIndex = index
+                            refreshPlot()
+                        }
+                    }
+
+                    // Read-only: the focus list is edited in the dialog.
+                    GridLayout {
+                        id: focusCoordReadout
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.topMargin: 2
+                        columns: 2
+                        columnSpacing: 8
+                        rowSpacing: 0
+
+                        Text {
+                            text: "X"
+                            font.pixelSize: 11
+                            color: "#9FB3C8"
+                        }
+                        Text {
+                            id: focusReadoutX
+                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fx") : ""
+                            font.pixelSize: 11
+                            color: "#D0D8E0"
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: 74
+                            Layout.maximumWidth: 74
+                        }
+
+                        Text {
+                            text: "Y"
+                            font.pixelSize: 11
+                            color: "#9FB3C8"
+                        }
+                        Text {
+                            id: focusReadoutY
+                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fy") : ""
+                            font.pixelSize: 11
+                            color: "#D0D8E0"
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: 74
+                            Layout.maximumWidth: 74
+                        }
+
+                        Text {
+                            text: "Z"
+                            font.pixelSize: 11
+                            color: "#9FB3C8"
+                        }
+                        Text {
+                            id: focusReadoutZ
+                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fz") : ""
+                            font.pixelSize: 11
+                            color: "#D0D8E0"
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: 74
+                            Layout.maximumWidth: 74
+                        }
+                    }
+                }
+
                 Button {
                     id: refreshPlotButton
                     text: "\u21bb Refresh"
@@ -1493,12 +2689,7 @@ Rectangle {
                         opacity: 0.85
                     }
                     onClicked: {
-                        LIFUConnector.generate_plot(
-                            xInput.text, yInput.text, zInput.text,
-                            frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                            triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                            durationInput.text, "buffer"
-                        )
+                        refreshPlot()
                     }
                 }
             }
@@ -1507,7 +2698,8 @@ Rectangle {
             Rectangle {
                 id: statusPanel
                 Layout.fillWidth: true
-                Layout.preferredHeight: 170
+                Layout.preferredHeight: 204
+                Layout.minimumHeight: 204
                 color: "#252525"
                 radius: 10
                 border.color: "#3E4E6F"
@@ -1719,6 +2911,51 @@ Rectangle {
                         }
                     }
 
+                    // The safety bypass is armed on the Settings page. The
+                    // header badge and the status line report it.
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.minimumHeight: 24
+                        spacing: 10
+
+                        CheckBox {
+                            id: controllerLogCheckbox
+                            implicitHeight: 24
+                            padding: 0
+                            Layout.preferredHeight: 24
+                            Layout.alignment: Qt.AlignVCenter
+                            text: "Save temp/voltage log"
+                            checked: false
+                            enabled: true
+                            contentItem: Text {
+                                text: controllerLogCheckbox.text
+                                color: !controllerLogCheckbox.enabled ? "#777" : "#BBB"
+                                font.pixelSize: 12
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: controllerLogCheckbox.indicator.width + 6
+                            }
+                            onToggled: {
+                                LIFUConnector.setControllerTelemetryLoggingEnabled(checked)
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
+                            text: controllerTelemetryLogPath !== ""
+                                  ? ("Log: " + controllerTelemetryLogPath)
+                                  : ""
+                            color: "#7FA2C7"
+                            font.pixelSize: 11
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideMiddle
+                            maximumLineCount: 1
+                            verticalAlignment: Text.AlignVCenter
+                            horizontalAlignment: Text.AlignRight
+                        }
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 10
@@ -1734,15 +2971,22 @@ Rectangle {
                             // solution. Disabled while any connected device is
                             // running firmware below the app's hard minimum --
                             // the operator must update from the Settings tab.
+                            // Also blocked while the focus list / execution
+                            // order cannot produce a programmable solution;
+                            // fociError explains why next to the Foci button.
                             enabled: LIFUConnector.txConnected && LIFUConnector.state <2 && !visualPressed
                                      && !LIFUConnector.firmwareUpdateRequired
+                                     && fociError === ""
                             background: Rectangle {
                                 color: (configureButton.down || configureButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
                                 border.color: "#BDC3C7"
                             }
-                            ToolTip.visible: configureHoverArea.containsMouse && LIFUConnector.firmwareUpdateRequired
-                            ToolTip.text: "Configure is disabled until firmware is updated to the minimum required version (Settings tab)."
+                            ToolTip.visible: configureHoverArea.containsMouse
+                                             && (LIFUConnector.firmwareUpdateRequired || fociError !== "")
+                            ToolTip.text: LIFUConnector.firmwareUpdateRequired
+                                          ? "Configure is disabled until firmware is updated to the minimum required version (Settings tab)."
+                                          : fociError
                             ToolTip.delay: 400
                             MouseArea {
                                 id: configureHoverArea
@@ -1757,7 +3001,7 @@ Rectangle {
                                     LIFUConnector.configure_transmitter(xInput.text, yInput.text,
                                         zInput.text,  frequencyInput.text, voltage.text, triggerPulseInterval.text, triggerPulseCount.text,
                                         triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
-                                        triggerModeDropdown.currentText);
+                                        triggerModeDropdown.currentText, fociArray(), executionOrderArray());
                                     // If configure_transmitter succeeded synchronously the
                                     // state is now >= CONFIGURED. Use that as the success cue
                                     // to mark every field as in-sync (green).
@@ -1766,12 +3010,7 @@ Rectangle {
                                         clearAllDirty()
                                     }
                                     configuredModuleCount = LIFUConnector.queryNumModulesConnected
-                                    LIFUConnector.generate_plot(
-                                         xInput.text, yInput.text, zInput.text,
-                                         frequencyInput.text, voltage.text, triggerPulseInterval.text,
-                                         triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
-                                         durationInput.text, "buffer"
-                                    );
+                                    refreshPlot();
                                     statusOverrideText = ""
                                 })
                             }
@@ -1855,8 +3094,9 @@ Rectangle {
                                     if (LIFUConnector.hvConnected) {
                                         LIFUConnector.directSetVoltage(voltage.text)
                                     }
-                                    // Clear the plot back to the placeholder.
-                                    ultrasoundGraph.source = "../assets/images/empty_graph.png"
+                                    // Redraw at the restored defaults rather
+                                    // than blanking to the placeholder.
+                                    refreshPlot()
                                 })
                             }
                         }
@@ -1869,6 +3109,13 @@ Rectangle {
     // **Connections for LIFUConnector signals**
     Connections {
         target: LIFUConnector
+
+        // setSafetyBypass drops the device's configured flag, so this page
+        // must drop its own or Start stays enabled for an unprogrammed device.
+        function onSafetyBypassChanged(enabled) {
+            everConfigured = false
+            resetProgressIdle()
+        }
 
         function onSignalConnected(descriptor, port) {
             console.log(descriptor + " connected on " + port);
@@ -2012,6 +3259,13 @@ Rectangle {
             }
         }
 
+        function onControllerTelemetryLoggingChanged(enabled, logPath) {
+            controllerTelemetryLogPath = logPath
+            if (controllerLogCheckbox.checked !== enabled) {
+                controllerLogCheckbox.checked = enabled
+            }
+        }
+
         function onPowerStatusReceived(v12_state, hv_state) {
             hvOn = hv_state
             if (!hv_state) {
@@ -2062,7 +3316,6 @@ Rectangle {
             }
         }
     }
-
 
     Component.onDestruction: {
         console.log("Closing UI, clearing LIFUConnector...");

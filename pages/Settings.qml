@@ -979,6 +979,7 @@ Rectangle {
                 clip: true
 
                 RowLayout {
+                    id: userConfigRow
                     anchors.fill: parent
                     anchors.margins: 16
                     spacing: 16
@@ -987,7 +988,10 @@ Rectangle {
                     ColumnLayout {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.horizontalStretchFactor: 7
+                        // Explicit 7:3 widths. Layout.horizontalStretchFactor
+                        // needs Layouts 6.5 and this file imports 6.0, so it
+                        // is inert here.
+                        Layout.preferredWidth: (userConfigRow.width - userConfigRow.spacing) * 0.7
                         spacing: 8
 
                         Text {
@@ -1017,6 +1021,9 @@ Rectangle {
                         Item {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            // Floor so a short window shrinks the editor
+                            // rather than collapsing it.
+                            Layout.minimumHeight: 140
 
                             ScrollView {
                                 anchors.fill: parent
@@ -1060,13 +1067,22 @@ Rectangle {
                         }
                     }
 
-                    // Action buttons
-                    ColumnLayout {
+                    // Action buttons. Scrollable because they need ~350 px
+                    // against the card's 300 px minimum, so the last button
+                    // would otherwise be unreachable.
+                    ScrollView {
+                        id: actionsScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.horizontalStretchFactor: 3
+                        Layout.preferredWidth: (userConfigRow.width - userConfigRow.spacing) * 0.3   // see the note opposite
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                    ColumnLayout {
+                        width: actionsScroll.availableWidth
                         spacing: 12
-                        Layout.alignment: Qt.AlignTop
 
                         Text {
                             text: "Actions"
@@ -1077,51 +1093,30 @@ Rectangle {
                             topPadding: 4
                         }
 
-                        // Component selector
-                        Text {
-                            text: "Target Component"
-                            color: "#BDC3C7"
-                            font.pixelSize: 12
-                            Layout.alignment: Qt.AlignHCenter
-                        }
 
-                        ComboBox {
-                            id: configTargetSelector
-                            Layout.fillWidth: true
-                            model: settingsPage.configTargetModel
-                            enabled: settingsPage.configTargetModel.length > 0
-
-                            onCurrentIndexChanged: userConfigEditor.text = ""
-
-                            contentItem: Text {
-                                leftPadding: 8
-                                text: configTargetSelector.enabled ? configTargetSelector.displayText : "No devices"
-                                color: configTargetSelector.enabled ? "white" : "#7F8C8D"
-                                verticalAlignment: Text.AlignVCenter
-                                font.pixelSize: 13
-                            }
-                            background: Rectangle {
-                                color: "#2A2F3B"
-                                radius: 4
-                                border.color: configTargetSelector.enabled ? "#3E4E6F" : "#2A2F3B"
-                            }
-                        }
-
-                        // Device Info for selected target
+                        // Row stays visible even when the Device ID texts do
+                        // not: the selector is how a module gets selected.
                         RowLayout {
+                            id: deviceIdRow
                             Layout.fillWidth: true
                             spacing: 8
-                            visible: configTargetSelector.enabled && configTargetSelector.currentText.startsWith("TX")
-                            
-                            Text { 
+
+                            readonly property bool hasTarget:
+                                configTargetSelector.enabled
+                                && configTargetSelector.currentText.startsWith("TX")
+
+                            Text {
                                 text: "Device ID:"
                                 color: "#BDC3C7"
                                 font.pixelSize: 12
+                                visible: deviceIdRow.hasTarget
                             }
-                            Text { 
+                            Text {
                                 Layout.fillWidth: true
+                                visible: deviceIdRow.hasTarget
+                                elide: Text.ElideRight
                                 text: {
-                                    if (!configTargetSelector.enabled || !configTargetSelector.currentText.startsWith("TX")) {
+                                    if (!deviceIdRow.hasTarget) {
                                         return "N/A"
                                     }
                                     // Extract module index from "TX 0", "TX 1", etc.
@@ -1134,6 +1129,75 @@ Rectangle {
                                 }
                                 color: "#3498DB"
                                 font.pixelSize: 12
+                            }
+
+                            // Takes over the stretch when the Device ID texts
+                            // are hidden, so the selector stays right-aligned.
+                            Item {
+                                Layout.fillWidth: true
+                                visible: !deviceIdRow.hasTarget
+                            }
+
+                            Text {
+                                text: "Module:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+
+                            ComboBox {
+                                id: configTargetSelector
+                                Layout.preferredWidth: 70
+                                Layout.preferredHeight: 28
+                                font.pixelSize: 12
+                                // Model stays "TX n": currentText feeds
+                                // read/writeUserConfig and the lookups below.
+                                // Only the label is shortened.
+                                model: settingsPage.configTargetModel
+                                enabled: settingsPage.configTargetModel.length > 0
+
+                                onCurrentIndexChanged: userConfigEditor.text = ""
+
+                                displayText: (enabled && currentIndex >= 0)
+                                             ? String(currentIndex) : "—"
+
+                                contentItem: Text {
+                                    leftPadding: 8
+                                    text: configTargetSelector.displayText
+                                    color: configTargetSelector.enabled ? "white" : "#7F8C8D"
+                                    verticalAlignment: Text.AlignVCenter
+                                    font.pixelSize: 12
+                                }
+
+                                delegate: ItemDelegate {
+                                    id: configTargetEntry
+                                    required property int index
+                                    width: configTargetSelector.width
+                                    height: 26
+                                    highlighted: configTargetSelector.highlightedIndex === configTargetEntry.index
+                                    contentItem: Text {
+                                        text: String(configTargetEntry.index)
+                                        color: "white"
+                                        font.pixelSize: 12
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    background: Rectangle {
+                                        color: configTargetEntry.highlighted ? "#333" : "#2A2F3B"
+                                    }
+                                }
+
+                                background: Rectangle {
+                                    color: "#2A2F3B"
+                                    radius: 4
+                                    border.color: configTargetSelector.enabled ? "#3E4E6F" : "#2A2F3B"
+                                }
+
+                                ToolTip.visible: configTargetHover.hovered
+                                ToolTip.delay: 400
+                                ToolTip.text: configTargetSelector.enabled
+                                              ? "Transmitter module the config actions read from and write to."
+                                              : "No transmitter modules connected."
+                                HoverHandler { id: configTargetHover }
                             }
                         }
 
@@ -1371,8 +1435,73 @@ Rectangle {
                             Behavior on color { ColorAnimation { duration: 150 } }
                         }
 
-                        // Spacer
-                        Item { Layout.fillHeight: true }
+                        // Safety-limit bypass. On Settings because the sidebar
+                        // blocks entry while running and forces a Reset on
+                        // arrival, matching what setSafetyBypass enforces.
+                        // Arming only opens the confirmation dialog.
+                        Rectangle {
+                            id: safetyBypassButton
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            readonly property bool armed: LIFUConnector.safetyBypassEnabled
+                            readonly property bool canUse: LIFUConnector.state !== 3
+                            // Hover goes red like Clear Config beside it --
+                            // this is the destructive action in this column.
+                            color: !canUse ? "#2A2F3B"
+                                   : safetyBypassArea.containsMouse ? "#C0392B"
+                                   : armed ? "#7A2E1A" : "#3A3F4B"
+                            border.color: !canUse ? "#3E4E6F"
+                                          : safetyBypassArea.containsMouse ? "#FFFFFF"
+                                          : armed ? "#E67E22" : "#BDC3C7"
+                            opacity: canUse ? 1.0 : 0.55
+
+                            // Separate Texts: one Text, one colour.
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 6
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "⚠"
+                                    color: "#F1C40F"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: safetyBypassButton.armed
+                                          ? "Limits Bypassed — Restore"
+                                          : "Bypass Safety Limits"
+                                    color: "white"
+                                    font.pixelSize: 13
+                                    font.weight: Font.Medium
+                                }
+                            }
+
+                            // One MouseArea only: a second, always-visible
+                            // one on top would swallow the hover and freeze
+                            // the button at its resting colour.
+                            MouseArea {
+                                id: safetyBypassArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: safetyBypassButton.canUse
+                                onClicked: {
+                                    if (LIFUConnector.safetyBypassEnabled) {
+                                        LIFUConnector.setSafetyBypass(false)
+                                    } else {
+                                        safetyBypassDialog.open()
+                                    }
+                                }
+                            }
+
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                    }
                     }
                 }
             }
@@ -1445,7 +1574,7 @@ Rectangle {
                         // Firmware version row (auto-populated)
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "Firmware Version:"
@@ -1471,7 +1600,7 @@ Rectangle {
                         // empty — the image included with the SDK).
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "File Version:"
@@ -1749,7 +1878,10 @@ Rectangle {
                             right: parent.right
                             margins: 16
                         }
-                        spacing: 12
+                        // 11, not the Console card's 12: with the selector at
+                        // 24 px this matches the Console column height, so both
+                        // update buttons clear the border equally.
+                        spacing: 11
 
                         // Section header
                         Text {
@@ -1800,6 +1932,9 @@ Rectangle {
                             ComboBox {
                                 id: txModuleSelector
                                 visible: LIFUConnector.txConnected && txModuleCount > 0
+                                // At 28 px this row ran 9 px taller than the
+                                // Console card, pushing the update button onto
+                                // the card border.
                                 model: {
                                     let count = txModuleCount > 0 ? txModuleCount : 1
                                     let items = []
@@ -1807,7 +1942,7 @@ Rectangle {
                                     return items
                                 }
                                 Layout.preferredWidth: 70
-                                Layout.preferredHeight: 28
+                                Layout.preferredHeight: 24
                                 font.pixelSize: 12
                                 enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0
 
@@ -1825,7 +1960,7 @@ Rectangle {
                         // Firmware version row (selected module)
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "Firmware Version:"
@@ -1849,7 +1984,7 @@ Rectangle {
                         // File version row (extracted from the chosen .bin)
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "File Version:"
@@ -2010,7 +2145,10 @@ Rectangle {
                             id: txUpdateButton
                             Layout.fillWidth: true
                             Layout.minimumWidth: 200
-                            height: 40
+                            // Layout.preferredHeight, not a raw `height`: the
+                            // ColumnLayout ignores a direct height and laid this
+                            // out as 0 px tall, spilling past the card.
+                            Layout.preferredHeight: 40
                             radius: 6
                             // Any module can update with an empty file field
                             // (uses the included SDK firmware): the master
@@ -2085,6 +2223,116 @@ Rectangle {
                     }
                 }
             }
+
+        }
+    }
+
+    // Confirmation gate for the safety-limit bypass. The checkbox never
+    // arms the override itself -- only this dialog calls setSafetyBypass(true).
+    Dialog {
+        id: safetyBypassDialog
+        title: "Bypass safety limits?"
+        modal: true
+        focus: true
+        width: 560
+        height: 340
+        x: (settingsPage.width - width) / 2
+        y: (settingsPage.height - height) / 2
+        closePolicy: Popup.NoAutoClose   // require an explicit choice
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#E67E22"
+            border.width: 2
+            radius: 8
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                Text {
+                    text: "⚠"
+                    color: "#E67E22"
+                    font.pixelSize: 30
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "Configure will skip the SDK's check_solution() safety pass."
+                    color: "#E67E22"
+                    font.pixelSize: 14
+                    font.bold: true
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "The duty-cycle, voltage and sequence-duration limits will not be enforced, "
+                      + "so the array can be driven at up to 100% duty cycle."
+                color: "#DDD"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "Sustained operation outside the rated envelope can permanently damage the "
+                      + "transducer and the transmit electronics, and surfaces may become hot enough "
+                      + "to burn. Only continue for instrumented bench testing where you are "
+                      + "monitoring module temperature and drive level yourself."
+                color: "#DDD"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "The bypass clears automatically when the transmitter disconnects or the "
+                      + "application restarts. The HV controller's 5–100 V rail limit still applies."
+                color: "#9FB3C8"
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+
+            Item { Layout.fillHeight: true }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            Item { Layout.fillWidth: true }
+
+            Button {
+                text: "Cancel"
+                onClicked: safetyBypassDialog.close()
+            }
+
+            Button {
+                id: confirmBypassButton
+                text: "Bypass safety limits"
+                background: Rectangle {
+                    color: confirmBypassButton.down ? "#A85B18" : "#E67E22"
+                    radius: 4
+                    border.color: "#F0A050"
+                }
+                contentItem: Text {
+                    text: confirmBypassButton.text
+                    color: "white"
+                    font: confirmBypassButton.font
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                onClicked: {
+                    // Drops the configured flag. Controller clears its own
+                    // everConfigured from safetyBypassChanged.
+                    LIFUConnector.setSafetyBypass(true)
+                    safetyBypassDialog.close()
+                }
+            }
+
+            Item { Layout.preferredWidth: 6 }
         }
     }
 }

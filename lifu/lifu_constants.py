@@ -11,6 +11,10 @@ import functools
 import logging
 import re
 
+# Import limits from SDK
+from openlifu_sdk.io.LIFUTXDevice import MIN_PROFILE_SWITCH_INTERVAL, VALID_DELAY_PROFILES
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +55,16 @@ THERMAL_SHUTDOWN_THRESHOLD_C = 75.0
 # =============================================================================
 SPEED_OF_SOUND = 1500  # m/s, used for time-of-flight calculations
 NUM_ELEMENTS_PER_MODULE = 64  # Each TX module has 64 elements
+
+
+# =============================================================================
+# Multi-focus (rastered) sonication limits derived from SDK
+# =============================================================================
+#   MAX_FOCUS_POINTS              delay-RAM profile slots (one per focus)
+#   MIN_PROFILE_SWITCH_INTERVAL_S inter-pulse dead time the firmware needs
+#                                 to perform the SPI profile-switch writes
+MAX_FOCUS_POINTS = len(VALID_DELAY_PROFILES)
+MIN_PROFILE_SWITCH_INTERVAL_S = MIN_PROFILE_SWITCH_INTERVAL
 
 
 # =============================================================================
