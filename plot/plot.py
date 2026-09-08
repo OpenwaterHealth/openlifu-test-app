@@ -16,38 +16,22 @@ from matplotlib.ticker import MaxNLocator
 
 logger = logging.getLogger(__name__)
 
-# Focus/delay-profile colour cycle.
-#
-# tab20 rather than tab10 because the transmitter has 16 delay-profile
-# slots: a 10-colour cycle gives foci 11-16 the same colours as 1-6, and
-# colour is the only thing identifying a focus on the element map.
-#
-# tab20 interleaves a dark and a light variant of each tab10 hue (dark
-# blue, light blue, dark orange, light orange, ...), so consecutive
-# entries share a hue. Taking the darks first keeps foci 1-10 on the
-# well-separated tab10 hues and pushes the lighter variants to 11-20 --
-# neighbouring foci never share a hue, and the two variants of one hue are
-# always 10 apart.
+# Focus colour cycle. tab20 rather than tab10, because the transmitter has
+# 16 profile slots and a 10-colour cycle would repeat foci 11-16. tab20
+# alternates a dark and a light variant of each hue, so the darks are taken
+# first to keep neighbouring foci clearly apart.
 
-# Right edge, as a fraction of figure width, past which the element map is
-# left-aligned in its slot rather than centred. A 2x array's map reaches
-# ~0.934 and needs the shift; a 1x array's reaches ~0.726 and does not.
+# Fitted-box right edge past which the element map is left-aligned instead
+# of centred. 2x reaches ~0.934, 1x only ~0.726.
 ELEMENT_MAP_LEFT_ALIGN_ABOVE = 0.85
 
-# How much of its slot a wide (2x) element map gets. Applied only above the
-# threshold above, so a 1x array is untouched.
-#
-# Measured against the UI -- the smallest window at which the map clears the
-# delay-profile selector: 1.00 -> 1150 px, 0.88 -> 1150, 0.82 -> 1100,
-# 0.78 -> 1100, 0.74 -> 1050. (Above ~0.9 the map is limited by the panel
-# height, not the slot width, so narrowing the slot changes nothing.)
+# Slot fraction for a wide (2x) map, so it clears the delay-profile
+# selector. Smallest window that clears: 1.00 -> 1150 px, 0.82 -> 1100,
+# 0.74 -> 1050.
 WIDE_ARRAY_MAP_SHRINK = 0.74
 
-# Element marker area, in points^2. Scaled up from the original 100 by
-# (750/660)^2: dropping bbox_inches='tight' made the render 750 px wide
-# instead of the ~660 px the crop produced, so the UI now scales it down
-# further to fit the same panel. Without this the squares came out ~12%
-# smaller on screen.
+# Marker area in points^2: 100 * (750/660)^2, compensating for the fixed
+# 750 px render vs the ~660 px the old tight crop produced.
 ELEMENT_MARKER_AREA = 129
 
 PROFILE_COLORMAP = "tab20"
@@ -64,9 +48,9 @@ def profile_color(index):
 def profile_color_hex(count):
     """The first *count* profile colours as '#rrggbb' strings.
 
-    Exposed to QML (via the connector) so the focus dropdown's swatches are
-    the same colours as the plot markers by construction, rather than by a
-    hand-copied palette that silently drifts if the colormap changes.
+    Exposed to QML through the connector, so the focus dropdown's swatches
+    match the plot markers by construction rather than by a hand-copied
+    palette that would drift if the colormap changed.
     """
     return [to_hex(profile_color(i)) for i in range(max(0, int(count)))]
 
@@ -74,21 +58,17 @@ def profile_color_hex(count):
 def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0):
     """Render the pulse / pulse-train / element-map figure for *solution*.
 
-    *focus_index* is the 0-based delay profile whose per-element delays are
-    drawn on the element map, and which is emphasised in the pulse-train
-    envelope. Every focus stays visible in both panels regardless -- the
-    selection only decides which one is shown in full detail. Out-of-range
-    values are clamped rather than raising, so a stale UI selection (e.g.
-    after foci were removed) still renders.
+    *focus_index* is the 0-based delay profile drawn on the element map and
+    emphasised in the pulse-train envelope. Every focus stays visible in
+    both panels, so the selection only decides which is shown in full
+    detail. Out-of-range values are clamped rather than raising, so a stale
+    UI selection still renders.
     """
     plt.style.use('dark_background')
     fig, ax = plt.subplots(3, 1, figsize=(7.5, 6.5), gridspec_kw={'height_ratios': [1, 1, 3], 'hspace': 0.35})
     fig.set_facecolor('#1E1E20')  # Match QML dark theme background
-    # Trim the default margins so the panels fill the figure. This replaces
-    # what bbox_inches='tight' used to do at save time -- that cropped to
-    # content, which made the image's aspect depend on how tall the element
-    # map happened to be, and so moved the pulse panels whenever the map
-    # changed. Doing it here instead keeps the render a fixed size.
+    # Replaces bbox_inches='tight', which cropped to content and so let the
+    # map's height change the image aspect and shift the pulse panels.
     fig.subplots_adjust(left=0.10, right=0.98, top=0.96, bottom=0.08, hspace=0.35)
     pulse = solution["pulse"]
     # Multi-focus solutions carry one delay/apodization row per focus.
@@ -101,9 +81,8 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
     except (TypeError, ValueError):
         focus_index = 0
     focus_index = min(max(focus_index, 0), n_profiles - 1)
-    # Apodization rows can be fewer than delay rows only in malformed
-    # solutions; clamp separately so a bad file degrades to a plot rather
-    # than an exception.
+    # Apodization rows are only ever fewer than delay rows in a malformed
+    # solution. Clamp separately so a bad file still renders.
     apod_index = min(focus_index, apodizations.shape[0] - 1)
     execution_order = list(solution.get("execution_order") or range(1, n_profiles + 1))
     transducer = solution.get('transducer', {})
@@ -150,13 +129,10 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
                            np.full_like(pulse_train_t, A/100),
                            np.full_like(pulse_train_t, -A/100),
                            color="#888888", alpha=1.0)
-        # No legend here. At the 16-profile maximum it needs four rows of
-        # entries and covers the whole panel, hiding the very pulses it
-        # labels. This panel answers one question instead -- "where in the
-        # train does the focus I picked fire?" -- so everything else is
-        # drawn in one muted grey and the selection gets the colour. That
-        # colour is named by the swatch in the UI's focus dropdown, which
-        # is what drives the selection in the first place.
+        # No legend. At 16 profiles it covers the whole panel, hiding the
+        # pulses it labels. Instead the selected focus keeps its colour and
+        # everything else goes grey, so the panel shows where that focus
+        # fires in the train.
         selected_profile = focus_index + 1
         selected_color = profile_color(selected_profile - 1)
 
@@ -173,11 +149,10 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
                                pulse_train_waveform_negenv,
                                where=selected_mask, color=selected_color)
 
-        # A pulse lasts microseconds on an axis measured in milliseconds, so
-        # each bar is sub-pixel wide and colour alone cannot be seen. Tag the
-        # selected focus's pulses with a marker above the envelope. Skipped
-        # past a threshold where the markers would merge into a smear and
-        # stop being a highlight.
+        # A pulse lasts microseconds on a millisecond axis, so each bar is
+        # sub-pixel wide and colour alone is invisible. Mark the selected
+        # focus's pulses instead, up to the point where the markers would
+        # merge into a smear.
         total_pulses = int(sequence['pulse_count'])
         selected_times_ms = [
             k * pulse_interval * 1e3
@@ -199,9 +174,8 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
 
     if 'elements' in transducer:
         element_positions = np.array([elem.get('position', [0, 0, 0]) for elem in transducer['elements']])
-        # The element map can only show one delay pattern at a time; draw
-        # the selected profile and mark every focus so the raster pattern
-        # stays legible in the same view.
+        # The map can only show one delay pattern at a time. Draw the
+        # selected profile and mark every focus, so the raster stays legible.
         ax[2].scatter(element_positions[:, 0], element_positions[:, 1], c=delays[focus_index], marker='s', s=apodizations[apod_index]*ELEMENT_MARKER_AREA, cmap='turbo', edgecolors='white')
         ax[2].set_xlabel("X (mm)")
         ax[2].set_ylabel("Y (mm)")
@@ -212,10 +186,9 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
         focus_positions = [entry.get('position') for entry in (solution.get('foci') or [])
                            if isinstance(entry, dict) and entry.get('position') is not None]
         if len(focus_positions) > 1:
-            # Foci are identified by colour alone -- the same tab10 sequence
-            # the pulse-train legend and the UI's focus dropdown use. No
-            # numeric annotations: at close focus spacing the labels collide
-            # with each other and with the element grid.
+            # Foci are identified by colour alone, matching the UI's focus
+            # dropdown. Numeric labels collided with each other and with the
+            # element grid at close focus spacing.
             for index, position in enumerate(focus_positions, start=1):
                 is_selected = index == focus_index + 1
                 ax[2].plot(position[0], position[1], marker='x',
@@ -234,33 +207,18 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
 
         ax[2].set_xlim(xs)
         ax[2].set_ylim(ys)
-        # Cap the tick count: the trimmed figure margins gave this axes more
-        # room, and the automatic locator answered with 5 mm steps where it
-        # used to use 10. Bin it back down to the coarser spacing.
+        # Keep 10 mm steps. The roomier axes makes the locator pick 5 mm.
         ax[2].yaxis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 5, 10]))
 
-        # An equal-aspect axes is fitted inside its slot and centred, leaving
-        # slack on both sides. For a wide array (2x) that centring pushes the
-        # map's right edge under the UI's delay-profile selector, so hand the
-        # slack to the left instead: same map, same size, just shifted across.
-        #
-        # Only for maps wide enough to have the problem -- a 1x array is
-        # narrow, sits nowhere near the selector, and left-aligning it would
-        # strand it against the edge with a half-empty panel. The threshold is
-        # on the fitted box, so it depends on the array, never on the focus
-        # count: the plot is identical whether there is one focus or sixteen.
-        # The slot comes from the gridspec, not from get_position(): an
-        # equal-aspect axes has its position rewritten to the fitted box, so
-        # get_position() returns a box already shrunk to the data aspect.
-        # Feeding that back in would pin the map where it is and make the
-        # left-align below a no-op.
+        # Move a wide map off the delay-profile selector. Keyed on the fitted
+        # box, so it tracks the array rather than the focus count. The slot
+        # must come from the gridspec, because an equal-aspect axes has its
+        # position rewritten to the fitted box.
         slot = ax[2].get_subplotspec().get_position(fig)
         ax[2].apply_aspect()
         if ax[2].get_position(original=False).x1 > ELEMENT_MAP_LEFT_ALIGN_ABOVE:
-            # ...and give it a narrower slot as well. Left-aligning alone
-            # only reclaims the centring slack, which is not enough to clear
-            # the selector at smaller window sizes. Narrowing the slot with
-            # the aspect locked scales the map down as a whole.
+            # Left-aligning alone only reclaims the centring slack, which is
+            # not enough at smaller windows, so scale the map down as well.
             ax[2].set_position([slot.x0, slot.y0,
                                 slot.width * WIDE_ARRAY_MAP_SHRINK, slot.height])
             ax[2].set_anchor('W')
@@ -268,18 +226,15 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
     if mode == "file":
             # Save plot as file
             output_path = os.path.abspath("generated_plot.png")
-            # No bbox_inches='tight': it crops to content, so shrinking the
-            # element map for a multi-focus solution also shortened the crop,
-            # changing the image's aspect and sliding the pulse panels on
-            # screen. A fixed figure-sized save keeps every panel put.
+            # Fixed-size save: a tight crop would let the map's height
+            # change the image aspect and move the pulse panels.
             fig.savefig(output_path, dpi=100)
             plt.close(fig)
             return output_path + f"?v={int(time.time())}"
     elif mode == "buffer":
         # Save to a BytesIO buffer instead of a file
         buffer = BytesIO()
-        # See the note on the file-mode save above: a fixed-size render is
-        # what keeps the pulse panels from moving between focus counts.
+        # Fixed-size render. See the file-mode save above.
         fig.savefig(buffer, format="png", dpi=100)
         plt.close(fig)
         

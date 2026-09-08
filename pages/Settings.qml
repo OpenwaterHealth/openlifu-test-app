@@ -988,13 +988,9 @@ Rectangle {
                     ColumnLayout {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        // The 7:3 split is stated as explicit preferred
-                        // widths rather than via Layout.horizontalStretchFactor:
-                        // that attached property arrived in Qt Layouts 6.5 and
-                        // this file imports 6.0, so it is silently inert here.
-                        // Explicit widths also stop the Actions ScrollView
-                        // from claiming the card on its content-derived
-                        // implicit width and squeezing the editor to a strip.
+                        // Explicit 7:3 widths. Layout.horizontalStretchFactor
+                        // needs Layouts 6.5 and this file imports 6.0, so it
+                        // is inert here.
                         Layout.preferredWidth: (userConfigRow.width - userConfigRow.spacing) * 0.7
                         spacing: 8
 
@@ -1026,8 +1022,7 @@ Rectangle {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             // Floor so a short window shrinks the editor
-                            // rather than collapsing it to nothing; its own
-                            // ScrollView below keeps the config reachable.
+                            // rather than collapsing it.
                             Layout.minimumHeight: 140
 
                             ScrollView {
@@ -1072,14 +1067,9 @@ Rectangle {
                         }
                     }
 
-                    // Action buttons.
-                    //
-                    // Scrollable: the stack of fixed-height buttons needs
-                    // ~350 px, while the card's Layout.minimumHeight is 300,
-                    // so at small window sizes the last button would be cut
-                    // off with no way to reach it. The config editor opposite
-                    // already scrolls its own content and shrinks gracefully,
-                    // so only this column needed wrapping.
+                    // Action buttons. Scrollable because they need ~350 px
+                    // against the card's 300 px minimum, so the last button
+                    // would otherwise be unreachable.
                     ScrollView {
                         id: actionsScroll
                         Layout.fillWidth: true
@@ -1104,11 +1094,8 @@ Rectangle {
                         }
 
 
-                        // Device ID and the module selector share one line,
-                        // selector on the right. The row itself is always
-                        // visible -- unlike the Device ID text, which only has
-                        // something to say once a TX module is selected, the
-                        // selector is how you get there in the first place.
+                        // Row stays visible even when the Device ID texts do
+                        // not: the selector is how a module gets selected.
                         RowLayout {
                             id: deviceIdRow
                             Layout.fillWidth: true
@@ -1163,12 +1150,9 @@ Rectangle {
                                 Layout.preferredWidth: 70
                                 Layout.preferredHeight: 28
                                 font.pixelSize: 12
-                                // The model stays "TX 0", "TX 1", ... --
-                                // currentText is what reaches
-                                // readUserConfig()/writeUserConfig() and backs
-                                // the Device ID / firmware lookups below. Only
-                                // the label is shortened to the bare index, so
-                                // none of those callers have to change.
+                                // Model stays "TX n": currentText feeds
+                                // read/writeUserConfig and the lookups below.
+                                // Only the label is shortened.
                                 model: settingsPage.configTargetModel
                                 enabled: settingsPage.configTargetModel.length > 0
 
@@ -1451,20 +1435,10 @@ Rectangle {
                             Behavior on color { ColorAnimation { duration: 150 } }
                         }
 
-                        // Engineering override: the safety-limit bypass.
-                        //
-                        // Lives on Settings rather than the Controller page so
-                        // it cannot be reached mid-session by accident -- the
-                        // sidebar refuses to open Settings while a sonication
-                        // is running, and arriving here from a configured
-                        // Controller forces a Reset. Both match what
-                        // setSafetyBypass() enforces itself.
-                        //
-                        // A button rather than a checkbox so it matches the
-                        // rest of this column, and it never arms the override
-                        // directly: turning it ON only opens the confirmation
-                        // dialog. Turning it OFF is immediate -- nothing needs
-                        // confirming to become safer.
+                        // Safety-limit bypass. On Settings because the sidebar
+                        // blocks entry while running and forces a Reset on
+                        // arrival, matching what setSafetyBypass enforces.
+                        // Arming only opens the confirmation dialog.
                         Rectangle {
                             id: safetyBypassButton
                             Layout.fillWidth: true
@@ -1482,9 +1456,7 @@ Rectangle {
                                           : armed ? "#E67E22" : "#BDC3C7"
                             opacity: canUse ? 1.0 : 0.55
 
-                            // The glyph is its own Text so it can stay warning
-                            // yellow while the label stays white; a single Text
-                            // can only carry one colour.
+                            // Separate Texts: one Text, one colour.
                             Row {
                                 anchors.centerIn: parent
                                 spacing: 6
@@ -1508,13 +1480,9 @@ Rectangle {
                                 }
                             }
 
-                            // One MouseArea only. A second, always-visible
-                            // hover-only area on top of this one would sit
-                            // above it as a later sibling and swallow the
-                            // hover, leaving the button stuck at its resting
-                            // colour. (The neighbouring buttons get away with
-                            // a second area because theirs is
-                            // `visible: !canUse`.)
+                            // One MouseArea only: a second, always-visible
+                            // one on top would swallow the hover and freeze
+                            // the button at its resting colour.
                             MouseArea {
                                 id: safetyBypassArea
                                 anchors.fill: parent
@@ -1529,9 +1497,6 @@ Rectangle {
                                 }
                             }
 
-                            // No tooltip: the label already states the action
-                            // and the state, and the confirmation dialog
-                            // carries the full warning.
 
                             Behavior on color { ColorAnimation { duration: 150 } }
                         }
@@ -1913,12 +1878,9 @@ Rectangle {
                             right: parent.right
                             margins: 16
                         }
-                        // 11 rather than the Console card's 12: with the module selector
-                        // trimmed to 24 px this puts the transmitter
-                        // column at exactly the Console column's height,
-                        // so both update buttons clear the card border by
-                        // the same margin. A 1 px difference in row gaps
-                        // is not perceptible; a button on the border is.
+                        // 11, not the Console card's 12: with the selector at
+                        // 24 px this matches the Console column height, so both
+                        // update buttons clear the border equally.
                         spacing: 11
 
                         // Section header
@@ -1970,10 +1932,9 @@ Rectangle {
                             ComboBox {
                                 id: txModuleSelector
                                 visible: LIFUConnector.txConnected && txModuleCount > 0
-                                // Sized so the status row stays close to the
-                                // Console card's; at 28 px it made this column
-                                // 9 px taller and pushed the update button
-                                // onto the card border.
+                                // At 28 px this row ran 9 px taller than the
+                                // Console card, pushing the update button onto
+                                // the card border.
                                 model: {
                                     let count = txModuleCount > 0 ? txModuleCount : 1
                                     let items = []
@@ -2184,12 +2145,9 @@ Rectangle {
                             id: txUpdateButton
                             Layout.fillWidth: true
                             Layout.minimumWidth: 200
-                            // Layout.preferredHeight, not a raw `height`: a
-                            // ColumnLayout sizes its children and ignores a
-                            // directly-assigned height, so the raw value left
-                            // the layout thinking this item was 0 px tall and
-                            // the button rendered past the bottom of the card.
-                            // The Console card opposite already does this.
+                            // Layout.preferredHeight, not a raw `height`: the
+                            // ColumnLayout ignores a direct height and laid this
+                            // out as 0 px tall, spilling past the card.
                             Layout.preferredHeight: 40
                             radius: 6
                             // Any module can update with an empty file field
@@ -2367,10 +2325,8 @@ Rectangle {
                     verticalAlignment: Text.AlignVCenter
                 }
                 onClicked: {
-                    // setSafetyBypass drops the device's configured flag; the
-                    // Controller page clears its own "everConfigured" state
-                    // from safetyBypassChanged, so the operator has to
-                    // re-Configure for this to take effect.
+                    // Drops the configured flag. Controller clears its own
+                    // everConfigured from safetyBypassChanged.
                     LIFUConnector.setSafetyBypass(true)
                     safetyBypassDialog.close()
                 }

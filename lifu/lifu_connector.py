@@ -1587,10 +1587,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def focusProfileColors(self):
         """Per-focus colours as '#rrggbb', indexed 0-based by focus.
 
-        Comes from the plot module so the dropdown swatches and the markers
-        on the element map are the same colours by construction. Long enough
-        to cover every programmable focus; the cycle repeats past 10, exactly
-        as the plot's does.
+        Comes from the plot module so the dropdown swatches and the element
+        map markers are the same colours by construction. Covers every
+        programmable focus, repeating past 10 exactly as the plot does.
         """
         return profile_color_hex(MAX_FOCUS_POINTS)
 

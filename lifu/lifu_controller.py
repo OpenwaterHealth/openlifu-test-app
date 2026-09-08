@@ -185,7 +185,7 @@ class ControllerMixin:
         """Generates an ultrasound plot and emits data to QML.
 
         *focusIndex* is the 0-based delay profile the element map should
-        show; the plot clamps it, so QML never has to guard against a
+        show. The plot clamps it, so QML never has to guard against a
         selection that outlived the focus list.
         """
         try:
