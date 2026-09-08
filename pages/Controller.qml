@@ -1776,7 +1776,14 @@ Rectangle {
         // Left Column (Input Panel)
         Rectangle {
             id: inputContainer
-            width: 500
+            // Layout.preferredWidth, not a raw `width`: this is a RowLayout
+            // child, so the layout owns its width and a plain assignment is
+            // overwritten on the next polish. Stating it as a layout hint is
+            // what actually moves the boundary with the graph column.
+            //
+            // 500: the Lateral/Elevation/Axial row needs 388 px inside the
+            // Pulse Settings group, which puts the panel's floor at ~450.
+            Layout.preferredWidth: 500
             // The old 630 left the solution controls over budget once the
             // focus row was added, pushing Load/Save outside the panel.
             height: 648
