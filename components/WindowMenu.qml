@@ -15,9 +15,7 @@ Rectangle {
     property string logoSource: "" // Default to no logo
     property string appVerText: "v0.0.0" // Default
     property string sdkVerText: "v0.0.0" // Default
-    // Raises the safety-bypass badge beside the logo. A property rather
-    // than a direct LIFUConnector read so this component stays as
-    // self-contained as its title/logo/version inputs; main.qml binds it.
+    // Bound by main.qml, like the other inputs above.
     property bool safetyBypassActive: false
 
     // Drag functionality
@@ -65,10 +63,8 @@ Rectangle {
             }
         }
 
-        // Safety-bypass badge. Lives in the header rather than on the
-        // Controller page so the warning follows the operator across every
-        // tab -- the override is global to the device, and the page that
-        // used to carry the checkbox now has no other indication.
+        // In the header, not on a page: the override is device-global, so
+        // the warning follows the operator across every tab.
         Rectangle {
             id: safetyBypassBadge
             objectName: "safetyBypassBadge"

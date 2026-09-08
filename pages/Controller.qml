@@ -93,20 +93,15 @@ Rectangle {
     property string executionOrderText: ""
     property string fociError: ""
     property string fociSummary: "single focus"
-    // Sub-error of fociError, kept separate so the Pulse Count field can
-    // flag itself as the thing that needs fixing rather than leaving the
-    // operator to read it off the Foci row.
+    // Split out of fociError so the Pulse Count field can flag itself.
     property string pulseCountError: ""
 
-    // 0-based delay profile shown on the plot's element map. Every focus
-    // is drawn on that map regardless; this only selects whose per-element
-    // delays are coloured in. Clamped whenever the focus list shrinks.
+    // 0-based profile whose delays the element map colours in. Every focus
+    // is drawn either way. Clamped when the focus list shrinks.
     property int selectedFocusIndex: 0
 
-    // ListModel row edits are not observable, so anything that renders
-    // focus coordinates (the delay-profile selector) depends on this
-    // counter instead. Bumped by updateFociValidation, which every focus
-    // edit already routes through.
+    // ListModel row edits are not observable, so anything that renders focus
+    // coordinates depends on this counter instead.
     property int fociRevision: 0
 
     // "Focus 2  (0, 5, 50)" -- the selector's entry label.
@@ -118,9 +113,8 @@ Rectangle {
         return "Focus " + (index + 1) + "  (" + row.fx + ", " + row.fy + ", " + row.fz + ")"
     }
 
-    // Per-focus colours, straight from the plot module so a swatch here is
-    // the same colour as that focus's marker on the element map. The map
-    // carries no numbers, so this is what ties an entry to a marker.
+    // From the plot module, so a swatch matches that focus's marker. The
+    // map carries no numbers, so colour is the only link.
     readonly property var focusProfileColors: LIFUConnector.focusProfileColors
 
     function focusColorFor(index) {
@@ -131,10 +125,6 @@ Rectangle {
         return palette[index % palette.length]
     }
 
-    // One coordinate of one focus, formatted for the read-only readout under
-    // the delay-profile selector. The selector's closed state only names the
-    // focus, so without this the plot cannot be read without opening the
-    // Focus Points dialog.
     function focusCoordText(index, role) {
         if (index < 0 || index >= fociModel.count) {
             return "--"
@@ -235,9 +225,8 @@ Rectangle {
         return parsed.error === "" ? parsed.order : []
     }
 
-    // How many pulses each execution-order entry gets, i.e. the divisor the
-    // pulse count has to be a multiple of. Returns 0 when the order cannot
-    // be parsed or a single focus makes the question moot.
+    // The divisor the pulse count must be a multiple of. Returns 0 when the
+    // order will not parse, or when a single focus makes it moot.
     function cycleLengthFor(model, orderText) {
         if (model.count <= 1) {
             return 0
@@ -246,9 +235,6 @@ Rectangle {
         return parsed.error === "" ? parsed.order.length : 0
     }
 
-    // Smallest programmable pulse count >= `pulseCount` for the given cycle
-    // length. Used by the "snap" affordances so the operator never has to
-    // work the arithmetic out by hand.
     function nearestValidPulseCount(pulseCount, cycleLength) {
         if (cycleLength <= 0) {
             return pulseCount
@@ -259,9 +245,8 @@ Rectangle {
         return Math.ceil(pulseCount / cycleLength) * cycleLength
     }
 
-    // The divisibility interlock on its own, so the Pulse Count field and
-    // the Foci dialog can both flag it in place. Empty string means the
-    // pulse count is programmable against this focus/order configuration.
+    // The divisibility interlock alone, so the field and the dialog can
+    // both flag it in place. Empty means programmable.
     function pulseCountErrorFor(model, orderText, pulseCountText) {
         var cycleLength = cycleLengthFor(model, orderText)
         if (cycleLength <= 0) {
@@ -337,8 +322,8 @@ Rectangle {
         fociSummary = fociSummaryTextFor(fociModel, executionOrderText, triggerPulseCount.text)
     }
 
-    // Snap the live Pulse Count up to the next programmable value and push
-    // it if the device is already configured.
+    // Snap Pulse Count up to the next programmable value, pushing it if
+    // already configured.
     function snapPulseCountToCycle() {
         var cycleLength = cycleLengthFor(fociModel, executionOrderText)
         if (cycleLength <= 0) {
@@ -378,10 +363,8 @@ Rectangle {
         var pulseCount = parseInt(pulseCountText)
         var perEntry = (!isNaN(pulseCount) && pulseCount % parsed.order.length === 0)
                        ? (pulseCount / parsed.order.length) : NaN
-        // Two explicit lines: the order can be long enough to wrap on its
-        // own, and letting the pulse count trail off the end of it made the
-        // two facts hard to tell apart. No focus count -- the button beside
-        // this label already reads "Focus Points (N)".
+        // Two lines: a long order wraps, and the pulse count trailing off
+        // its end was hard to read. The button already shows the count.
         return "order: " + parsed.order.join("-")
                + (isNaN(perEntry) ? ""
                   : "\n" + perEntry + " pulse" + (perEntry === 1 ? "" : "s") + " each")
@@ -506,8 +489,8 @@ Rectangle {
             executionOrderText = ""
         }
         syncInputsFromFocusOne()
-        // A different solution means a different focus list; a carried-over
-        // selection would point at an unrelated profile.
+        // A new solution means a new focus list, so a carried-over selection
+        // would point at an unrelated profile.
         selectedFocusIndex = 0
 
         frequencyInput.text = settings.frequency.toString()
@@ -571,10 +554,8 @@ Rectangle {
         if (!everConfigured) {
             return false
         }
-        // Same gate as the Configure button: a focus/order/pulse-count
-        // combination the firmware cannot cycle must not reach the device
-        // through the direct-edit path either. Returning false keeps the
-        // field dirty (orange) so it is visibly un-applied.
+        // Same gate as Configure: an unprogrammable combination must not
+        // reach the device here either. False keeps the field dirty.
         if (fociError !== "") {
             return false
         }
@@ -1222,13 +1203,8 @@ Rectangle {
         }
     }
 
-    // One coordinate cell in the Focus Points list: a numeric field flanked
-    // by small -/+ steppers, so a focus can be walked to position by
-    // clicking instead of retyping. Declared once rather than six times.
-    //
-    // Communicates by signal rather than reaching for the dialog directly:
-    // an inline component is its own type and does not share this file's
-    // id scope.
+    // Numeric field with -/+ steppers. Signals rather than touching the
+    // dialog directly: an inline component has its own id scope.
     component FocusCoordinateCell: RowLayout {
         id: cell
         property string value: ""
@@ -1243,10 +1219,9 @@ Rectangle {
             autoRepeat: true   // hold to keep stepping
             implicitWidth: 20
             implicitHeight: 30
-            // Material sets leftPadding/rightPadding to 24 and 6 px vertical
-            // insets of its own; `padding: 0` does not override those, so at
-            // this size the glyph lands outside its 20 px background and the
-            // background shrinks to 18 px tall. Zero them explicitly.
+            // `padding: 0` does not override Material's own 24 px side
+            // padding and 6 px insets, which push the glyph out of the
+            // background at this size.
             leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
             leftInset: 0; rightInset: 0; topInset: 0; bottomInset: 0
             contentItem: Text {
@@ -1282,10 +1257,9 @@ Rectangle {
             autoRepeat: true
             implicitWidth: 20
             implicitHeight: 30
-            // Material sets leftPadding/rightPadding to 24 and 6 px vertical
-            // insets of its own; `padding: 0` does not override those, so at
-            // this size the glyph lands outside its 20 px background and the
-            // background shrinks to 18 px tall. Zero them explicitly.
+            // `padding: 0` does not override Material's own 24 px side
+            // padding and 6 px insets, which push the glyph out of the
+            // background at this size.
             leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
             leftInset: 0; rightInset: 0; topInset: 0; bottomInset: 0
             contentItem: Text {
@@ -1318,9 +1292,8 @@ Rectangle {
 
         // Working copy; committed to fociModel only on OK.
         property string workingOrderText: ""
-        // The pulse count lives here too: it has to be a multiple of the
-        // execution-order length, and requiring the operator to guess that
-        // multiple *before* opening this dialog is the whole problem.
+        // Pulse count lives here too -- it has to be a multiple of the
+        // order length, which is chosen in this dialog.
         property string workingPulseCount: "1"
         property int workingRevision: 0
         readonly property string workingError:
@@ -1365,9 +1338,7 @@ Rectangle {
             touch()
         }
 
-        // Nudge one coordinate of one focus by +/- one step. Rounded to
-        // millimetre-thousandths so repeated clicks don't accumulate binary
-        // float dust into "4.999999999999999".
+        // Rounded so repeated clicks do not accumulate float dust.
         function stepCoordinate(index, role, delta) {
             var row = fociEditModel.get(index)
             if (!row) {
@@ -1606,10 +1577,8 @@ Rectangle {
                 }
             }
 
-            // Pulse count is edited here as well as on the main page: the
-            // value that works depends on the order length being chosen a
-            // few rows up, so making it round-trip through the page would
-            // force the operator to guess and come back.
+            // Edited here as well as on the main page, because the value that
+            // works depends on the order length chosen a few rows up.
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
@@ -1756,10 +1725,8 @@ Rectangle {
         updateTrainIntervalValidation()
         controllerLogCheckbox.checked = LIFUConnector.isControllerTelemetryLoggingEnabled()
         controllerTelemetryLogPath = LIFUConnector.getControllerTelemetryLogPath()
-        // Draw the default solution straight away rather than parking on
-        // the "no data" placeholder. The plot is built entirely from the
-        // on-screen parameters, so it is meaningful before any device is
-        // connected -- and an empty panel reads as "something is broken".
+        // Draw the defaults rather than parking on the "no data" placeholder.
+        // The plot is built from the fields, so it needs no device.
         refreshPlot()
     }
     
@@ -1776,13 +1743,9 @@ Rectangle {
         // Left Column (Input Panel)
         Rectangle {
             id: inputContainer
-            // Layout.preferredWidth, not a raw `width`: this is a RowLayout
-            // child, so the layout owns its width and a plain assignment is
-            // overwritten on the next polish. Stating it as a layout hint is
-            // what actually moves the boundary with the graph column.
-            //
-            // 500: the Lateral/Elevation/Axial row needs 388 px inside the
-            // Pulse Settings group, which puts the panel's floor at ~450.
+            // A layout hint, not a raw `width`: the RowLayout owns the
+            // width and overwrites a plain assignment. Floor is ~450 -- the
+            // Lateral/Elevation/Axial row needs 388 px.
             Layout.preferredWidth: 500
             // The old 630 left the solution controls over budget once the
             // focus row was added, pushing Load/Save outside the panel.
@@ -1977,9 +1940,7 @@ Rectangle {
                             Layout.alignment: Qt.AlignLeft
                             font.pixelSize: 14
                             text: "1"
-                            // A pulse count that is not a multiple of the
-                            // execution-order length cannot be programmed at
-                            // all, so it outranks the dirty/in-sync colouring.
+                            // Unprogrammable outranks the dirty/in-sync colour.
                             color: pulseCountError !== ""
                                    ? "#E74C3C"
                                    : getFieldColor(dirty, sequenceGroup.sectionReadOnly, pulseCountActive)
@@ -1996,9 +1957,6 @@ Rectangle {
                             onEditingFinished: commitDirtyField(triggerPulseCount, commitSequence)
                         }
 
-                        // Full-width explanation of the divisibility interlock,
-                        // shown only while it is violated. Configure stays
-                        // disabled until this clears.
                         RowLayout {
                             Layout.columnSpan: 2
                             Layout.fillWidth: true
@@ -2021,9 +1979,7 @@ Rectangle {
                                 Layout.alignment: Qt.AlignVCenter
                                 enabled: !sequenceGroup.sectionReadOnly
                                          && cycleLengthFor(fociModel, executionOrderText) > 0
-                                // Material's default padding elides a short
-                                // label at this width, so the content item is
-                                // spelled out rather than left to the style.
+                                // Material padding elides a short label here.
                                 contentItem: Text {
                                     text: snapPulseCountButton.text
                                     font.pixelSize: 11
@@ -2217,14 +2173,9 @@ Rectangle {
                             Layout.topMargin: 6
                             spacing: 4
 
-                        // Only meaningful for a single focus. In rastering
-                        // mode these would show focus 1 of N with no hint that
-                        // the others exist, and editing them would silently
-                        // move just one point of the raster -- the Foci dialog
-                        // is the place to edit a multi-focus list. The fields
-                        // stay alive while hidden (syncInputsFromFocusOne
-                        // keeps them current), so dropping back to one focus
-                        // shows the right values.
+                        // Single focus only: in rastering mode these would
+                        // show focus 1 of N and edit just that one point.
+                        // Hidden, not destroyed -- they still back focus 1.
                         RowLayout {
                             id: inlineFocusRow
                             visible: fociModel.count <= 1
@@ -2396,16 +2347,10 @@ Rectangle {
                                 }
                             }
 
-                            // The summary/error text opens the same dialog, so
-                            // the whole row is one target instead of a 158 px
-                            // button next to dead text.
-                            //
-                            // At a single focus the summary would only say
-                            // "single focus", which the button beside it
-                            // ("Add Focus Points…") already implies -- so it
-                            // is dropped entirely in that state. An error
-                            // still shows: a bad coordinate blocks Configure
-                            // and this row is where that is explained.
+                            // The summary opens the same dialog, so the whole
+                            // row is one target. Dropped at a single focus,
+                            // where it would only say "single focus", but
+                            // errors still show since they block Configure.
                             Text {
                                 id: fociSummaryText
                                 visible: fociError !== "" || fociModel.count > 1
@@ -2414,17 +2359,9 @@ Rectangle {
                                        : fociSummaryHover.containsMouse ? "#CFE0F0" : "#9FB3C8"
                                 font.pixelSize: 11
                                 font.underline: fociSummaryHover.containsMouse
-                                // The text carries its own newline between the
-                                // order and the pulse count; wrapping is the
-                                // backstop for an order too long for one line
-                                // (a custom order may repeat entries, so it
-                                // has no length bound). "AnywhereOrWordBoundary"
-                                // because the order is hyphen-joined with no
-                                // spaces to break on. Height follows the
-                                // content rather than being pinned to 30, so
-                                // the row grows only when it has to -- and in
-                                // rastering mode the inline X/Y/Z row above is
-                                // hidden, leaving room for it.
+                                // Wrapping is the backstop for a long custom
+                                // order. It breaks anywhere because the order
+                                // is hyphen-joined with no spaces.
                                 wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                                 maximumLineCount: 3
                                 elide: Text.ElideRight
@@ -2519,10 +2456,8 @@ Rectangle {
                 id: graphContainer
                 Layout.fillWidth: true
                 Layout.fillHeight: false
-                // Grew by the 34 px (row + spacing) that the safety-bypass
-                // checkbox used to occupy in the status panel below; the
-                // column's total is fixed at 648, so the two must stay in
-                // step.
+                // Took the 34 px the safety-bypass checkbox used to occupy
+                // below. The column totals 648, so the two move together.
                 Layout.preferredHeight: 424
                 Layout.maximumHeight: 432
                 Layout.minimumHeight: 320
@@ -2547,15 +2482,9 @@ Rectangle {
                     }
                 }
 
-                // Delay-profile selector. Every focus is plotted on the
-                // element map regardless; this picks whose per-element
-                // delays are coloured in and highlighted. Hidden entirely
-                // for single-focus solutions, where there is nothing to
-                // choose between.
-                //
-                // Stacked above Refresh in the right-hand gutter: the plot
-                // image is aspect-fit and centred, so the corners are the
-                // only areas guaranteed not to sit on top of an axis.
+                // Picks which profile's delays the element map colours in.
+                // Every focus is drawn either way. Sits in the right-hand
+                // gutter, the only area the aspect-fit plot leaves clear.
                 ColumnLayout {
                     id: focusSelectorColumn
                     anchors.right: parent.right
@@ -2578,16 +2507,12 @@ Rectangle {
                         Layout.preferredHeight: 28
                         Layout.alignment: Qt.AlignHCenter
                         font.pixelSize: 12
-                        // An int model (one entry per focus) rather than a
-                        // built string list: the list would be rebuilt on
-                        // every coordinate keystroke, and each rebuild resets
-                        // currentIndex. Labels come from the delegate instead.
+                        // Int model, not a string list: a list would be
+                        // rebuilt on every keystroke, resetting currentIndex.
                         model: fociModel.count
 
-                        // currentIndex is assigned, not bound: ComboBox
-                        // resets it imperatively when its model changes,
-                        // which would tear a declarative binding down for
-                        // good the first time a focus is added or removed.
+                        // Assigned, not bound: ComboBox resets currentIndex
+                        // imperatively on model change, tearing a binding down.
                         function syncFromPage() {
                             if (currentIndex !== selectedFocusIndex) {
                                 currentIndex = selectedFocusIndex
@@ -2600,15 +2525,12 @@ Rectangle {
                             function onSelectedFocusIndexChanged() { focusSelector.syncFromPage() }
                         }
 
-                        // Closed state stays deliberately terse -- it has to
-                        // fit the gutter beside the plot, and the coordinates
-                        // are only needed while choosing.
+                        // Terse: it has to fit the gutter beside the plot.
                         displayText: currentIndex >= 0 ? "Focus " + (currentIndex + 1) : ""
 
-                        // Custom content item so the closed state carries the
-                        // focus's colour swatch: with the numbers gone from
-                        // the element map, colour is the only thing tying the
-                        // selection to a marker on the plot.
+                        // Carries the focus's colour swatch. The element map
+                        // has no numbers, so colour is the only thing tying a
+                        // selection to a marker.
                         contentItem: Row {
                             leftPadding: 8
                             spacing: 6
@@ -2639,12 +2561,9 @@ Rectangle {
                             opacity: 0.9
                         }
 
-                        // The open list is wider than the control so each
-                        // entry can carry its coordinates. It is right-aligned
-                        // and opens upward so it lands over the plot -- which
-                        // is transient and harmless -- instead of spilling out
-                        // of the panel's bottom-right corner. Qt clamps both
-                        // axes to the window, so a long focus list still fits.
+                        // Wider than the control so entries can carry their
+                        // coordinates. Right-aligned and opening upward to
+                        // stay inside the panel.
                         popup.width: 210
                         popup.x: width - 210
                         popup.y: -popup.height - 2
@@ -2695,11 +2614,7 @@ Rectangle {
                         }
                     }
 
-                    // Where the selected profile is steering. Read-only on
-                    // purpose: the focus list is edited in the Focus Points
-                    // dialog, and an editable field here would be a second
-                    // path into the same data. Depends on fociRevision
-                    // because ListModel row edits are not observable.
+                    // Read-only: the focus list is edited in the dialog.
                     GridLayout {
                         id: focusCoordReadout
                         Layout.alignment: Qt.AlignHCenter
@@ -2996,10 +2911,8 @@ Rectangle {
                         }
                     }
 
-                    // The safety-limit bypass is armed on the Settings page.
-                    // While it is armed the window header shows a badge next
-                    // to the Openwater logo, and the System State line below
-                    // carries "LIMITS BYPASSED".
+                    // The safety bypass is armed on the Settings page. The
+                    // header badge and the status line report it.
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -3181,12 +3094,8 @@ Rectangle {
                                     if (LIFUConnector.hvConnected) {
                                         LIFUConnector.directSetVoltage(voltage.text)
                                     }
-                                    // Redraw at the defaults just restored,
-                                    // matching what the page shows on load.
-                                    // Blanking to the placeholder here would
-                                    // put "no data" back on screen even though
-                                    // there is a perfectly good solution in
-                                    // the fields.
+                                    // Redraw at the restored defaults rather
+                                    // than blanking to the placeholder.
                                     refreshPlot()
                                 })
                             }
@@ -3201,11 +3110,8 @@ Rectangle {
     Connections {
         target: LIFUConnector
 
-        // Arming or clearing the bypass (now done from the Settings page)
-        // drops the device's configured flag inside setSafetyBypass. This
-        // page has to let go of its own "already configured" state to
-        // match, or the parameter fields stay green and Start stays
-        // enabled for a device that is no longer programmed.
+        // setSafetyBypass drops the device's configured flag, so this page
+        // must drop its own or Start stays enabled for an unprogrammed device.
         function onSafetyBypassChanged(enabled) {
             everConfigured = false
             resetProgressIdle()
