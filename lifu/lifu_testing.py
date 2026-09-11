@@ -41,17 +41,68 @@ from openlifu_verification.prodreqs_voltage_accuracy_test import (
     VoltageAccuracyTest,
 )
 from openlifu_verification.prodreqs_tx_short_verification_test import (
+    SINGLE_TEST_CASE_FOR_SHORT_DURATION_TEST,
     TransmitterShortVerificationTest,
 )
-from openlifu_verification.prodreqs_run_indefinitely_test import (
-    TransmitterIndefiniteRun,
-)
+from openlifu_verification.prodreqs_run_indefinitely_test import TransmitterIndefiniteRun
+try:
+    from openlifu_verification.prodreqs_run_indefinitely_test import (
+        INDEFINITE_TEST_DUTY_CYCLE_PERCENT,
+    )
+except ImportError:
+    # Keep the GUI compatible with an older installed verification package.
+    INDEFINITE_TEST_DUTY_CYCLE_PERCENT = 5
 
 logger = logging.getLogger(__name__)
 
 
 class TestingMixin:
     """Mixin providing the Testing-page slots/helpers for ``LIFUConnector``."""
+
+    @pyqtSlot(str, result=str)
+    def verificationTestDescription(self, test_key):
+        """Return the parameters shown for a verification selector option."""
+        if test_key == "short":
+            case_number = SINGLE_TEST_CASE_FOR_SHORT_DURATION_TEST
+            case = TEST_CASES[case_number - 1]
+            pulse_duration_ms = case["duty_cycle"] / 100.0 * case["PRI_ms"]
+            return (
+                f"Voltage: {case['voltage']} V\n"
+                f"Duty cycle: {case['duty_cycle']}%\n"
+                f"Pulse repetition interval: {case['PRI_ms']} ms\n"
+                f"Pulse duration: {pulse_duration_ms:g} ms\n"
+                f"Maximum starting temperature: {case['max_starting_temperature']} C\n"
+                "Duration: 10 min"
+            )
+        if test_key == "long":
+            first = TEST_CASES[0]
+            last = TEST_CASES[-1]
+            return (
+                f"Test cases: {len(TEST_CASES)}\n"
+                f"Voltage range: {first['voltage']}-{last['voltage']} V\n"
+                f"Duty-cycle range: {first['duty_cycle']}-{last['duty_cycle']}%\n"
+                f"Pulse repetition interval: {first['PRI_ms']} ms\n"
+                "Duration: up to 10 min per case"
+            )
+        if test_key == "indefinite":
+            case = dict(TEST_CASES[9])
+            case["duty_cycle"] = INDEFINITE_TEST_DUTY_CYCLE_PERCENT
+            pulse_duration_ms = case["duty_cycle"] / 100.0 * case["PRI_ms"]
+            return (
+                f"Voltage: {case['voltage']} V\n"
+                f"Duty cycle: {case['duty_cycle']}%\n"
+                f"Pulse repetition interval: {case['PRI_ms']} ms\n"
+                f"Pulse duration: {pulse_duration_ms:g} ms\n"
+                f"Maximum starting temperature: {case['max_starting_temperature']} C\n"
+                "Duration: repeats until stopped"
+            )
+        if test_key == "voltage":
+            return (
+                "Setpoints (V): " + ", ".join(str(voltage) for voltage in TEST_VOLTAGES) + "\n"
+                "Frequency: not used\n"
+                "Number of modules: not used"
+            )
+        return ""
 
     @pyqtSlot(int, int)
     def runThermalTest(self, frequency, num_modules):
