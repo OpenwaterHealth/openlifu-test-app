@@ -43,6 +43,31 @@ Rectangle {
     property string indefiniteCaseLabel: "Status: idle"
     property string indefiniteStatusColor: "#BDC3C7"
     property string indefiniteLogPath: ""
+    property real indefiniteStartTimeMs: 0
+
+    Timer {
+        id: indefiniteElapsedTimer
+        interval: 1000
+        repeat: true
+        running: activeTestKey === "indefinite"
+                 && testProgressSection.caseProgressLabelText.indexOf("running") >= 0
+        onTriggered: indefiniteElapsedText = formatElapsedTime()
+    }
+
+    property string indefiniteElapsedText: formatElapsedTime()
+
+    function formatElapsedTime() {
+        if (indefiniteStartTimeMs <= 0) {
+            return "00:00:00"
+        }
+        var elapsedSeconds = Math.max(0, Math.floor((Date.now() - indefiniteStartTimeMs) / 1000))
+        var hours = Math.floor(elapsedSeconds / 3600)
+        var minutes = Math.floor((elapsedSeconds % 3600) / 60)
+        var seconds = elapsedSeconds % 60
+        return (hours < 10 ? "0" : "") + hours + ":"
+               + (minutes < 10 ? "0" : "") + minutes + ":"
+               + (seconds < 10 ? "0" : "") + seconds
+    }
 
     property real voltageOverallProgress: 0.0
     property real voltageCaseProgress: 0.0
@@ -126,6 +151,8 @@ Rectangle {
             indefiniteCaseLabel = "Status: idle"
             indefiniteStatusColor = "#BDC3C7"
             indefiniteLogPath = ""
+            indefiniteStartTimeMs = 0
+            indefiniteElapsedText = formatElapsedTime()
         } else if (testKey === "voltage") {
             voltageOverallProgress = 0.0
             voltageCaseProgress = 0.0
@@ -287,10 +314,10 @@ Rectangle {
                                 Layout.preferredHeight: 30
                                 font.pixelSize: 12
                                 model: [
-                                    { key: "short", label: "Short Verification" },
-                                    { key: "long", label: "Long Verification" },
-                                    { key: "indefinite", label: "Run Indefinitely" },
-                                    { key: "voltage", label: "Voltage Accuracy" }
+                                    { key: "short", label: "Short Verification", description: LIFUConnector.verificationTestDescription("short") },
+                                    { key: "long", label: "Long Verification", description: LIFUConnector.verificationTestDescription("long") },
+                                    { key: "indefinite", label: "Run Indefinitely", description: LIFUConnector.verificationTestDescription("indefinite") },
+                                    { key: "voltage", label: "Voltage Accuracy", description: LIFUConnector.verificationTestDescription("voltage") }
                                 ]
                                 textRole: "label"
                                 onCurrentIndexChanged: updateSelectedTestKey()
@@ -336,6 +363,10 @@ Rectangle {
                                         var key = selectedTestKey
                                         activeTestKey = key
                                         resetProgressForTest(key)
+                                        if (key === "indefinite") {
+                                            indefiniteStartTimeMs = Date.now()
+                                            indefiniteElapsedText = "00:00:00"
+                                        }
                                         testProgressSection.totalProgressValue = 0.0
                                         testProgressSection.caseProgressValue = 0.0
                                         testProgressSection.totalProgressLabelText = "Overall: waiting..."
@@ -364,9 +395,45 @@ Rectangle {
                         }
                     }
 
-                    Item {
+                    // The selected test's parameters occupy the open area
+                    // below the controls, beside the HV and temperature panel.
+                    Rectangle {
+                        Layout.fillWidth: true
                         Layout.fillHeight: true
+                        Layout.minimumHeight: 0
+                        Layout.topMargin: 45
+                        radius: 10
+                        color: "#1E1E20"
+                        border.color: "#3E4E6F"
+                        border.width: 2
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 6
+
+                            Text {
+                                text: "Selected Test Parameters"
+                                color: "white"
+                                font.pixelSize: 16
+                                font.weight: Font.Medium
+                                Layout.fillWidth: true
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                text: testSelectorDropdown.currentIndex >= 0
+                                      ? testSelectorDropdown.model[testSelectorDropdown.currentIndex].description
+                                      : ""
+                                color: "#BDC3C7"
+                                font.pixelSize: 16
+                                lineHeight: 1.1
+                                wrapMode: Text.WordWrap
+                            }
+                        }
                     }
+
                 }
 
                 // Large Third Column
@@ -574,6 +641,7 @@ Rectangle {
                 ProgressBar {
                     id: caseProgressBar
                     Layout.fillWidth: true
+                    visible: activeTestKey !== "indefinite"
                     from: 0.0
                     to: 1.0
                     value: testProgressSection.caseProgressValue
@@ -593,6 +661,16 @@ Rectangle {
                             color: testProgressSection.caseStatusColor
                         }
                     }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    visible: activeTestKey === "indefinite"
+                    text: "Elapsed: " + indefiniteElapsedText
+                    color: testProgressSection.caseStatusColor
+                    font.pixelSize: 16
+                    font.weight: Font.Medium
+                    horizontalAlignment: Text.AlignHCenter
                 }
 
                 Text {
