@@ -20,6 +20,9 @@ Rectangle {
     property bool txLoading: false
     property var configTargetModel: []
     property var modules: []  // Device info for all modules
+    // Console HWID, from hvDeviceInfoReceived. The TX equivalents live in
+    // `modules`; the console is a single node so it gets a plain property.
+    property string consoleDeviceId: ""
 
     // Console firmware to install: the operator-browsed file if one is
     // selected, otherwise the signed image included with the SDK. The path
@@ -195,12 +198,18 @@ Rectangle {
 
     function rebuildConfigTargets() {
         var items = []
-        // Console user config not yet supported in firmware – enable when ready:
-        // if (LIFUConnector.hvConnected) items.push("Console")
+        if (LIFUConnector.hvConnected) items.push("Console")
         if (LIFUConnector.txConnected) {
             for (var i = 0; i < txModuleCount; i++) items.push("TX " + i)
         }
         configTargetModel = items
+    }
+
+    // Module index for a "TX n" target, or -1 for the Console / no target.
+    function configTargetModuleIndex(text) {
+        if (!text || !text.startsWith("TX")) return -1
+        var parts = text.split(" ")
+        return parts.length >= 2 ? parseInt(parts[1]) : -1
     }
 
     function queryTxModules() {
@@ -217,6 +226,7 @@ Rectangle {
         if (LIFUConnector.hvConnected) {
             consoleCurrentVersion.text = "Reading…"
             LIFUConnector.readHvFirmwareVersion()
+            LIFUConnector.queryHvInfo()   // HWID for the Device ID field (cached)
         }
         if (LIFUConnector.txConnected) {
             queryTxModules()
@@ -264,6 +274,7 @@ Rectangle {
         onTriggered: {
             consoleCurrentVersion.text = "Reading…"
             LIFUConnector.readHvFirmwareVersion()
+            LIFUConnector.queryHvInfo()   // HWID for the Device ID field (cached)
         }
     }
 
@@ -287,6 +298,7 @@ Rectangle {
             } else {
                 hvConnectTimer.stop()
                 consoleCurrentVersion.text = "—"
+                settingsPage.consoleDeviceId = ""
             }
             rebuildConfigTargets()
         }
@@ -368,6 +380,10 @@ Rectangle {
                     deviceId: m.deviceId
                 }
             })
+        }
+
+        function onHvDeviceInfoReceived(firmwareVersion, deviceId) {
+            settingsPage.consoleDeviceId = deviceId
         }
     }
 
@@ -1101,9 +1117,10 @@ Rectangle {
                             Layout.fillWidth: true
                             spacing: 8
 
+                            // True for any real target -- Console or a TX module.
                             readonly property bool hasTarget:
                                 configTargetSelector.enabled
-                                && configTargetSelector.currentText.startsWith("TX")
+                                && configTargetSelector.currentText.length > 0
 
                             Text {
                                 text: "Device ID:"
@@ -1116,16 +1133,15 @@ Rectangle {
                                 visible: deviceIdRow.hasTarget
                                 elide: Text.ElideRight
                                 text: {
-                                    if (!deviceIdRow.hasTarget) {
-                                        return "N/A"
+                                    if (!deviceIdRow.hasTarget) return "N/A"
+                                    if (configTargetSelector.currentText === "Console") {
+                                        return settingsPage.consoleDeviceId !== ""
+                                               ? settingsPage.consoleDeviceId : "Reading…"
                                     }
-                                    // Extract module index from "TX 0", "TX 1", etc.
-                                    var parts = configTargetSelector.currentText.split(" ")
-                                    if (parts.length >= 2) {
-                                        var moduleIndex = parseInt(parts[1])
-                                        return modules[moduleIndex] ? modules[moduleIndex].deviceId : "N/A"
-                                    }
-                                    return "N/A"
+                                    var mi = settingsPage.configTargetModuleIndex(
+                                                 configTargetSelector.currentText)
+                                    if (mi < 0) return "N/A"
+                                    return modules[mi] ? modules[mi].deviceId : "N/A"
                                 }
                                 color: "#3498DB"
                                 font.pixelSize: 12
@@ -1139,7 +1155,9 @@ Rectangle {
                             }
 
                             Text {
-                                text: "Module:"
+                                // "Target:" not "Module:" -- the list now holds
+                                // the Console as well as the TX modules.
+                                text: "Target:"
                                 color: "#BDC3C7"
                                 font.pixelSize: 12
                                 Layout.alignment: Qt.AlignVCenter
@@ -1147,19 +1165,20 @@ Rectangle {
 
                             ComboBox {
                                 id: configTargetSelector
-                                Layout.preferredWidth: 70
+                                // Wide enough for "Console"; the old 70 only
+                                // had to fit a single-digit module index.
+                                Layout.preferredWidth: 110
                                 Layout.preferredHeight: 28
                                 font.pixelSize: 12
-                                // Model stays "TX n": currentText feeds
-                                // read/writeUserConfig and the lookups below.
-                                // Only the label is shortened.
                                 model: settingsPage.configTargetModel
                                 enabled: settingsPage.configTargetModel.length > 0
 
                                 onCurrentIndexChanged: userConfigEditor.text = ""
 
-                                displayText: (enabled && currentIndex >= 0)
-                                             ? String(currentIndex) : "—"
+                                // Show the entry text as-is ("Console", "TX 0").
+                                // Never the index: "Console" is not a module
+                                // number and its presence shifts every TX index.
+                                displayText: (enabled && currentIndex >= 0) ? currentText : "—"
 
                                 contentItem: Text {
                                     leftPadding: 8
@@ -1172,11 +1191,12 @@ Rectangle {
                                 delegate: ItemDelegate {
                                     id: configTargetEntry
                                     required property int index
+                                    required property var modelData
                                     width: configTargetSelector.width
                                     height: 26
                                     highlighted: configTargetSelector.highlightedIndex === configTargetEntry.index
                                     contentItem: Text {
-                                        text: String(configTargetEntry.index)
+                                        text: configTargetEntry.modelData
                                         color: "white"
                                         font.pixelSize: 12
                                         verticalAlignment: Text.AlignVCenter
@@ -1195,8 +1215,8 @@ Rectangle {
                                 ToolTip.visible: configTargetHover.hovered
                                 ToolTip.delay: 400
                                 ToolTip.text: configTargetSelector.enabled
-                                              ? "Transmitter module the config actions read from and write to."
-                                              : "No transmitter modules connected."
+                                              ? "Device the config actions read from and write to."
+                                              : "No console or transmitter modules connected."
                                 HoverHandler { id: configTargetHover }
                             }
                         }
@@ -1204,9 +1224,9 @@ Rectangle {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
-                            visible: configTargetSelector.enabled && configTargetSelector.currentText.startsWith("TX")
-                            
-                            Text { 
+                            visible: deviceIdRow.hasTarget
+
+                            Text {
                                 text: "Firmware Version:"
                                 color: "#BDC3C7"
                                 font.pixelSize: 12
@@ -1214,16 +1234,16 @@ Rectangle {
                             Text {
                                 Layout.fillWidth: true
                                 text: {
-                                    if (!configTargetSelector.enabled || !configTargetSelector.currentText.startsWith("TX")) {
-                                        return "N/A"
+                                    if (!deviceIdRow.hasTarget) return "N/A"
+                                    // The console version is already read into
+                                    // consoleCurrentVersion by onFwVersionRead.
+                                    if (configTargetSelector.currentText === "Console") {
+                                        return consoleCurrentVersion.text
                                     }
-                                    // Extract module index from "TX 0", "TX 1", etc.
-                                    var parts = configTargetSelector.currentText.split(" ")
-                                    if (parts.length >= 2) {
-                                        var moduleIndex = parseInt(parts[1])
-                                        return modules[moduleIndex] ? modules[moduleIndex].firmwareVersion : "N/A"
-                                    }
-                                    return "N/A"
+                                    var mi = settingsPage.configTargetModuleIndex(
+                                                 configTargetSelector.currentText)
+                                    if (mi < 0) return "N/A"
+                                    return modules[mi] ? modules[mi].firmwareVersion : "N/A"
                                 }
                                 color: "#2ECC71"
                                 font.pixelSize: 12
