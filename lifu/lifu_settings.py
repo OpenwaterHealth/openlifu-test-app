@@ -55,6 +55,11 @@ def _parse_tx_module(target: str):
     return None
 
 
+def _is_console(target: str) -> bool:
+    """True for the console (HV controller) target."""
+    return target.strip().lower() == "console"
+
+
 class SettingsMixin:
     """Mixin providing the Settings-page slots/helpers for ``LIFUConnector``."""
 
@@ -594,18 +599,21 @@ class SettingsMixin:
     def readUserConfig(self, target: str) -> None:
         """Read user configuration from the target device. Emits userConfigRead on success.
 
-        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        target: "console" (the HV controller) or "tx_N" / "tx N" (module N).
         """
         def _run():
             self._interface_mutex.lock()
             try:
                 module = _parse_tx_module(target)
-                if module is None:
-                    # Console not yet supported
+                if module is not None:
+                    config = self.interface.txdevice.read_config(module=module)
+                elif _is_console(target):
+                    # The console is a single node -- no module chain to address.
+                    config = self.interface.hvcontroller.read_config()
+                else:
                     self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
                     return
 
-                config = self.interface.txdevice.read_config(module=module)
                 json_str = config.get_json_str()
                 logger.info(f"User config read from {target}: {json_str}")
                 self.userConfigRead.emit(target, json_str)
@@ -626,17 +634,20 @@ class SettingsMixin:
     def writeUserConfig(self, target: str, json_str: str) -> None:
         """Write user configuration JSON to the target device.
 
-        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        target: "console" (the HV controller) or "tx_N" / "tx N" (module N).
         """
         def _run():
             self._interface_mutex.lock()
             try:
                 module = _parse_tx_module(target)
-                if module is None:
+                if module is not None:
+                    updated = self.interface.txdevice.write_config_json(json_str, module=module)
+                elif _is_console(target):
+                    updated = self.interface.hvcontroller.write_config_json(json_str)
+                else:
                     self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
                     return
 
-                updated = self.interface.txdevice.write_config_json(json_str, module=module)
                 msg = f"Config written to {target}. Seq: {updated.header.seq}, CRC: 0x{updated.header.crc:04X}"
                 logger.info(msg)
                 self.userConfigStatus.emit(target, True, msg)
