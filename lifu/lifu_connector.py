@@ -107,7 +107,9 @@ from lifu.lifu_constants import (
     FW_COMPLIANCE_UPDATE_AVAILABLE,
     FW_COMPLIANCE_UPDATE_REQUIRED,
     MIN_CONSOLE_FW_VERSION,
+    MIN_CONSOLE_USER_CONFIG_FW_VERSION,
     MIN_TRANSMITTER_FW_VERSION,
+    console_supports_user_config,
     firmware_compliance,
     packaged_console_fw_version,
     packaged_transmitter_fw_version,
@@ -1687,6 +1689,28 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     @pyqtProperty(str, constant=True)
     def minConsoleFirmwareVersion(self) -> str:
         return MIN_CONSOLE_FW_VERSION
+
+    @pyqtProperty(str, constant=True)
+    def minConsoleUserConfigFirmwareVersion(self) -> str:
+        """Oldest console firmware that implements the user-config command."""
+        return MIN_CONSOLE_USER_CONFIG_FW_VERSION
+
+    @pyqtProperty(bool, notify=firmwareComplianceChanged)
+    def consoleSupportsUserConfig(self) -> bool:
+        """True if the connected console can read/write its user config.
+
+        Drives the lockout on Read Config / Write Config when the Settings
+        page targets the Console. Reuses ``firmwareComplianceChanged`` as
+        the notify signal because ``_update_firmware_compliance("HV", …)``
+        already fires it on every console version read, which is exactly
+        when ``_cached_hv_fw_version`` changes.
+
+        Reports True when nothing is connected or the version has not been
+        read yet, so the UI is not gated on a value it does not have.
+        """
+        if not self._hvConnected:
+            return True
+        return console_supports_user_config(self._cached_hv_fw_version)
 
     @pyqtProperty(str, constant=True)
     def minTransmitterFirmwareVersion(self) -> str:
