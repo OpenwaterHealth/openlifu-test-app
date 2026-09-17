@@ -595,12 +595,42 @@ class SettingsMixin:
     # User config (read/write JSON to TX module EEPROM)
     # ------------------------------------------------------------------
 
+    def _user_config_unsupported_msg(self, target: str) -> str | None:
+        """Why ``target`` can't do user config, or ``None`` if it can.
+
+        The console only gained OW_CMD_USR_CFG after 1.2.6; older units
+        NAK the command, which used to surface as a raw device error.
+        Catch it here so the operator gets the required version instead.
+        TX modules are never gated - they have supported user config
+        since the 2.0.x line.
+        """
+        if not _is_console(target):
+            return None
+        from lifu.lifu_constants import (
+            MIN_CONSOLE_USER_CONFIG_FW_VERSION,
+            console_supports_user_config,
+        )
+        version = self._cached_hv_fw_version
+        if console_supports_user_config(version):
+            return None
+        return (
+            f"User config is not supported by this console's firmware "
+            f"({version}). Requires {MIN_CONSOLE_USER_CONFIG_FW_VERSION} or "
+            f"newer - update the console in the Firmware Update section above."
+        )
+
     @pyqtSlot(str)
     def readUserConfig(self, target: str) -> None:
         """Read user configuration from the target device. Emits userConfigRead on success.
 
         target: "console" (the HV controller) or "tx_N" / "tx N" (module N).
         """
+        unsupported = self._user_config_unsupported_msg(target)
+        if unsupported:
+            logger.warning("Read config blocked for %s: %s", target, unsupported)
+            self.userConfigStatus.emit(target, False, unsupported)
+            return
+
         def _run():
             self._interface_mutex.lock()
             try:
@@ -636,6 +666,12 @@ class SettingsMixin:
 
         target: "console" (the HV controller) or "tx_N" / "tx N" (module N).
         """
+        unsupported = self._user_config_unsupported_msg(target)
+        if unsupported:
+            logger.warning("Write config blocked for %s: %s", target, unsupported)
+            self.userConfigStatus.emit(target, False, unsupported)
+            return
+
         def _run():
             self._interface_mutex.lock()
             try:

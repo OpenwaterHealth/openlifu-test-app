@@ -23,6 +23,10 @@ Rectangle {
     // Console HWID, from hvDeviceInfoReceived. The TX equivalents live in
     // `modules`; the console is a single node so it gets a plain property.
     property string consoleDeviceId: ""
+    // Console firmware version, kept alongside the HWID for the sample
+    // console config below. consoleCurrentVersion.text can't be used for
+    // that -- it also carries "Reading…" / "—" / "Error" placeholders.
+    property string consoleFwVersion: ""
 
     // Console firmware to install: the operator-browsed file if one is
     // selected, otherwise the signed image included with the SDK. The path
@@ -43,6 +47,45 @@ Rectangle {
         transmitterFwPath.text.length > 0
             ? transmitterFwPath.text
             : LIFUConnector.getDefaultFirmwarePath("transmitter")
+
+    // True when the User Config card targets the Console and that console's
+    // firmware predates the user-config command (added after 1.2.6). Gates
+    // Read/Write Config and shows the inline warning in the card. TX targets
+    // are never blocked — they have supported user config since 2.0.x.
+    readonly property bool consoleUserConfigBlocked:
+        configTargetIsConsole
+        && !LIFUConnector.consoleSupportsUserConfig
+
+    readonly property bool configTargetIsConsole:
+        configTargetSelector.currentText === "Console"
+
+    // ----------------------------------------------------------------
+    // Sample console config
+    //
+    // Consoles ship with no user config at all, so a Read Config on a
+    // fresh unit leaves the editor empty and there is nothing to write
+    // back. When that happens the Write Config button turns into "Generate
+    // Default Config" and loads the skeleton below into the editor, giving
+    // the console a valid JSON structure to grow from -- writing it is a
+    // separate, deliberate second press. Only the identity fields are
+    // placeholders -- hwid, fw_ver and sdk_ver are the live values, so the
+    // written config still identifies the unit it landed on.
+    // ----------------------------------------------------------------
+    readonly property bool consoleSampleConfigReady:
+        LIFUConnector.hvConnected
+        && consoleDeviceId !== "" && consoleDeviceId !== "N/A"
+        && consoleFwVersion !== ""
+
+    function buildDefaultConsoleConfig() {
+        return JSON.stringify({
+            "sn": "sample-sn-123",
+            "hwid": settingsPage.consoleDeviceId,
+            "hw_ver": "sample-hw-ver-123",
+            "fw_ver": settingsPage.consoleFwVersion,
+            "sdk_ver": LIFUConnector.sdkVersion,
+            "updated": Qt.formatDateTime(new Date(), "yyyy-MM-dd hh:mm:ss")
+        }, null, 2)
+    }
 
     // Font for the small "Check for Updates" icon buttons. Other widgets
     // that need icons (e.g. IconButton.qml) load their own copy.
@@ -278,6 +321,21 @@ Rectangle {
         }
     }
 
+    // Keeps HWID/firmware populated while the Generate Default Config
+    // button is showing -- those two fields come off the live console, so the
+    // button stays disabled until they arrive. queryHvInfo re-emits from
+    // its cache once populated, so this only costs a UART round-trip while
+    // the values are genuinely missing, and stops as soon as they land.
+    Timer {
+        id: consoleSampleInfoPoll
+        interval: 2000
+        repeat: true
+        running: writeConfigButton.defaultConfigMode
+                 && LIFUConnector.hvConnected
+                 && !settingsPage.consoleSampleConfigReady
+        onTriggered: LIFUConnector.queryHvInfo()
+    }
+
     // ----------------------------------------------------------------
     // Signal handlers – firmware update backend
     // ----------------------------------------------------------------
@@ -287,6 +345,7 @@ Rectangle {
         function onFwVersionRead(deviceType, version) {
             if (deviceType === "console") {
                 consoleCurrentVersion.text = version
+                settingsPage.consoleFwVersion = version
             } else if (deviceType.startsWith("transmitter")) {
                 txCurrentVersion.text = version
             }
@@ -299,6 +358,7 @@ Rectangle {
                 hvConnectTimer.stop()
                 consoleCurrentVersion.text = "—"
                 settingsPage.consoleDeviceId = ""
+                settingsPage.consoleFwVersion = ""
             }
             rebuildConfigTargets()
         }
@@ -384,6 +444,8 @@ Rectangle {
 
         function onHvDeviceInfoReceived(firmwareVersion, deviceId) {
             settingsPage.consoleDeviceId = deviceId
+            if (firmwareVersion)
+                settingsPage.consoleFwVersion = firmwareVersion
         }
     }
 
@@ -1073,7 +1135,9 @@ Rectangle {
                             Text {
                                 anchors.centerIn: parent
                                 visible: userConfigEditor.text.length === 0
-                                text: "No config loaded\nPress Read Config to load from device."
+                                text: writeConfigButton.defaultConfigMode
+                                      ? "No config loaded\nPress Read Config to load from device,\nor Generate Default Config to build a sample one."
+                                      : "No config loaded\nPress Read Config to load from device."
                                 color: "#7F8C8D"
                                 font.pixelSize: 14
                                 horizontalAlignment: Text.AlignHCenter
@@ -1173,7 +1237,16 @@ Rectangle {
                                 model: settingsPage.configTargetModel
                                 enabled: settingsPage.configTargetModel.length > 0
 
-                                onCurrentIndexChanged: userConfigEditor.text = ""
+                                onCurrentIndexChanged: {
+                                    userConfigEditor.text = ""
+                                    // Clearing the editor drops a Console
+                                    // target straight into default-config
+                                    // mode, which needs the live HWID and
+                                    // firmware version. Cached after the
+                                    // first call, so this is just a re-emit.
+                                    if (currentText === "Console" && LIFUConnector.hvConnected)
+                                        LIFUConnector.queryHvInfo()
+                                }
 
                                 // Show the entry text as-is ("Console", "TX 0").
                                 // Never the index: "Console" is not a module
@@ -1250,13 +1323,51 @@ Rectangle {
                             }
                         }
 
-                        // Read Config
+                        // Firmware too old for user config on this target.
+                        // Persistent (unlike userConfigStatusText, which
+                        // auto-hides) because it describes a standing
+                        // condition, not the result of an action.
                         Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: userConfigUnsupportedText.implicitHeight + 16
+                            visible: settingsPage.consoleUserConfigBlocked
+                            radius: 6
+                            color: "#3B2A2A"
+                            border.color: "#E74C3C"
+
+                            Text {
+                                id: userConfigUnsupportedText
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                text: "This console's firmware does not support user config. "
+                                      + "Requires "
+                                      + LIFUConnector.minConsoleUserConfigFirmwareVersion
+                                      + " or newer."
+                                color: "#E74C3C"
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+
+                        // Read Config
+                        //
+                        // Blocked when the target is a console whose firmware
+                        // predates the user-config command — the device would
+                        // just NAK it.
+                        Rectangle {
+                            id: readConfigButton
                             Layout.fillWidth: true
                             height: 40
                             radius: 6
-                            color: readConfigArea.containsMouse ? "#4A90E2" : "#3A3F4B"
-                            border.color: readConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+                            property bool canUse: !settingsPage.consoleUserConfigBlocked
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : (readConfigArea.containsMouse ? "#4A90E2" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (readConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
 
                             Text {
                                 anchors.centerIn: parent
@@ -1270,10 +1381,25 @@ Rectangle {
                                 id: readConfigArea
                                 anchors.fill: parent
                                 hoverEnabled: true
+                                enabled: readConfigButton.canUse
                                 onClicked: {
                                     var target = configTargetSelector.currentText.toLowerCase()
                                     LIFUConnector.readUserConfig(target)
                                 }
+                            }
+
+                            ToolTip.visible: readConfigHoverArea.containsMouse
+                                && settingsPage.consoleUserConfigBlocked
+                            ToolTip.text: "Disabled: console user config requires firmware "
+                                + LIFUConnector.minConsoleUserConfigFirmwareVersion
+                                + " or newer (Firmware Update section above)."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: readConfigHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !readConfigButton.canUse
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -1347,12 +1473,26 @@ Rectangle {
                         }
 
                         // Load Test Report
+                        //
+                        // TX-only: a test report describes a transmitter
+                        // module (its SN, frequency and per-frequency
+                        // sensitivity), and loadTestReport resolves the
+                        // target through _parse_tx_module, which has no
+                        // console case. Grayed out rather than left to fail
+                        // with "Unsupported target: console".
                         Rectangle {
+                            id: loadTestReportButton
                             Layout.fillWidth: true
                             height: 40
                             radius: 6
-                            color: testReportArea.containsMouse ? "#F39C12" : "#3A3F4B"
-                            border.color: testReportArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+                            property bool canUse: !settingsPage.configTargetIsConsole
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : (testReportArea.containsMouse ? "#F39C12" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (testReportArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
 
                             Text {
                                 anchors.centerIn: parent
@@ -1366,9 +1506,23 @@ Rectangle {
                                 id: testReportArea
                                 anchors.fill: parent
                                 hoverEnabled: true
+                                enabled: loadTestReportButton.canUse
                                 onClicked: {
                                     testReportDialog.open()
                                 }
+                            }
+
+                            ToolTip.visible: testReportHoverArea.containsMouse
+                                && !loadTestReportButton.canUse
+                            ToolTip.text: "Disabled: test reports describe a transmitter module. "
+                                + "Select a TX target to load one."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: testReportHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !loadTestReportButton.canUse
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -1379,13 +1533,27 @@ Rectangle {
                         // Disabled when any connected device is below the
                         // app's hard minimum firmware version -- the operator
                         // must use the Firmware Update section above to bring
-                        // it back into compliance first.
+                        // it back into compliance first -- or when the target
+                        // console predates the user-config command.
+                        //
+                        // With the Console targeted and nothing in the editor
+                        // there is no config to write, so the button becomes
+                        // "Generate Default Config" and fills the editor from
+                        // buildDefaultConsoleConfig(). That press writes
+                        // nothing: it leaves the editor non-empty, so the
+                        // button reverts to "Write Config" and the operator
+                        // presses again to actually send it.
                         Rectangle {
                             id: writeConfigButton
                             Layout.fillWidth: true
                             height: 40
                             radius: 6
+                            readonly property bool defaultConfigMode:
+                                settingsPage.configTargetIsConsole
+                                && userConfigEditor.text.trim().length === 0
                             property bool canUse: !LIFUConnector.firmwareUpdateRequired
+                                && !settingsPage.consoleUserConfigBlocked
+                                && (!defaultConfigMode || settingsPage.consoleSampleConfigReady)
                             color: !canUse
                                 ? "#2A2F3B"
                                 : (writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B")
@@ -1396,7 +1564,8 @@ Rectangle {
 
                             Text {
                                 anchors.centerIn: parent
-                                text: "Write Config"
+                                text: writeConfigButton.defaultConfigMode
+                                      ? "Generate Default Config" : "Write Config"
                                 color: "white"
                                 font.pixelSize: 13
                                 font.weight: Font.Medium
@@ -1408,14 +1577,38 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: writeConfigButton.canUse
                                 onClicked: {
+                                    if (writeConfigButton.defaultConfigMode) {
+                                        // Generate only. Nothing reaches the
+                                        // device until the operator has seen
+                                        // the blob in the editor and pressed
+                                        // the button again -- by then it reads
+                                        // "Write Config", since the editor is
+                                        // no longer empty.
+                                        userConfigEditor.text =
+                                            settingsPage.buildDefaultConsoleConfig()
+                                        userConfigStatusText.text =
+                                            "Default config generated. Review it, then press Write Config to send it."
+                                        userConfigStatusText.color = "#F39C12"
+                                        userConfigStatusText.visible = true
+                                        userConfigStatusHideTimer.restart()
+                                        return
+                                    }
                                     var target = configTargetSelector.currentText.toLowerCase()
                                     LIFUConnector.writeUserConfig(target, userConfigEditor.text)
                                 }
                             }
 
                             ToolTip.visible: writeConfigHoverArea.containsMouse
-                                && LIFUConnector.firmwareUpdateRequired
-                            ToolTip.text: "Disabled: update firmware to the minimum required version (Firmware Update section above)."
+                                && !writeConfigButton.canUse
+                            ToolTip.text: settingsPage.consoleUserConfigBlocked
+                                ? "Disabled: console user config requires firmware "
+                                  + LIFUConnector.minConsoleUserConfigFirmwareVersion
+                                  + " or newer (Firmware Update section above)."
+                                : writeConfigButton.defaultConfigMode
+                                ? (LIFUConnector.hvConnected
+                                   ? "Reading console HWID and firmware version…"
+                                   : "Disabled: connect the console to generate a default config.")
+                                : "Disabled: update firmware to the minimum required version (Firmware Update section above)."
                             ToolTip.delay: 400
                             MouseArea {
                                 id: writeConfigHoverArea
