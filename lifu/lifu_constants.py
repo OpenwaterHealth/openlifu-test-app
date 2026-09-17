@@ -110,6 +110,15 @@ RUN_LOG_DATEFMT = "%H:%M:%S"
 MIN_CONSOLE_FW_VERSION = "1.2.5"
 MIN_TRANSMITTER_FW_VERSION = "2.0.7"
 
+# The console only gained the user-config command (OW_CMD_USR_CFG) after
+# 1.2.6 -- older consoles NAK it, which surfaced as a raw device error in
+# the Settings page.
+#
+# NOTE: this is app-side on purpose for now. The authoritative home for
+# "which firmware introduced this command" is openlifu-sdk (alongside
+# LIFUUserConfig); move it there once the SDK grows a capability check.
+MIN_CONSOLE_USER_CONFIG_FW_VERSION = "1.2.6"
+
 # Compliance buckets surfaced to QML. Order matters: aggregate "worst"
 # state across modules picks the numerically larger value.
 FW_COMPLIANCE_OK = 0
@@ -195,6 +204,21 @@ def firmware_compliance(version_str, min_version, packaged_version):
     if parsed_pkg is not None and parsed < parsed_pkg:
         return FW_COMPLIANCE_UPDATE_AVAILABLE
     return FW_COMPLIANCE_OK
+
+
+def console_supports_user_config(version_str) -> bool:
+    """True if a console running ``version_str`` implements user config.
+
+    Unreadable/unparseable versions return ``True``: a failed version
+    query must not lock the operator out of the config editor. The
+    attempt then fails on the device NAK, which is the same outcome as
+    before this check existed.
+    """
+    parsed = parse_firmware_version(version_str)
+    if parsed is None:
+        return True
+    floor = parse_firmware_version(MIN_CONSOLE_USER_CONFIG_FW_VERSION)
+    return floor is None or parsed >= floor
 
 
 def validate_firmware_version_pins():
