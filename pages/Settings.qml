@@ -59,6 +59,13 @@ Rectangle {
     readonly property bool configTargetIsConsole:
         configTargetSelector.currentText === "Console"
 
+    // True once this target's editor holds something the operator has seen:
+    // a config read back from the device, or text they typed themselves.
+    // Gates the "missing config parameters" notice so a freshly opened app
+    // -- empty editor, nothing read yet -- says nothing. Reset whenever the
+    // editor is cleared (target switch, Clear Config).
+    property bool userConfigTouched: false
+
     // ----------------------------------------------------------------
     // Sample console config
     //
@@ -83,8 +90,56 @@ Rectangle {
             "hw_ver": "sample-hw-ver-123",
             "fw_ver": settingsPage.consoleFwVersion,
             "sdk_ver": LIFUConnector.sdkVersion,
-            "updated": Qt.formatDateTime(new Date(), "yyyy-MM-dd hh:mm:ss")
+            "updated": settingsPage.nowStamp()
         }, null, 2)
+    }
+
+    function nowStamp() {
+        return Qt.formatDateTime(new Date(), "yyyy-MM-dd hh:mm:ss")
+    }
+
+    // The keys a complete console config carries. A config missing any of
+    // them -- including the factory stub, which is just a serial number --
+    // is treated as not yet set up, and the button offers to generate one.
+    // Presence is all that is checked: the values are the operator's.
+    readonly property var consoleConfigKeys:
+        ["sn", "hwid", "hw_ver", "fw_ver", "sdk_ver", "updated"]
+
+    function isIncompleteConfig(text) {
+        if (text.trim().length === 0)
+            return true
+        var parsed
+        try {
+            parsed = JSON.parse(text)
+        } catch (e) {
+            return false   // mid-edit or malformed: not ours to second-guess
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return false
+        // Case-insensitive so the factory stub's "SN" counts as "sn".
+        var present = Object.keys(parsed).map(function (k) { return k.toLowerCase() })
+        for (var i = 0; i < settingsPage.consoleConfigKeys.length; ++i) {
+            if (present.indexOf(settingsPage.consoleConfigKeys[i]) === -1)
+                return true
+        }
+        return false
+    }
+
+    // Stamp "updated" with the time of this write, creating the field if the
+    // config does not have one. Text that is not a JSON object passes through
+    // untouched -- writeUserConfig reports the parse error rather than this
+    // silently swallowing it.
+    function stampUpdated(text) {
+        var parsed
+        try {
+            parsed = JSON.parse(text)
+        } catch (e) {
+            return text
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return text
+        parsed["updated"] = settingsPage.nowStamp()
+        return JSON.stringify(parsed, null, 2)
     }
 
     // Font for the small "Check for Updates" icon buttons. Other widgets
@@ -414,6 +469,10 @@ Rectangle {
 
         function onUserConfigRead(target, jsonStr) {
             userConfigEditor.text = jsonStr
+            // Set after the assignment: a read that comes back empty still
+            // counts as "we looked", and that is exactly the case the
+            // missing-parameters notice exists for.
+            settingsPage.userConfigTouched = true
         }
 
         function onUserConfigStatus(target, success, message) {
@@ -1124,6 +1183,14 @@ Rectangle {
 
                                     wrapMode: TextArea.Wrap
 
+                                    // Any non-empty content -- typed, pasted,
+                                    // read back or generated -- is something
+                                    // the operator can see and act on.
+                                    onTextChanged: {
+                                        if (text.trim().length > 0)
+                                            settingsPage.userConfigTouched = true
+                                    }
+
                                     background: Rectangle {
                                         color: "#2A2F3B"
                                         radius: 4
@@ -1239,6 +1306,7 @@ Rectangle {
 
                                 onCurrentIndexChanged: {
                                     userConfigEditor.text = ""
+                                    settingsPage.userConfigTouched = false
                                     // Clearing the editor drops a Console
                                     // target straight into default-config
                                     // mode, which needs the live HWID and
@@ -1344,6 +1412,39 @@ Rectangle {
                                       + LIFUConnector.minConsoleUserConfigFirmwareVersion
                                       + " or newer."
                                 color: "#E74C3C"
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+
+                        // Incomplete console config. Same placement and
+                        // persistence as the firmware warning above, but
+                        // advisory amber: nothing is broken, the console
+                        // just has no complete config yet.
+                        //
+                        // Only after the operator has read a config or typed
+                        // one (userConfigTouched) -- an untouched editor on a
+                        // freshly opened app has nothing to be missing.
+                        // Suppressed when the firmware warning is showing,
+                        // since Generate is disabled in that case and telling
+                        // the operator to click it would be a dead end.
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: userConfigIncompleteText.implicitHeight + 16
+                            visible: writeConfigButton.defaultConfigMode
+                                     && settingsPage.userConfigTouched
+                                     && !settingsPage.consoleUserConfigBlocked
+                            radius: 6
+                            color: "#3B3320"
+                            border.color: "#F39C12"
+
+                            Text {
+                                id: userConfigIncompleteText
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                text: "Missing config parameters — click \"Generate Default Config\" to populate."
+                                color: "#F39C12"
                                 font.pixelSize: 12
                                 wrapMode: Text.WordWrap
                                 verticalAlignment: Text.AlignVCenter
@@ -1536,8 +1637,9 @@ Rectangle {
                         // it back into compliance first -- or when the target
                         // console predates the user-config command.
                         //
-                        // With the Console targeted and nothing in the editor
-                        // there is no config to write, so the button becomes
+                        // With the Console targeted and the editor holding no
+                        // complete config -- empty, or missing any of
+                        // consoleConfigKeys -- the button becomes
                         // "Generate Default Config" and fills the editor from
                         // buildDefaultConsoleConfig(). That press writes
                         // nothing: it leaves the editor non-empty, so the
@@ -1550,13 +1652,18 @@ Rectangle {
                             radius: 6
                             readonly property bool defaultConfigMode:
                                 settingsPage.configTargetIsConsole
-                                && userConfigEditor.text.trim().length === 0
+                                && settingsPage.isIncompleteConfig(userConfigEditor.text)
                             property bool canUse: !LIFUConnector.firmwareUpdateRequired
                                 && !settingsPage.consoleUserConfigBlocked
                                 && (!defaultConfigMode || settingsPage.consoleSampleConfigReady)
+                            // Generate wears a light green at rest -- a shade
+                            // off the Write Config hover green, enough to read
+                            // as a different action without leaving the family.
                             color: !canUse
                                 ? "#2A2F3B"
-                                : (writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B")
+                                : defaultConfigMode
+                                  ? (writeConfigArea.containsMouse ? "#58D68D" : "#2ECC71")
+                                  : (writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B")
                             border.color: !canUse
                                 ? "#3E4E6F"
                                 : (writeConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
@@ -1593,8 +1700,15 @@ Rectangle {
                                         userConfigStatusHideTimer.restart()
                                         return
                                     }
+                                    // "updated" records when the config landed
+                                    // on the device, so it is re-stamped on
+                                    // every write (and added if missing). The
+                                    // editor shows the stamped text -- what
+                                    // you see is what went out.
                                     var target = configTargetSelector.currentText.toLowerCase()
-                                    LIFUConnector.writeUserConfig(target, userConfigEditor.text)
+                                    var payload = settingsPage.stampUpdated(userConfigEditor.text)
+                                    userConfigEditor.text = payload
+                                    LIFUConnector.writeUserConfig(target, payload)
                                 }
                             }
 
@@ -1642,7 +1756,10 @@ Rectangle {
                                 id: clearConfigArea
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                onClicked: userConfigEditor.text = ""
+                                onClicked: {
+                                    userConfigEditor.text = ""
+                                    settingsPage.userConfigTouched = false
+                                }
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
