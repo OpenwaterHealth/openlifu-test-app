@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import glob
+import inspect
 import json
 import logging
 import os
@@ -45,6 +46,8 @@ from lifu.lifu_constants import (
     HV_EN_MODES,
     SPEED_OF_SOUND,
     NUM_ELEMENTS_PER_MODULE,
+    MAX_FOCUS_POINTS,
+    MIN_PROFILE_SWITCH_INTERVAL_S,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,16 +58,143 @@ __all__ = ["ControllerMixin"]
 class ControllerMixin:
     """Controller-page solution/sonication/HV-mode slots."""
 
+    # ------------------------------------------------------------------
+    # Multi-focus (rastered) helpers
+    # ------------------------------------------------------------------
+    #
+    # A solution may carry up to ``MAX_FOCUS_POINTS`` foci. Each focus
+    # becomes one delay profile row in ``delays``/``apodizations``, and the
+    # firmware cycles through ``execution_order`` at pulse boundaries --
+    # every entry gets ``pulse_count / len(execution_order)`` consecutive
+    # pulses, restarting at the top of each pulse train. The host is not
+    # involved once the sonication is started.
+    #
+    # All foci share a single pulse config (frequency/duration/amplitude);
+    # only the beamforming delays differ. That keeps ``pulse`` a dict
+    # rather than a list, which the SDK's ``check_solution`` safety pass
+    # requires.
+
+    @staticmethod
+    def _parse_focus_points(foci, xInput, yInput, zInput):
+        """Normalize a QML focus list into a list of ``[x, y, z]`` floats.
+
+        Accepts a list of 3-element sequences or of ``{"x":, "y":, "z":}``
+        maps (QML ListModel rows arrive as the latter). Falls back to the
+        single focus given by the scalar x/y/z arguments when *foci* is
+        empty or None, which is how the Transmitter page and every
+        pre-existing caller keep working unchanged.
+
+        Raises:
+            ValueError: If an entry is malformed or non-numeric.
+        """
+        if not foci:
+            return [[float(xInput), float(yInput), float(zInput)]]
+
+        points = []
+        for index, entry in enumerate(foci):
+            if isinstance(entry, dict):
+                try:
+                    values = [entry["x"], entry["y"], entry["z"]]
+                except KeyError as e:
+                    raise ValueError(
+                        f"Focus {index + 1} is missing coordinate {e}."
+                    ) from e
+            else:
+                values = list(entry)
+                if len(values) != 3:
+                    raise ValueError(
+                        f"Focus {index + 1} must have exactly 3 coordinates, got {len(values)}."
+                    )
+            try:
+                points.append([float(v) for v in values])
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Focus {index + 1} has a non-numeric coordinate: {e}") from e
+
+        if len(points) > MAX_FOCUS_POINTS:
+            raise ValueError(
+                f"{len(points)} foci requested but the transmitter supports at "
+                f"most {MAX_FOCUS_POINTS} delay profiles."
+            )
+        return points
+
+    @staticmethod
+    def _parse_execution_order(executionOrder, num_foci):
+        """Normalize a QML execution order into a list of 1-based ints.
+
+        Defaults to one pass over every focus in order (``[1..N]``). A
+        user-supplied order may repeat and reorder entries freely (e.g.
+        ``[1, 2, 1, 3]`` dwells twice on focus 1 per cycle).
+
+        Raises:
+            ValueError: If an entry is not an integer in ``1..num_foci``.
+        """
+        if not executionOrder:
+            return list(range(1, num_foci + 1))
+
+        order = []
+        for entry in executionOrder:
+            try:
+                value = int(entry)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Execution order entry '{entry}' is not a whole number.") from e
+            if value < 1 or value > num_foci:
+                raise ValueError(
+                    f"Execution order entry {value} is out of range; "
+                    f"valid focus indices are 1-{num_foci}."
+                )
+            order.append(value)
+        return order
+
+    @staticmethod
+    def _check_profile_switch_timing(num_foci, execution_order, sequence, pulse_duration_s):
+        """Validate the firmware's profile-switching interlocks.
+
+        The SDK raises on both of these deep inside the device write; we
+        check them up front so the operator gets an actionable message
+        before anything is pushed to hardware. Single-focus solutions are
+        exempt (no switching happens).
+
+        Raises:
+            ValueError: If the sequence cannot support the requested cycling.
+        """
+        if num_foci <= 1:
+            return
+
+        pulse_count = int(sequence["pulse_count"])
+        cycle_length = len(execution_order)
+        if pulse_count % cycle_length != 0:
+            raise ValueError(
+                f"Pulse count ({pulse_count}) must be divisible by the execution "
+                f"order length ({cycle_length}) so each entry gets a whole number "
+                f"of pulses. Try a pulse count that is a multiple of {cycle_length}."
+            )
+
+        dead_time = float(sequence["pulse_interval"]) - float(pulse_duration_s)
+        if dead_time < MIN_PROFILE_SWITCH_INTERVAL_S:
+            raise ValueError(
+                f"Pulse interval ({float(sequence['pulse_interval']) * 1e3:.3f} ms) must exceed "
+                f"the pulse duration ({float(pulse_duration_s) * 1e3:.3f} ms) by at least "
+                f"{MIN_PROFILE_SWITCH_INTERVAL_S * 1e3:.0f} ms so the firmware can switch "
+                f"focus between pulses. Increase the pulse interval or shorten the duration."
+            )
+
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
-    def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer"):
-        """Generates an ultrasound plot and emits data to QML."""
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList')
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList', int)
+    def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer", foci=None, executionOrder=None, focusIndex=0):
+        """Generates an ultrasound plot and emits data to QML.
+
+        *focusIndex* is the 0-based delay profile the element map should
+        show. The plot clamps it, so QML never has to guard against a
+        selection that outlived the focus list.
+        """
         try:
             #logger.info(f"Generating plot: X={x}, Y={y}, Z={z}, Frequency={freq}, Cycles={cycles}, Trigger={trigger}, Mode={mode}")
-            solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=self._txConnected)
+            solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=self._txConnected, foci=foci, executionOrder=executionOrder)
             if solution is None:
                 logger.error("Plot generation skipped: no valid solution.")
                 return
-            image_data = generate_ultrasound_plot_from_solution(solution, mode)
+            image_data = generate_ultrasound_plot_from_solution(solution, mode, focus_index=focusIndex)
             #image_data = generate_ultrasound_plot(x, y, z, freq, cycles, trigger, mode)
             if image_data == "ERROR":
                 logger.error("Plot generation failed")
@@ -76,8 +206,18 @@ class ControllerMixin:
             logger.error(f"Error generating plot: {e}")
 
 
-    def get_solution(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=False):
-        """Simulate configuring the transmitter."""
+    def get_solution(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, validate=False, foci=None, executionOrder=None):
+        """Build a solution dict from the UI parameters (or a loaded file).
+
+        When *foci* holds more than one point the result is a multi-profile
+        solution: ``delays``/``apodizations`` become ``(N, 64)`` arrays and
+        ``execution_order`` tells the firmware which profile to fire on each
+        pulse. *foci* and *executionOrder* are ignored when a solution has
+        been loaded from a file. 
+
+        Returns ``None`` (after surfacing an error to the UI) if the inputs
+        cannot produce a valid solution.
+        """
         num_modules = self._num_modules_connected if self._num_modules_connected > 0 else 1
         if self._solution_loaded:
             logger.info("Using loaded solution for configuration")
@@ -115,17 +255,6 @@ class ControllerMixin:
                     "duration": duration_seconds,
                     "amplitude": 1.0
                     }
-            focus = np.array([float(xInput), float(yInput), float(zInput)])
-
-            pinmap_data = self._load_pinmap_data(num_modules)
-            element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
-            numelements = element_positions.shape[0]
-            logger.debug(f"{num_modules}x config file loaded")
-            distances = np.sqrt(np.sum((focus - element_positions)**2, 1))
-            tof = distances*1e-3 / SPEED_OF_SOUND
-            delays = tof.max() - tof
-            apodizations = np.ones(numelements)
-            transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
 
             pulse_count = int(pulseCount)
             pulse_train_interval = float(trainInterval)
@@ -133,6 +262,40 @@ class ControllerMixin:
                         "pulse_count": pulse_count,
                         "pulse_train_interval": pulse_train_interval,
                         "pulse_train_count": int(trainCount)}
+
+            try:
+                focus_points = self._parse_focus_points(foci, xInput, yInput, zInput)
+                execution_order = self._parse_execution_order(executionOrder, len(focus_points))
+                self._check_profile_switch_timing(
+                    len(focus_points), execution_order, sequence, duration_seconds
+                )
+            except ValueError as e:
+                logger.error(f"Invalid focus configuration: {e}")
+                self._emit_device_error("Focus Points", str(e))
+                return None
+
+            pinmap_data = self._load_pinmap_data(num_modules)
+            element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
+            numelements = element_positions.shape[0]
+            logger.debug(f"{num_modules}x config file loaded")
+
+            # One delay-profile row per focus. Row i is fired whenever the
+            # firmware's execution order reaches profile i+1.
+            delay_rows = []
+            for focus in focus_points:
+                distances = np.sqrt(np.sum((np.array(focus) - element_positions)**2, 1))
+                tof = distances*1e-3 / SPEED_OF_SOUND
+                delay_rows.append(tof.max() - tof)
+            delays = np.vstack(delay_rows)
+            apodizations = np.ones((len(focus_points), numelements))
+
+            # Preserve backwards compatibility for single-focus case
+            if len(focus_points) == 1:
+                delays = delays[0]
+                apodizations = apodizations[0]
+
+            transducer_dummy = self._build_transducer_from_pinmap(pinmap_data)
+
             solution = {
                 "id": "solution",
                 "name": "Solution",
@@ -141,7 +304,14 @@ class ControllerMixin:
                 "pulse": pulse,
                 "sequence": sequence,
                 "voltage": float(voltage),
-                "transducer": transducer_dummy}
+                "transducer": transducer_dummy,
+                "foci": [{"position": list(point), "units": "mm"} for point in focus_points],
+                "execution_order": execution_order}
+            if len(focus_points) > 1:
+                logger.info(
+                    f"Built {len(focus_points)}-focus solution, execution order "
+                    f"{execution_order} ({pulse_count // len(execution_order)} pulse(s) per entry)"
+                )
         return solution
 
     @pyqtSlot(str, result=bool)
@@ -187,12 +357,34 @@ class ControllerMixin:
 
 
     @pyqtSlot(str, str, str, str, str, result=bool)
-    def directSetSequence(self, pulseInterval, pulseCount, trainInterval, trainCount, mode):
-        """Directly update trigger/sequence parameters without re-running the full configuration."""
+    @pyqtSlot(str, str, str, str, str, str, str, result=bool)
+    def directSetSequence(self, pulseInterval, pulseCount, trainInterval, trainCount, mode,
+                          durationS=None, voltage=None):
+        """Directly update trigger/sequence parameters without re-running the full configuration.
+
+        *durationS* and *voltage* are optional and used only to re-run the
+        safety envelope: this path writes straight to the TX device, so
+        without them a pulse-interval edit would reach the hardware with
+        nothing validating the resulting duty cycle.
+        """
         logger.info(f"Directly setting sequence parameters: pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
             self._emit_device_error("Set Sequence", "No TX device connected.")
             return False
+        if durationS is not None:
+            try:
+                probe = {
+                    "pulse": {"duration": float(durationS) * 1e-6},
+                    "sequence": {"pulse_interval": float(pulseInterval) * 1e-3,
+                                 "pulse_count": int(pulseCount),
+                                 "pulse_train_interval": float(trainInterval),
+                                 "pulse_train_count": int(trainCount)},
+                    "voltage": float(voltage) if voltage is not None else 0.0,
+                }
+            except (TypeError, ValueError):
+                probe = None
+            if probe is not None and not self._validate_solution_safety(probe, "Set Sequence"):
+                return False
         # Pause telemetry polling so the 1 Hz poll thread does not inject
         # temperature / voltage queries between this burst's chunks; see
         # ``LIFUConnector._pause_polling_during_burst`` for rationale.
@@ -245,7 +437,8 @@ class ControllerMixin:
 
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, result=bool)
-    def directSetPulse(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList', result=bool)
+    def directSetPulse(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode, foci=None, executionOrder=None):
         """Directly update pulse/transducer settings without touching the HV controller."""
         logger.info(f"Directly setting pulse parameters: voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
@@ -259,9 +452,12 @@ class ControllerMixin:
         self._set_async_mode(False, reason="directSetPulse")
         try:
             solution = self.get_solution(xInput, yInput, zInput, freq, voltage,
-                                         pulseInterval, pulseCount, trainInterval, trainCount, durationS)
+                                         pulseInterval, pulseCount, trainInterval, trainCount, durationS,
+                                         foci=foci, executionOrder=executionOrder)
             if solution is None:
-                self._emit_device_error("Set Pulse", "Failed to build a valid solution.")
+                # get_solution already emits error by this point
+                return False
+            if not self._validate_solution_safety(solution, "Set Pulse"):
                 return False
             transducer = solution.get("transducer") if isinstance(solution, dict) else None
             invert_flag = bool(transducer["module_invert"]) if (
@@ -272,6 +468,24 @@ class ControllerMixin:
                 self.interface.txdevice.set_module_invert,
                 invert_flag,
             )
+            # Multi-focus solutions (built here or loaded from file) carry
+            # the profile cycle order; without it the device would fall
+            # back to a single pass over 1..N. The kwargs are sent only
+            # when a device actually supports them -- the SDK's simulated
+            # TX device has a narrower set_solution signature and does not
+            # model profile cycling.
+            profile_kwargs = {}
+            for name in ("execution_order", "pulse_profile_map"):
+                value = solution.get(name)
+                if value is None:
+                    continue
+                if name in inspect.signature(self.interface.txdevice.set_solution).parameters:
+                    profile_kwargs[name] = value
+                else:
+                    logger.warning(
+                        f"TX device does not accept '{name}'; focus cycling will "
+                        f"use the device's default profile order."
+                    )
             self._call_with_comm_retry(
                 "Set Pulse",
                 self.interface.txdevice.set_solution,
@@ -280,6 +494,7 @@ class ControllerMixin:
                 apodizations=solution['apodizations'],
                 sequence=solution['sequence'],
                 trigger_mode=str(mode).lower(),
+                **profile_kwargs,
             )
             logger.info("Pulse settings directly updated.")
             return True
@@ -306,7 +521,8 @@ class ControllerMixin:
 
 
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str)
-    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode):
+    @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList')
+    def configure_transmitter(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode, foci=None, executionOrder=None):
         """Simulate configuring the transmitter."""
         logger.info("Configuring transmitter with parameters: "
                     f"voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm "
@@ -316,9 +532,12 @@ class ControllerMixin:
             self._emit_device_error("Configure Transmitter", "No TX device connected.")
             return
         self.queryNumModules()
-        solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS)
+        solution = self.get_solution(xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS,
+                                     foci=foci, executionOrder=executionOrder)
         if solution is None:
-            self._emit_device_error("Configure Transmitter", "Failed to build a valid solution.")
+            # get_solution already surfaced the specific reason.
+            return
+        if not self._validate_solution_safety(solution, "Configure Transmitter"):
             return
 
         # Pause telemetry polling for the duration of the burst. The
@@ -335,11 +554,25 @@ class ControllerMixin:
         # Force async OFF for the duration of the write.
         self._set_async_mode(False, reason="configure_transmitter")
         try:
+            if self._bypass_safety_checks:
+                # Duty cycle is informational here; not every interface
+                # implementation exposes the helper (the simulator does not),
+                # and a logging call must never break Configure.
+                try:
+                    duty = f"{100 * self.interface.get_sequence_duty_cycle(solution):.1f}%"
+                except Exception:
+                    duty = "unknown"
+                logger.warning(
+                    "[SAFETY] Configuring with safety limits BYPASSED "
+                    "(duty cycle %s, %.1f V) -- check_solution() skipped.",
+                    duty, float(solution["voltage"]),
+                )
             self._call_with_comm_retry(
                 "Configure Transmitter",
                 self.interface.set_solution,
                 solution,
                 trigger_mode=mode,
+                _allow_unsafe_solution=self._bypass_safety_checks,
             )
             self._configured = True
             self.update_state()
@@ -423,6 +656,7 @@ class ControllerMixin:
             self._async_mode_enabled = True
             self._state = RUNNING
             self.stateChanged.emit(self._state)
+            self._start_controller_telemetry_run_if_armed()
             logger.info(f"[START] Sonication started "
                         f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
                         f"turn_hv_on={turn_hv_on})")
@@ -475,6 +709,8 @@ class ControllerMixin:
             self._async_mode_enabled = False
             self._state = READY
             self.stateChanged.emit(self._state)
+            self._capture_controller_telemetry_snapshot("run_stop_snapshot")
+            self._stop_controller_telemetry_run()
             logger.info(f"[STOP] Sonication stopped "
                         f"(HV mode: {HV_EN_MODES[self._hv_enable_mode]}, "
                         f"turn_hv_off={turn_hv_off})")
@@ -559,6 +795,111 @@ class ControllerMixin:
         # Update state after mode change (important for OFF->ON transitions)
         self.update_state()
     
+
+    def _max_allowed_duty_cycle(self):
+        """Highest duty cycle the active voltage-table profile permits."""
+        try:
+            self.interface._load_voltage_table()
+            return float(max(self.interface.duty_cycles))
+        except Exception:
+            # Simulated interfaces (and any profile-less stub) have no table;
+            # fall back to the tightest ceiling shipped in the SDK.
+            return 0.5
+
+    def _validate_solution_safety(self, solution, label):
+        """Run the safety pass that the device-write paths would otherwise skip.
+
+        Two gaps this closes:
+
+        * ``check_solution`` measures duty cycle *averaged over the pulse-train
+          period* whenever ``pulse_train_interval > 0``, so a burst running at
+          100% during the train reads as a fraction of a percent and passes.
+          We additionally enforce the in-train duty (``duration /
+          pulse_interval``), which is what the array actually sees.
+        * ``directSetPulse`` / ``directSetSequence`` write straight to the TX
+          device and never reach ``LIFUInterface.set_solution``, so nothing
+          validated them at all. Calling this from those paths gives a field
+          edit the same scrutiny as pressing Configure.
+
+        Returns True when it is safe to proceed (or the operator has armed the
+        bypass); returns False after surfacing the reason to the UI.
+        """
+        if self._bypass_safety_checks:
+            return True
+
+        try:
+            pulse_interval = float(solution["sequence"]["pulse_interval"])
+            duration = float(solution["pulse"]["duration"])
+        except (KeyError, TypeError, ValueError):
+            return True  # nothing meaningful to check
+
+        if pulse_interval > 0:
+            in_train_duty = duration / pulse_interval
+            max_duty = self._max_allowed_duty_cycle()
+            if in_train_duty > max_duty:
+                self._emit_device_error(
+                    label,
+                    f"In-train duty cycle ({100 * in_train_duty:.1f} %) exceeds the maximum "
+                    f"allowed duty cycle ({100 * max_duty:.1f} %). The pulse duration "
+                    f"({duration * 1e6:.0f} us) is too long for the pulse interval "
+                    f"({pulse_interval * 1e3:.3f} ms).\n\n"
+                    f"Tick 'Bypass duty-cycle / voltage safety limits' to run it anyway."
+                )
+                return False
+
+        # Full SDK envelope (averaged duty, voltage, sequence duration). The
+        # Configure path gets this from set_solution; the direct setters do not.
+        try:
+            check = self.interface.check_solution
+        except AttributeError:
+            return True
+        try:
+            check(solution)
+        except LIFUSolutionError as e:
+            self._emit_device_error(
+                label,
+                f"{e}\n\nTick 'Bypass duty-cycle / voltage safety limits' to run it anyway.")
+            return False
+        except Exception as e:
+            logger.warning("%s: could not run check_solution (%s); allowing.", label, e)
+        return True
+
+    @pyqtSlot(bool)
+    def setSafetyBypass(self, enabled):
+        """Enable/disable the solution safety-limit bypass.
+
+        When enabled, Configure passes ``_allow_unsafe_solution=True`` so
+        the SDK skips :meth:`check_solution` -- the duty-cycle, voltage and
+        sequence-duration envelope. Intended for instrumented bench testing
+        only; QML gates this behind an explicit confirmation dialog.
+
+        Toggling drops the configured flag: the bypass is only consulted at
+        Configure time, so the operator must re-Configure for a change to
+        take effect. That also disables Start until they do.
+        """
+        enabled = bool(enabled)
+        if enabled == self._bypass_safety_checks:
+            return
+        if self._state == RUNNING:
+            logger.warning("Refusing to change safety bypass while running")
+            return
+
+        self._bypass_safety_checks = enabled
+        if enabled:
+            logger.warning(
+                "[SAFETY] Solution safety limits BYPASSED by operator -- "
+                "check_solution() will be skipped at Configure. Duty-cycle, "
+                "voltage and sequence-duration limits are not enforced."
+            )
+        else:
+            logger.info("[SAFETY] Solution safety limits re-enabled")
+
+        # The flag is read at Configure time, so anything already programmed
+        # was validated under the old setting. Force a re-Configure.
+        self._configured = False
+        self.update_state()
+        self._apply_auto_hv_for_state()
+        self.safetyBypassChanged.emit(enabled)
 
     @pyqtSlot(result='QStringList')
     def getHvEnableModes(self):
