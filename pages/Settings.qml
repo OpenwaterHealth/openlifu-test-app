@@ -59,6 +59,35 @@ Rectangle {
     readonly property bool configTargetIsConsole:
         configTargetSelector.currentText === "Console"
 
+    // ----------------------------------------------------------------
+    // Unwritten-changes state
+    //
+    // The editor is a scratchpad: generating a default or editing the JSON
+    // changes nothing on the device until Write Config is pressed. These
+    // track that gap -- ``userConfigBaseline`` is the text as it last came
+    // from (or went to) the device, so anything else in the editor is an
+    // unwritten change. The status line names it and the Write Config
+    // button breathes until it is resolved.
+    // ----------------------------------------------------------------
+    property string userConfigBaseline: ""
+    property bool userConfigGenerated: false
+
+    readonly property bool userConfigDirty:
+        userConfigEditor.text !== userConfigBaseline
+
+    readonly property string pendingWriteMessage:
+        userConfigDirty
+            ? "Config modified, click 'Write Config' to save the changes."
+            : userConfigGenerated
+              ? "Default config generated. Click 'Write Config' to program the device."
+              : ""
+
+    // Clears the pending state: the editor now matches the device.
+    function markUserConfigSaved(text) {
+        userConfigBaseline = text
+        userConfigGenerated = false
+    }
+
     // True once this target's editor holds something the operator has seen:
     // a config read back from the device, or text they typed themselves.
     // Gates the "missing config parameters" notice so a freshly opened app
@@ -469,6 +498,8 @@ Rectangle {
 
         function onUserConfigRead(target, jsonStr) {
             userConfigEditor.text = jsonStr
+            // What the device holds: edits from here on are unwritten.
+            settingsPage.markUserConfigSaved(jsonStr)
             // Set after the assignment: a read that comes back empty still
             // counts as "we looked", and that is exactly the case the
             // missing-parameters notice exists for.
@@ -476,19 +507,16 @@ Rectangle {
         }
 
         function onUserConfigStatus(target, success, message) {
-            // Flash the status text briefly; reuse the editor placeholder area
-            userConfigStatusText.text = message
-            userConfigStatusText.color = success ? "#2ECC71" : "#E74C3C"
-            userConfigStatusText.visible = true
-            userConfigStatusHideTimer.restart()
+            userConfigStatusText.flash(message, success ? "#2ECC71" : "#E74C3C")
+            // Only a write that landed clears the pending state -- a failed
+            // one leaves the button breathing, because the device still does
+            // not have what is in the editor.
+            if (success)
+                settingsPage.markUserConfigSaved(userConfigEditor.text)
         }
 
         function onTestReportLoaded(success, message) {
-            // Flash the status text briefly; reuse the editor placeholder area
-            userConfigStatusText.text = message
-            userConfigStatusText.color = success ? "#2ECC71" : "#E74C3C"
-            userConfigStatusText.visible = true
-            userConfigStatusHideTimer.restart()
+            userConfigStatusText.flash(message, success ? "#2ECC71" : "#E74C3C")
         }
 
         function onTxDeviceInfoReceived(modulesList) {
@@ -1139,20 +1167,36 @@ Rectangle {
                             Layout.alignment: Qt.AlignHCenter
                         }
 
-                        // Status message (hidden until a read/write completes)
+                        // Status line. Two layers: a transient result from a
+                        // read/write/report load, which auto-hides after
+                        // four seconds, and underneath it the standing
+                        // "you have unwritten changes" message, which stays
+                        // up until the config is written or reverted.
                         Timer {
                             id: userConfigStatusHideTimer
                             interval: 4000
-                            onTriggered: userConfigStatusText.visible = false
+                            onTriggered: userConfigStatusText.transientText = ""
                         }
 
                         Text {
                             id: userConfigStatusText
+                            property string transientText: ""
+                            property color transientColor: "#BDC3C7"
+
+                            function flash(message, color) {
+                                transientText = message
+                                transientColor = color
+                                userConfigStatusHideTimer.restart()
+                            }
+
                             Layout.fillWidth: true
                             horizontalAlignment: Text.AlignHCenter
                             font.pixelSize: 12
                             wrapMode: Text.WordWrap
-                            visible: false
+                            text: transientText !== "" ? transientText
+                                                       : settingsPage.pendingWriteMessage
+                            color: transientText !== "" ? transientColor : "#F39C12"
+                            visible: text !== ""
                         }
 
                         Item {
@@ -1307,6 +1351,7 @@ Rectangle {
                                 onCurrentIndexChanged: {
                                     userConfigEditor.text = ""
                                     settingsPage.userConfigTouched = false
+                                    settingsPage.markUserConfigSaved("")
                                     // Clearing the editor drops a Console
                                     // target straight into default-config
                                     // mode, which needs the live HWID and
@@ -1656,6 +1701,12 @@ Rectangle {
                             property bool canUse: !LIFUConnector.firmwareUpdateRequired
                                 && !settingsPage.consoleUserConfigBlocked
                                 && (!defaultConfigMode || settingsPage.consoleSampleConfigReady)
+                            // Pulse only when this button is the one to press:
+                            // there are unwritten changes, it currently writes
+                            // (rather than generates), and it is enabled.
+                            readonly property bool breathing:
+                                canUse && !defaultConfigMode
+                                && settingsPage.pendingWriteMessage !== ""
                             // Generate wears a light green at rest -- a shade
                             // off the Write Config hover green, enough to read
                             // as a different action without leaving the family.
@@ -1669,7 +1720,41 @@ Rectangle {
                                 : (writeConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
                             opacity: canUse ? 1.0 : 0.55
 
+                            // Breathing highlight while the editor holds
+                            // something the device does not. Declared before
+                            // the label so it washes the fill, not the text,
+                            // and it takes no input -- the MouseArea below
+                            // still gets every click.
+                            //
+                            // alwaysRunToEnd lets the sequence finish on the
+                            // way out instead of freezing mid-glow; it ends
+                            // at 0, so the button settles back to its own
+                            // color once the config is written.
+                            Rectangle {
+                                id: writeConfigPulse
+                                anchors.fill: parent
+                                radius: parent.radius
+                                color: "#27AE60"
+                                opacity: 0
+                                visible: opacity > 0
+
+                                SequentialAnimation on opacity {
+                                    running: writeConfigButton.breathing
+                                    loops: Animation.Infinite
+                                    alwaysRunToEnd: true
+                                    NumberAnimation {
+                                        from: 0; to: 0.7; duration: 1200
+                                        easing.type: Easing.InOutSine
+                                    }
+                                    NumberAnimation {
+                                        from: 0.7; to: 0; duration: 1200
+                                        easing.type: Easing.InOutSine
+                                    }
+                                }
+                            }
+
                             Text {
+                                id: writeConfigLabel
                                 anchors.centerIn: parent
                                 text: writeConfigButton.defaultConfigMode
                                       ? "Generate Default Config" : "Write Config"
@@ -1691,13 +1776,15 @@ Rectangle {
                                         // the button again -- by then it reads
                                         // "Write Config", since the editor is
                                         // no longer empty.
-                                        userConfigEditor.text =
+                                        var generated =
                                             settingsPage.buildDefaultConsoleConfig()
-                                        userConfigStatusText.text =
-                                            "Default config generated. Review it, then press Write Config to send it."
-                                        userConfigStatusText.color = "#F39C12"
-                                        userConfigStatusText.visible = true
-                                        userConfigStatusHideTimer.restart()
+                                        userConfigEditor.text = generated
+                                        // The message itself comes from
+                                        // pendingWriteMessage and stays up
+                                        // until the config is written or
+                                        // edited -- no flash, no timer.
+                                        settingsPage.userConfigBaseline = generated
+                                        settingsPage.userConfigGenerated = true
                                         return
                                     }
                                     // "updated" records when the config landed
@@ -1759,6 +1846,7 @@ Rectangle {
                                 onClicked: {
                                     userConfigEditor.text = ""
                                     settingsPage.userConfigTouched = false
+                                    settingsPage.markUserConfigSaved("")
                                 }
                             }
 
