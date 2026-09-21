@@ -72,8 +72,25 @@ Rectangle {
     property string userConfigBaseline: ""
     property bool userConfigGenerated: false
 
+    // Held while the editor and its baseline are being set together. They
+    // are two assignments and bindings re-evaluate between them, so the gap
+    // reads as "modified" -- long enough to kick off a breath of the Write
+    // Config pulse on something as innocent as a Read Config, which
+    // alwaysRunToEnd then plays out in full.
+    property bool userConfigUpdating: false
+
     readonly property bool userConfigDirty:
-        userConfigEditor.text !== userConfigBaseline
+        !userConfigUpdating && userConfigEditor.text !== userConfigBaseline
+
+    // The only way programmatic code should fill the editor: content and
+    // baseline land together, so nothing in between looks like an edit.
+    function setUserConfigText(text) {
+        userConfigUpdating = true
+        userConfigEditor.text = text
+        userConfigBaseline = text
+        userConfigGenerated = false
+        userConfigUpdating = false
+    }
 
     readonly property string pendingWriteMessage:
         userConfigDirty
@@ -86,6 +103,31 @@ Rectangle {
     function markUserConfigSaved(text) {
         userConfigBaseline = text
         userConfigGenerated = false
+    }
+
+    // The target the editor's contents belong to. Tracked by name rather
+    // than by index: rebuildConfigTargets() replaces the whole model, so
+    // dropping the Console (or a module count change) can slide the
+    // selection from "Console" to "TX 0" while currentIndex stays 0 --
+    // onCurrentIndexChanged never fires, and the old target's config, its
+    // baseline and its pending state would carry over to the new one.
+    property string userConfigTarget: ""
+
+    // Start the new target with an empty editor and nothing pending.
+    // Ignores a blank currentText: reassigning the model can blip through
+    // "no selection" on its way to the same target, and that must not wipe
+    // what the operator is editing.
+    function syncUserConfigTarget() {
+        var target = configTargetSelector.currentText
+        if (target === "" || target === userConfigTarget)
+            return
+        userConfigTarget = target
+        setUserConfigText("")
+        userConfigTouched = false
+        // The Generate button fills hwid/fw_ver from the live console.
+        // Cached after the first call, so this is just a re-emit.
+        if (target === "Console" && LIFUConnector.hvConnected)
+            LIFUConnector.queryHvInfo()
     }
 
     // True once this target's editor holds something the operator has seen:
@@ -497,9 +539,9 @@ Rectangle {
         }
 
         function onUserConfigRead(target, jsonStr) {
-            userConfigEditor.text = jsonStr
-            // What the device holds: edits from here on are unwritten.
-            settingsPage.markUserConfigSaved(jsonStr)
+            // Atomic: this is what the device holds, so edits from here on
+            // are the unwritten ones. A plain read must not look like one.
+            settingsPage.setUserConfigText(jsonStr)
             // Set after the assignment: a read that comes back empty still
             // counts as "we looked", and that is exactly the case the
             // missing-parameters notice exists for.
@@ -1348,18 +1390,11 @@ Rectangle {
                                 model: settingsPage.configTargetModel
                                 enabled: settingsPage.configTargetModel.length > 0
 
-                                onCurrentIndexChanged: {
-                                    userConfigEditor.text = ""
-                                    settingsPage.userConfigTouched = false
-                                    settingsPage.markUserConfigSaved("")
-                                    // Clearing the editor drops a Console
-                                    // target straight into default-config
-                                    // mode, which needs the live HWID and
-                                    // firmware version. Cached after the
-                                    // first call, so this is just a re-emit.
-                                    if (currentText === "Console" && LIFUConnector.hvConnected)
-                                        LIFUConnector.queryHvInfo()
-                                }
+                                // By text, not by index: the model is rebuilt
+                                // wholesale, so the selected target can change
+                                // without the index moving. See
+                                // syncUserConfigTarget().
+                                onCurrentTextChanged: settingsPage.syncUserConfigTarget()
 
                                 // Show the entry text as-is ("Console", "TX 0").
                                 // Never the index: "Console" is not a module
@@ -1776,14 +1811,15 @@ Rectangle {
                                         // the button again -- by then it reads
                                         // "Write Config", since the editor is
                                         // no longer empty.
-                                        var generated =
-                                            settingsPage.buildDefaultConsoleConfig()
-                                        userConfigEditor.text = generated
-                                        // The message itself comes from
+                                        settingsPage.setUserConfigText(
+                                            settingsPage.buildDefaultConsoleConfig())
+                                        // Set last, so the pulse and the
+                                        // standing message start from here
+                                        // and not from the assignment above.
+                                        // The message comes from
                                         // pendingWriteMessage and stays up
                                         // until the config is written or
                                         // edited -- no flash, no timer.
-                                        settingsPage.userConfigBaseline = generated
                                         settingsPage.userConfigGenerated = true
                                         return
                                     }
@@ -1844,9 +1880,8 @@ Rectangle {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 onClicked: {
-                                    userConfigEditor.text = ""
+                                    settingsPage.setUserConfigText("")
                                     settingsPage.userConfigTouched = false
-                                    settingsPage.markUserConfigSaved("")
                                 }
                             }
 

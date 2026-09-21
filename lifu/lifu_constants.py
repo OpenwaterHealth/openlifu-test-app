@@ -117,7 +117,7 @@ MIN_TRANSMITTER_FW_VERSION = "2.0.7"
 # NOTE: this is app-side on purpose for now. The authoritative home for
 # "which firmware introduced this command" is openlifu-sdk (alongside
 # LIFUUserConfig); move it there once the SDK grows a capability check.
-MIN_CONSOLE_USER_CONFIG_FW_VERSION = "1.2.6"
+MIN_CONSOLE_USER_CONFIG_FW_VERSION = "1.2.7"
 
 # Compliance buckets surfaced to QML. Order matters: aggregate "worst"
 # state across modules picks the numerically larger value.
