@@ -39,6 +39,7 @@ Window {
             logoSource: "../assets/images/OpenwaterLogo.png" // Correct relative path
             appVerText: appVersion
             sdkVerText: LIFUConnector.sdkVersion
+            safetyBypassActive: LIFUConnector.safetyBypassEnabled
         }
 
         // Layout for Sidebar and Main Content
