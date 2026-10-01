@@ -58,11 +58,12 @@ def profile_color_hex(count):
 def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0):
     """Render the pulse / pulse-train / element-map figure for *solution*.
 
-    *focus_index* is the 0-based delay profile drawn on the element map and
-    emphasised in the pulse-train envelope. Every focus stays visible in
-    both panels, so the selection only decides which is shown in full
-    detail. Out-of-range values are clamped rather than raising, so a stale
-    UI selection still renders.
+    *focus_index* is the 0-based delay profile the device is pinned to: its
+    delays go on the element map and the pulse train is drawn as firing only
+    it. Negative means "All": the device rasters the execution order, so the
+    train is coloured per focus and the map shows the profile fired first.
+    Out-of-range values are clamped rather than raising, so a stale UI
+    selection still renders.
     """
     plt.style.use('dark_background')
     fig, ax = plt.subplots(3, 1, figsize=(7.5, 6.5), gridspec_kw={'height_ratios': [1, 1, 3], 'hspace': 0.35})
@@ -76,15 +77,19 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
     delays = np.atleast_2d(np.array(solution["delays"]))
     apodizations = np.atleast_2d(np.array(solution["apodizations"]))
     n_profiles = delays.shape[0]
+    execution_order = list(solution.get("execution_order") or range(1, n_profiles + 1))
     try:
         focus_index = int(focus_index)
     except (TypeError, ValueError):
-        focus_index = 0
-    focus_index = min(max(focus_index, 0), n_profiles - 1)
+        focus_index = -1
+    single_view = focus_index >= 0
+    if single_view:
+        focus_index = min(focus_index, n_profiles - 1)
+    else:
+        focus_index = min(max(int(execution_order[0]) - 1, 0), n_profiles - 1)
     # Apodization rows are only ever fewer than delay rows in a malformed
     # solution. Clamp separately so a bad file still renders.
     apod_index = min(focus_index, apodizations.shape[0] - 1)
-    execution_order = list(solution.get("execution_order") or range(1, n_profiles + 1))
     transducer = solution.get('transducer', {})
     sequence = solution["sequence"]
     voltage = solution["voltage"]
@@ -119,6 +124,9 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
         # execution order is walked at pulse boundaries, giving each entry
         # pulse_count/len(order) consecutive pulses, and restarts at the
         # top of every pulse train.
+        if single_view:
+            # Pinned: the firmware's cycle is cleared and every pulse is this focus.
+            execution_order = [focus_index + 1]
         cycle_length = len(execution_order)
         pulses_per_entry = max(1, int(sequence['pulse_count']) // cycle_length)
         pulse_index = np.floor(pulse_train_t / pulse_interval).astype(int)
@@ -130,40 +138,28 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
                            np.full_like(pulse_train_t, -A/100),
                            color="#888888", alpha=1.0)
         # No legend. At 16 profiles it covers the whole panel, hiding the
-        # pulses it labels. Instead the selected focus keeps its colour and
-        # everything else goes grey, so the panel shows where that focus
-        # fires in the train.
-        selected_profile = focus_index + 1
-        selected_color = profile_color(selected_profile - 1)
-
-        other_mask = firing & (profile_at_t != selected_profile)
-        if other_mask.any():
-            ax[1].fill_between(pulse_train_t * 1e3,
-                               pulse_train_waveform_posenv,
-                               pulse_train_waveform_negenv,
-                               where=other_mask, color="#6E7480")
-        selected_mask = firing & (profile_at_t == selected_profile)
-        if selected_mask.any():
-            ax[1].fill_between(pulse_train_t * 1e3,
-                               pulse_train_waveform_posenv,
-                               pulse_train_waveform_negenv,
-                               where=selected_mask, color=selected_color)
+        # pulses it labels. Each pulse carries its focus's colour instead,
+        # matching the dropdown swatches.
+        for profile in sorted(set(execution_order)):
+            mask = firing & (profile_at_t == profile)
+            if mask.any():
+                ax[1].fill_between(pulse_train_t * 1e3,
+                                   pulse_train_waveform_posenv,
+                                   pulse_train_waveform_negenv,
+                                   where=mask, color=profile_color(profile - 1))
 
         # A pulse lasts microseconds on a millisecond axis, so each bar is
-        # sub-pixel wide and colour alone is invisible. Mark the selected
-        # focus's pulses instead, up to the point where the markers would
-        # merge into a smear.
+        # sub-pixel wide and colour alone is invisible. Mark each pulse in
+        # its colour instead, up to the point where the markers would merge
+        # into a smear.
         total_pulses = int(sequence['pulse_count'])
-        selected_times_ms = [
-            k * pulse_interval * 1e3
-            for k in range(total_pulses)
-            if execution_order[(k // pulses_per_entry) % cycle_length] == selected_profile
-        ]
-        if 0 < len(selected_times_ms) <= 64:
-            ax[1].plot(selected_times_ms, [A * 1.22] * len(selected_times_ms),
-                       linestyle='none', marker='v', markersize=5,
-                       markeredgecolor='white', markeredgewidth=0.5,
-                       color=selected_color)
+        if 0 < total_pulses <= 64:
+            for k in range(total_pulses):
+                profile = execution_order[(k // pulses_per_entry) % cycle_length]
+                ax[1].plot([k * pulse_interval * 1e3], [A * 1.22],
+                           linestyle='none', marker='v', markersize=5,
+                           markeredgecolor='white', markeredgewidth=0.5,
+                           color=profile_color(profile - 1))
     else:
         ax[1].fill_between(pulse_train_t * 1e3, pulse_train_waveform_posenv, pulse_train_waveform_negenv, alpha=1.0)
         ax[1].legend(["Pulse Train Envelope"], loc="upper right")
@@ -174,8 +170,9 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
 
     if 'elements' in transducer:
         element_positions = np.array([elem.get('position', [0, 0, 0]) for elem in transducer['elements']])
-        # The map can only show one delay pattern at a time. Draw the
-        # selected profile and mark every focus, so the raster stays legible.
+        # The map can only show one delay pattern at a time. Draw the pinned
+        # profile (for "All", the one fired first) and mark every focus, so
+        # the raster stays legible.
         ax[2].scatter(element_positions[:, 0], element_positions[:, 1], c=delays[focus_index], marker='s', s=apodizations[apod_index]*ELEMENT_MARKER_AREA, cmap='turbo', edgecolors='white')
         ax[2].set_xlabel("X (mm)")
         ax[2].set_ylabel("Y (mm)")
@@ -190,7 +187,7 @@ def generate_ultrasound_plot_from_solution(solution, mode="file", focus_index=0)
             # dropdown. Numeric labels collided with each other and with the
             # element grid at close focus spacing.
             for index, position in enumerate(focus_positions, start=1):
-                is_selected = index == focus_index + 1
+                is_selected = single_view and index == focus_index + 1
                 ax[2].plot(position[0], position[1], marker='x',
                            markersize=15 if is_selected else 9,
                            markeredgewidth=3 if is_selected else 2,
