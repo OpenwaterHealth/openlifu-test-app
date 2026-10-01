@@ -436,6 +436,95 @@ class ControllerMixin:
             self._monitoring_paused = prev_paused
 
 
+    @pyqtSlot(int, str, str, str, str, str, result=bool)
+    def directSetRunProfile(self, profile, pulseInterval, pulseCount, trainInterval, trainCount, mode):
+        """Pin a configured transmitter to one delay profile.
+
+        After a multi-focus Configure the device holds every profile and the
+        execution order it cycles through. Re-sending the trigger config
+        clears that cycle in firmware, and the delay-profile command then
+        selects *profile* (with its apodization) on every module, so Start
+        fires that focus alone -- as if it were the only profile sent. The
+        delay and pulse registers are untouched, so this is a few small
+        commands rather than a full solution write.
+
+        Going back to rastering is a solution re-send (``directSetPulse``):
+        ``set_solution`` is the only SDK path that emits the profile cycle.
+
+        Returns False after surfacing the reason to the UI. A failure
+        partway leaves the device in an unknown state, so it also drops the
+        configured flag to force a re-Configure.
+        """
+        logger.info(f"Pinning run profile {profile}: pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
+        if not self._txConnected:
+            self._emit_device_error("Run Profile", "No TX device connected.")
+            return False
+        # Range-check before touching the device: a bad profile after the
+        # trigger re-send would leave the cycle cleared with the old selector.
+        try:
+            profile = int(profile)
+            if not 1 <= profile <= MAX_FOCUS_POINTS:
+                raise ValueError(f"profile {profile} is outside 1-{MAX_FOCUS_POINTS}")
+        except (TypeError, ValueError) as e:
+            self._emit_device_error("Run Profile", f"Invalid run profile: {e}")
+            return False
+        prev_paused = self._monitoring_paused
+        self._monitoring_paused = True
+        self._interface_mutex.lock()
+        prev_async = self._async_mode_enabled
+        self._set_async_mode(False, reason="directSetRunProfile")
+        try:
+            txdevice = self.interface.txdevice
+            if not hasattr(txdevice, "set_delay_profile"):
+                # The SDK's simulated TX device does not model delay profiles.
+                logger.warning("TX device cannot select a delay profile; run-profile choice has no effect.")
+                return True
+            # The sequence the device already has. Sending it again is what
+            # clears the profile cycle, so Start will not re-apply the order.
+            result = self._call_with_comm_retry(
+                "Run Profile",
+                txdevice.set_trigger,
+                pulse_interval=float(pulseInterval) * 1e-3,  # UI ms -> s
+                pulse_count=int(pulseCount),
+                pulse_train_interval=float(trainInterval),  # UI already in seconds
+                pulse_train_count=int(trainCount),
+                trigger_mode=str(mode).lower(),
+            )
+            self._update_trigger_state(result)
+            self._call_with_comm_retry("Run Profile", txdevice.set_delay_profile, profile)
+            # Read the selector back so a module that did not take it is
+            # caught here, not at the hydrophone.
+            for module in range(txdevice.get_module_count()):
+                active = self._call_with_comm_retry("Run Profile", txdevice.get_delay_profile, module)
+                if active != profile:
+                    raise LIFUError(
+                        f"Module {module} reports delay profile {active} after selecting {profile}."
+                    )
+            logger.info(f"Run profile pinned to {profile}; rastering is off until the solution is re-sent.")
+            return True
+        except LIFUCommunicationError as e:
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Run Profile", e, context="Communication timeout")
+            return False
+        except LIFUError as e:
+            self._configured = False
+            self.update_state()
+            self._handle_lifu_error("Run Profile", e)
+            return False
+        except (ValueError, TypeError) as e:
+            self._emit_device_error("Run Profile", f"Invalid run-profile parameters: {e}")
+            return False
+        except Exception as e:
+            self._handle_lifu_error("Run Profile", e, context="Unexpected error")
+            return False
+        finally:
+            if prev_async and self._state == RUNNING:
+                self._set_async_mode(True, reason="directSetRunProfile-restore")
+            self._interface_mutex.unlock()
+            self._monitoring_paused = prev_paused
+
+
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, result=bool)
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList', result=bool)
     def directSetPulse(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode, foci=None, executionOrder=None):
