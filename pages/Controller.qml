@@ -2119,7 +2119,7 @@ Rectangle {
 
                 GroupBox {
                     id: pulseGroup
-                    title: solutionLoaded ? "Pulse Settings (Delays and Apodizations Loaded Directly from Solution)" : "Pulse Settings"
+                    title: solutionLoaded ? "Pulse Settings (Delays/Apodizations Loaded from Solution)" : "Pulse Settings"
                     Layout.fillWidth: true
 
                     readonly property bool sectionReadOnly: controlsReadOnly
@@ -2422,7 +2422,7 @@ Rectangle {
                                     function onRunProfileChanged() { runProfileSelector.syncFromPage() }
                                 }
 
-                                displayText: currentIndex <= 0 ? "Run all" : "Run focus " + currentIndex
+                                displayText: currentIndex <= 0 ? "Run All Foci" : "Focus " + currentIndex
 
                                 contentItem: Row {
                                     leftPadding: 8
@@ -2482,7 +2482,7 @@ Rectangle {
 
                                         Text {
                                             anchors.verticalCenter: parent.verticalCenter
-                                            text: runProfileEntry.index === 0 ? "All (raster)"
+                                            text: runProfileEntry.index === 0 ? "Run All Foci (raster)"
                                                   : (fociRevision >= 0 ? focusLabelFor(runProfileEntry.index - 1) : "")
                                             color: runProfileSelector.currentIndex === runProfileEntry.index
                                                    ? "white" : "#D0D8E0"

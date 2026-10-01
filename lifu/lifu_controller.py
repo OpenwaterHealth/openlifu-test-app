@@ -932,7 +932,7 @@ class ControllerMixin:
                     f"allowed duty cycle ({100 * max_duty:.1f} %). The pulse duration "
                     f"({duration * 1e6:.0f} us) is too long for the pulse interval "
                     f"({pulse_interval * 1e3:.3f} ms).\n\n"
-                    f"Tick 'Bypass duty-cycle / voltage safety limits' to run it anyway."
+                    f"If you wish to run these parameters, go to Settings page to manually override."
                 )
                 return False
 
@@ -947,7 +947,7 @@ class ControllerMixin:
         except LIFUSolutionError as e:
             self._emit_device_error(
                 label,
-                f"{e}\n\nTick 'Bypass duty-cycle / voltage safety limits' to run it anyway.")
+                f"{e}\n\nIf you wish to run these parameters, go to Settings page to manually override.")
             return False
         except Exception as e:
             logger.warning("%s: could not run check_solution (%s); allowing.", label, e)
