@@ -96,13 +96,11 @@ Rectangle {
     // Split out of fociError so the Pulse Count field can flag itself.
     property string pulseCountError: ""
 
-    // 0-based profile whose delays the element map colours in. Every focus
-    // is drawn either way. Clamped when the focus list shrinks.
-    property int selectedFocusIndex: 0
-
-    // 1-based delay profile Start fires on its own; 0 runs the whole
-    // execution order. Configure always sends the rastered solution, so the
-    // device holds every profile either way and this only pins the selector.
+    // 1-based focus Start fires on its own, and the one the plot details;
+    // 0 runs the whole execution order and draws the raster. Configure
+    // always sends the rastered solution, so the device holds every profile
+    // either way and this only pins the selector. Clamped when the focus
+    // list shrinks.
     property int runProfile: 0
 
     // ListModel row edits are not observable, so anything that renders focus
@@ -136,15 +134,6 @@ Rectangle {
         }
         var value = parseFloat(fociModel.get(index)[role])
         return isNaN(value) ? "--" : value + " mm"
-    }
-
-    function clampSelectedFocusIndex() {
-        var maxIndex = Math.max(0, fociModel.count - 1)
-        if (selectedFocusIndex > maxIndex) {
-            selectedFocusIndex = maxIndex
-        } else if (selectedFocusIndex < 0) {
-            selectedFocusIndex = 0
-        }
     }
 
     // Back to "All" when the chosen focus no longer exists, or when a single
@@ -356,7 +345,6 @@ Rectangle {
             return
         }
         syncFocusOneFromInputs()
-        clampSelectedFocusIndex()
         clampRunProfile()
         fociRevision++
         fociError = computeFociErrorFor(fociModel, executionOrderText, triggerPulseCount.text)
@@ -436,13 +424,14 @@ Rectangle {
     // Single entry point for plot refreshes so every caller sends the
     // same focus list and execution order.
     function refreshPlot() {
-        clampSelectedFocusIndex()
+        clampRunProfile()
         LIFUConnector.generate_plot(
             xInput.text, yInput.text, zInput.text,
             frequencyInput.text, voltage.text, triggerPulseInterval.text,
             triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
             durationInput.text, "buffer", fociArray(), executionOrderArray(),
-            selectedFocusIndex
+            // -1 draws the whole raster; a focus is drawn as the only one firing.
+            runProfile - 1
         )
     }
 
@@ -533,7 +522,6 @@ Rectangle {
         syncInputsFromFocusOne()
         // A new solution means a new focus list, so a carried-over selection
         // would point at an unrelated profile.
-        selectedFocusIndex = 0
         runProfile = 0
 
         frequencyInput.text = settings.frequency.toString()
@@ -1719,7 +1707,6 @@ Rectangle {
                         triggerPulseCount.dirty = true
                     }
                     syncInputsFromFocusOne()
-                    clampSelectedFocusIndex()
                     updateFociValidation()
                     // Focus geometry changed: the device needs a re-Configure
                     // (or a direct pulse push if it is already configured).
@@ -2392,145 +2379,6 @@ Rectangle {
                                 }
                             }
 
-                            // Which profile Start fires. "All" is the normal
-                            // raster; a single focus pins the device to that
-                            // profile alone, as if it were the only one sent.
-                            ComboBox {
-                                id: runProfileSelector
-                                visible: fociModel.count > 1
-                                implicitHeight: 30
-                                implicitWidth: 124
-                                font.pixelSize: 12
-                                // Entry 0 is "All"; entry i is focus i. An
-                                // int model does not reset currentIndex on
-                                // every edit the way a rebuilt list would.
-                                model: fociModel.count + 1
-                                // Stays live with a loaded solution (unlike
-                                // the focus list) and before Configure, which
-                                // applies the choice. Only a run locks it.
-                                enabled: LIFUConnector.state !== 3
-
-                                function syncFromPage() {
-                                    if (currentIndex !== runProfile) {
-                                        currentIndex = runProfile
-                                    }
-                                }
-                                onCountChanged: syncFromPage()
-                                Component.onCompleted: syncFromPage()
-                                Connections {
-                                    target: controllerPage
-                                    function onRunProfileChanged() { runProfileSelector.syncFromPage() }
-                                }
-
-                                displayText: currentIndex <= 0 ? "Run All Foci" : "Focus " + currentIndex
-
-                                contentItem: Row {
-                                    leftPadding: 8
-                                    spacing: 6
-
-                                    Rectangle {
-                                        width: 10
-                                        height: 10
-                                        radius: 2
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: runProfileSelector.currentIndex > 0
-                                        color: focusColorFor(runProfileSelector.currentIndex - 1)
-                                        border.color: "#DDDDDD"
-                                        border.width: 1
-                                    }
-
-                                    Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: runProfileSelector.displayText
-                                        color: runProfileSelector.enabled ? "white" : "#888"
-                                        font.pixelSize: 12
-                                        elide: Text.ElideRight
-                                    }
-                                }
-
-                                background: Rectangle {
-                                    color: "#222"
-                                    border.color: runProfileSelector.enabled ? "#999" : "#555"
-                                    radius: 4
-                                }
-
-                                // Wider than the control so entries can carry
-                                // their coordinates.
-                                popup.width: 210
-
-                                delegate: ItemDelegate {
-                                    id: runProfileEntry
-                                    required property int index
-                                    width: runProfileSelector.popup.width
-                                    height: 26
-                                    highlighted: runProfileSelector.highlightedIndex === index
-
-                                    contentItem: Row {
-                                        leftPadding: 8
-                                        spacing: 8
-
-                                        Rectangle {
-                                            width: 10
-                                            height: 10
-                                            radius: 2
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            color: runProfileEntry.index > 0
-                                                   ? focusColorFor(runProfileEntry.index - 1) : "transparent"
-                                            border.color: runProfileEntry.index > 0 ? "#DDDDDD" : "transparent"
-                                            border.width: 1
-                                        }
-
-                                        Text {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: runProfileEntry.index === 0 ? "Run All Foci (raster)"
-                                                  : (fociRevision >= 0 ? focusLabelFor(runProfileEntry.index - 1) : "")
-                                            color: runProfileSelector.currentIndex === runProfileEntry.index
-                                                   ? "white" : "#D0D8E0"
-                                            font.pixelSize: 12
-                                            font.bold: runProfileSelector.currentIndex === runProfileEntry.index
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-
-                                    background: Rectangle {
-                                        color: runProfileEntry.highlighted ? "#333" : "#222"
-                                    }
-                                }
-
-                                HoverHandler {
-                                    id: runProfileHover
-                                }
-                                ToolTip.visible: runProfileHover.hovered
-                                ToolTip.delay: 400
-                                ToolTip.text: "Default runs the whole execution order. Pick one focus to fire "
-                                              + "only that profile on every pulse, without re-sending the solution."
-
-                                onActivated: function(index) {
-                                    if (index === runProfile) {
-                                        return
-                                    }
-                                    var previous = runProfile
-                                    runProfile = index
-                                    if (index > 0) {
-                                        // Show the focus that will fire.
-                                        selectedFocusIndex = index - 1
-                                    }
-                                    // Through the busy overlay: "All" is a
-                                    // full solution write.
-                                    runBusy(function() {
-                                        // A failed push already surfaced its
-                                        // error; keep the control honest about
-                                        // what the device will do. A failure
-                                        // that dropped the configured state
-                                        // has reset us to "All" already.
-                                        if (!applyRunProfile() && everConfigured) {
-                                            runProfile = previous
-                                        }
-                                        refreshPlot()
-                                    })
-                                }
-                            }
-
                             // The summary opens the same dialog, so the whole
                             // row is one target. Dropped at a single focus,
                             // where it would only say "single focus", but
@@ -2679,38 +2527,46 @@ Rectangle {
                     visible: fociModel.count > 1
 
                     Text {
-                        text: "Delay profile"
+                        text: "Sequence to run"
                         font.pixelSize: 11
                         color: "#9FB3C8"
                         Layout.alignment: Qt.AlignHCenter
                     }
 
+                    // Which profile Start fires, and what the plot details.
+                    // "All" is the normal raster; a focus pins the device to
+                    // that profile alone, as if it were the only one sent.
                     ComboBox {
                         id: focusSelector
                         Layout.preferredWidth: 110
                         Layout.preferredHeight: 28
                         Layout.alignment: Qt.AlignHCenter
                         font.pixelSize: 12
-                        // Int model, not a string list: a list would be
-                        // rebuilt on every keystroke, resetting currentIndex.
-                        model: fociModel.count
+                        // Entry 0 is "All"; entry i is focus i. Int model,
+                        // not a string list: a list would be rebuilt on
+                        // every keystroke, resetting currentIndex.
+                        model: fociModel.count + 1
+                        // Stays live with a loaded solution and before
+                        // Configure, which applies the choice. Switching
+                        // mid-run would change the beam under the operator.
+                        enabled: LIFUConnector.state !== 3
 
                         // Assigned, not bound: ComboBox resets currentIndex
                         // imperatively on model change, tearing a binding down.
                         function syncFromPage() {
-                            if (currentIndex !== selectedFocusIndex) {
-                                currentIndex = selectedFocusIndex
+                            if (currentIndex !== runProfile) {
+                                currentIndex = runProfile
                             }
                         }
                         onCountChanged: syncFromPage()
                         Component.onCompleted: syncFromPage()
                         Connections {
                             target: controllerPage
-                            function onSelectedFocusIndexChanged() { focusSelector.syncFromPage() }
+                            function onRunProfileChanged() { focusSelector.syncFromPage() }
                         }
 
                         // Terse: it has to fit the gutter beside the plot.
-                        displayText: currentIndex >= 0 ? "Focus " + (currentIndex + 1) : ""
+                        displayText: currentIndex <= 0 ? "All (raster)" : "Focus " + currentIndex
 
                         // Carries the focus's colour swatch. The element map
                         // has no numbers, so colour is the only thing tying a
@@ -2724,7 +2580,8 @@ Rectangle {
                                 height: 10
                                 radius: 2
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: focusColorFor(focusSelector.currentIndex)
+                                visible: focusSelector.currentIndex > 0
+                                color: focusColorFor(focusSelector.currentIndex - 1)
                                 border.color: "#DDDDDD"
                                 border.width: 1
                             }
@@ -2732,7 +2589,7 @@ Rectangle {
                             Text {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: focusSelector.displayText
-                                color: "white"
+                                color: focusSelector.enabled ? "white" : "#888"
                                 font.pixelSize: 12
                                 elide: Text.ElideRight
                             }
@@ -2740,7 +2597,7 @@ Rectangle {
 
                         background: Rectangle {
                             color: "#222"
-                            border.color: "#999"
+                            border.color: focusSelector.enabled ? "#999" : "#555"
                             radius: 4
                             opacity: 0.9
                         }
@@ -2768,14 +2625,16 @@ Rectangle {
                                     height: 10
                                     radius: 2
                                     anchors.verticalCenter: parent.verticalCenter
-                                    color: focusColorFor(focusEntry.index)
-                                    border.color: "#DDDDDD"
+                                    color: focusEntry.index > 0
+                                           ? focusColorFor(focusEntry.index - 1) : "transparent"
+                                    border.color: focusEntry.index > 0 ? "#DDDDDD" : "transparent"
                                     border.width: 1
                                 }
 
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: fociRevision >= 0 ? focusLabelFor(focusEntry.index) : ""
+                                    text: focusEntry.index === 0 ? "All (raster)"
+                                          : (fociRevision >= 0 ? focusLabelFor(focusEntry.index - 1) : "")
                                     color: focusSelector.currentIndex === focusEntry.index
                                            ? "white" : "#D0D8E0"
                                     font.pixelSize: 12
@@ -2789,12 +2648,32 @@ Rectangle {
                             }
                         }
 
-                        onActivated: {
-                            if (index === selectedFocusIndex) {
+                        HoverHandler {
+                            id: focusSelectorHover
+                        }
+                        ToolTip.visible: focusSelectorHover.hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: "All runs the whole execution order. Pick one focus to fire only "
+                                      + "that profile on every pulse, without re-sending the solution."
+
+                        onActivated: function(index) {
+                            if (index === runProfile) {
                                 return
                             }
-                            selectedFocusIndex = index
-                            refreshPlot()
+                            var previous = runProfile
+                            runProfile = index
+                            // Through the busy overlay: "All" is a full
+                            // solution write when the device is configured.
+                            runBusy(function() {
+                                // A failed push already surfaced its error;
+                                // keep the control honest about what the
+                                // device will do. A failure that dropped the
+                                // configured state has reset us to "All".
+                                if (!applyRunProfile() && everConfigured) {
+                                    runProfile = previous
+                                }
+                                refreshPlot()
+                            })
                         }
                     }
 
@@ -2814,7 +2693,7 @@ Rectangle {
                         }
                         Text {
                             id: focusReadoutX
-                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fx") : ""
+                            text: fociRevision >= 0 ? focusCoordText(runProfile - 1, "fx") : ""
                             font.pixelSize: 11
                             color: "#D0D8E0"
                             horizontalAlignment: Text.AlignRight
@@ -2830,7 +2709,7 @@ Rectangle {
                         }
                         Text {
                             id: focusReadoutY
-                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fy") : ""
+                            text: fociRevision >= 0 ? focusCoordText(runProfile - 1, "fy") : ""
                             font.pixelSize: 11
                             color: "#D0D8E0"
                             horizontalAlignment: Text.AlignRight
@@ -2846,7 +2725,7 @@ Rectangle {
                         }
                         Text {
                             id: focusReadoutZ
-                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fz") : ""
+                            text: fociRevision >= 0 ? focusCoordText(runProfile - 1, "fz") : ""
                             font.pixelSize: 11
                             color: "#D0D8E0"
                             horizontalAlignment: Text.AlignRight
