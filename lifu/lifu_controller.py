@@ -184,9 +184,9 @@ class ControllerMixin:
     def generate_plot(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode="buffer", foci=None, executionOrder=None, focusIndex=0):
         """Generates an ultrasound plot and emits data to QML.
 
-        *focusIndex* is the 0-based delay profile the element map should
-        show. The plot clamps it, so QML never has to guard against a
-        selection that outlived the focus list.
+        *focusIndex* is the 0-based delay profile the device is pinned to,
+        or -1 for the whole raster. The plot clamps it, so QML never has to
+        guard against a selection that outlived the focus list.
         """
         try:
             #logger.info(f"Generating plot: X={x}, Y={y}, Z={z}, Frequency={freq}, Cycles={cycles}, Trigger={trigger}, Mode={mode}")
