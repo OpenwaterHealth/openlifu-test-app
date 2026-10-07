@@ -382,8 +382,7 @@ class SettingsMixin:
                     self.fwUpdateStatus.emit(
                         "console", False,
                         f"Starting console recovery (bootloader: {dfu_bootloader}). Keep the "
-                        "console powered and close any other flashing tool until "
-                        "this finishes…")
+                        "console powered on")
                     logger.info("Console firmware recovery from DFU (%s): %s (force=%s)",
                                 dfu_bootloader, firmware_path, force)
                     # No serial port: the SDK classifies the unit over USB DFU.
