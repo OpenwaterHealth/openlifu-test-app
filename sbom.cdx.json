@@ -29,7 +29,7 @@
       "licenses": [
         {
           "license": {
-            "id": "AGPL-3.0-only"
+            "id": "Apache-2.0"
           }
         }
       ],
@@ -60,7 +60,7 @@
       "licenses": [
         {
           "license": {
-            "id": "AGPL-3.0-only"
+            "id": "Apache-2.0"
           }
         }
       ],
@@ -86,7 +86,7 @@
       "licenses": [
         {
           "license": {
-            "id": "AGPL-3.0-only"
+            "id": "Apache-2.0"
           }
         }
       ],
@@ -126,7 +126,7 @@
         },
         {
           "name": "openwater:license-note",
-          "value": "GPL-3.0 (or Riverbank commercial license); compatible with the application's AGPL-3.0 license"
+          "value": "GPL-3.0 (or Riverbank commercial license); requires a distribution-compatibility review for the Apache-2.0 application"
         }
       ]
     },
