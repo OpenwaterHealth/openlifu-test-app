@@ -159,6 +159,10 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     fwUpdateProgress = pyqtSignal(str, int, int)  # (label, written, total)
     fwUpdateStatus = pyqtSignal(str, bool, str)   # (device_type, success, message)
     fwVersionRead = pyqtSignal(str, str)           # (device_type, version)
+    # A console was seen in (or left) a bootloader's USB DFU while its serial
+    # port is absent -- see SettingsMixin.probeConsoleDfu. Notifies the
+    # consoleDfuState / consoleDfuKind / consoleDfuVersion properties.
+    consoleDfuStateChanged = pyqtSignal()
 
     # (The firmware "check for updates" signal was retired with the GitHub
     # download flow — the SDK no longer polls or downloads firmware; both
@@ -245,6 +249,12 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         # EXPECTED, so they are logged but never surfaced as error popups
         # (the update has its own modal progress/status dialog).
         self._fw_update_active = False
+        # Console seen in a bootloader's USB DFU while its serial port is
+        # absent: kind/version from the USB product string ("" = none seen).
+        # Written only by SettingsMixin.probeConsoleDfu / _set_console_dfu_state.
+        self._console_dfu_kind = ""
+        self._console_dfu_version = ""
+        self._console_dfu_probe_busy = False
         # Slave-module temperature polling while RUNNING (see poll_pre_tick).
         self._last_slave_temp_poll = 0.0   # monotonic timestamp of last slave poll
         self._next_slave_temp_module = 1   # round-robin cursor over modules 1..N-1
@@ -1078,6 +1088,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._tx_connect_time = time.monotonic()
         elif descriptor == "HV":
             self._hvConnected = True
+            # The app is up on its serial port, so it is not in DFU any more.
+            self._set_console_dfu_state("", "")
         logger.info("%s connected on %s", descriptor, port)
         self.signalConnected.emit(descriptor, port)
         self.connectionStatusChanged.emit() 
@@ -1550,6 +1562,23 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def hvConnected(self):
         """Expose HV connection status to QML."""
         return self._hvConnected
+
+    @pyqtProperty(str, notify=consoleDfuStateChanged)
+    def consoleDfuKind(self):
+        """Bootloader kind of a console seen in USB DFU while no serial port
+        is present ("legacy-bl", "secure-bl", "stm32-rom"), or ""."""
+        return self._console_dfu_kind
+
+    @pyqtProperty(str, notify=consoleDfuStateChanged)
+    def consoleDfuVersion(self):
+        """Bootloader version string reported by that DFU device, or ""."""
+        return self._console_dfu_version
+
+    @pyqtProperty(str, notify=consoleDfuStateChanged)
+    def consoleDfuState(self):
+        """"<kind> <version>" of a console parked in DFU, or "" when none is
+        seen. Non-empty turns Settings' Update button into Recover Firmware."""
+        return f"{self._console_dfu_kind} {self._console_dfu_version}".strip()
         
     @pyqtProperty(bool, notify=triggerStateChanged)
     def triggerEnabled(self):
