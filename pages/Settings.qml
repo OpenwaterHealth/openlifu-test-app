@@ -106,9 +106,9 @@ Rectangle {
     }
 
     // The target the editor's contents belong to. Tracked by name rather
-    // than by index: rebuildConfigTargets() replaces the whole model, so
-    // dropping the Console (or a module count change) can slide the
-    // selection from "Console" to "TX 0" while currentIndex stays 0 --
+    // than by index: rebuildConfigTargets() replaces the whole model, so a
+    // module count change (or the TX dropping out) can slide the selection
+    // to a different target while currentIndex stays the same --
     // onCurrentIndexChanged never fires, and the old target's config, its
     // baseline and its pending state would carry over to the new one.
     property string userConfigTarget: ""
@@ -365,12 +365,14 @@ Rectangle {
         return "Reinstall Firmware v" + fFull
     }
 
+    // TX modules first so a connected transmitter is the initial target; the
+    // Console is listed last and is the default only when no TX is connected.
     function rebuildConfigTargets() {
         var items = []
-        if (LIFUConnector.hvConnected) items.push("Console")
         if (LIFUConnector.txConnected) {
             for (var i = 0; i < txModuleCount; i++) items.push("TX " + i)
         }
+        if (LIFUConnector.hvConnected) items.push("Console")
         configTargetModel = items
     }
 
@@ -1412,9 +1414,9 @@ Rectangle {
                                 // syncUserConfigTarget().
                                 onCurrentTextChanged: settingsPage.syncUserConfigTarget()
 
-                                // Show the entry text as-is ("Console", "TX 0").
+                                // Show the entry text as-is ("TX 0", "Console").
                                 // Never the index: "Console" is not a module
-                                // number and its presence shifts every TX index.
+                                // number, and with no TX connected it sits at 0.
                                 displayText: (enabled && currentIndex >= 0) ? currentText : "—"
 
                                 contentItem: Text {
