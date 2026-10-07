@@ -74,10 +74,11 @@ transmitter modules…"*.
 ### Target component
 
 The **Target Component** dropdown lists every device whose user config
-can currently be edited. Today this is `TX 0`, `TX 1`, … one entry per
-detected TX module. (Console user config is supported by the SDK but
-gated off in the UI until firmware support lands — the relevant code is
-present and commented in [pages/Settings.qml](../pages/Settings.qml).)
+can currently be edited: `TX 0`, `TX 1`, … one entry per detected TX
+module, followed by `Console` when the console is connected. The first
+TX module is selected by default; the Console is the default only when
+no transmitter is connected. (Console user config also needs console
+firmware 1.2.7 or newer; older consoles show the card but block writes.)
 
 ### Selected device info
 
