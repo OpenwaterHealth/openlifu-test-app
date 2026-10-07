@@ -33,9 +33,12 @@ The **Settings** page covers two distinct engineering workflows:
    either the Console or a selected TX module.
 
 > **Warning:** Both workflows write directly to device persistent
-> storage. A bad config or interrupted firmware update can require a
-> bench recovery. Stop any sonication first; the app blocks navigation
-> to Settings while `state == RUNNING`.
+> storage. A bad config can require a bench recovery. An interrupted
+> console firmware update leaves the console in its bootloader; the
+> Console Firmware card recovers that state in-app (see
+> [Recovering a console stuck in its bootloader](#console-firmware-recovery)).
+> Stop any sonication first; the app blocks navigation to Settings while
+> `state == RUNNING`.
 
 Navigate to the Settings page by clicking the gear icon in the left
 sidebar. The page is hidden in `--simulate` mode.
@@ -139,14 +142,51 @@ calibration pressure.
 
 | Element | Behaviour |
 |---------|-----------|
-| **Status indicator** | Green = HV controller connected, Red = not connected |
+| **Status indicator** | Green = HV controller connected; Amber = console found in its bootloader (USB DFU), with the bootloader kind and version; Red = not connected |
 | **Firmware Version** | The version currently reported by the connected Console |
 | **Firmware File** | Path to the signed `.bin` image to flash. Pre-populated with the bundled default; click **Browse…** to override |
-| **Update Firmware** | Push the file at the configured path. Disabled until the path is non-empty and the Console is connected |
+| **Update Firmware** | Push the file at the configured path. Disabled until the path is non-empty and the Console is connected. Reads **Recover Firmware** when the console is in its bootloader instead (below) |
 
 Clicking **Update Firmware** opens a modal progress dialog showing the
 written bytes and a percentage. The dialog locks the page until the
 flash finishes (or fails) and you click **Close**.
+
+<a id="console-firmware-recovery"></a>
+
+### Recovering a console stuck in its bootloader
+
+If a console update is interrupted, or the bootloader rejects the
+installed app, the console stays in its bootloader's USB DFU mode and
+never opens a serial port, so the rest of the app shows it as **Not
+Connected**. While Settings is open and no console is connected, the
+card checks USB every two seconds. When it finds the console in DFU the
+status indicator turns amber and names the bootloader (`legacy-bl
+0.0.2`, `secure-bl 1.0.3-rc.1` or `stm32-rom`), and the button becomes
+**Recover Firmware**.
+
+Recover installs the firmware file above by the route that matches the
+bootloader it found: the ROM loader receives the combined bootloader +
+app image, the legacy bootloader is first migrated to the secure
+bootloader and then given the signed app, and the secure bootloader
+receives the signed app directly. The legacy migration rewrites the
+bootloader in place and cannot be interrupted safely: **keep the console
+powered**, and close STM32CubeProgrammer or any SDK script that may be
+talking to the unit before clicking. Power-cycle the console when the
+dialog says so.
+
+**Legacy migration needs a power cycle in the middle.** After the updater
+swaps in the secure bootloader and resets, the new bootloader's DFU does
+not appear on USB until the console is power-cycled, so the recovery
+stops with "the secure bootloader DFU did not appear". The bootloader
+swap itself has completed at that point. Power-cycle the console, wait
+for the amber status to read `secure-bl`, and click **Recover Firmware**
+again; that second pass only installs the application.
+
+The transmitter bootloaders report the same USB names, so a transmitter
+module sitting in DFU while the console is merely unplugged shows up
+here too. If the amber label appears when you did not expect the
+console to be in its bootloader, check what is actually plugged in
+before clicking Recover.
 
 ---
 

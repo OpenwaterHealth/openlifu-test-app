@@ -13,13 +13,17 @@ Signals consumed (defined on ``LIFUConnector``):
     - ``fwUpdateProgress`` (str, int, int)
     - ``fwUpdateStatus`` (str, bool, str)
     - ``fwVersionRead`` (str, str)
+    - ``consoleDfuStateChanged`` ()
     - ``userConfigRead`` (str, str)
     - ``userConfigStatus`` (str, bool, str)
     - ``testReportLoaded`` (bool, str)
 
 Instance attributes consumed (initialized in ``LIFUConnector.__init__``):
     - ``interface``, ``_interface_mutex``
-    - ``_txConnected``
+    - ``_txConnected``, ``_hvConnected``
+    - ``_monitoring_paused``, ``_fw_update_active``
+    - ``_console_dfu_kind``, ``_console_dfu_version``,
+      ``_console_dfu_probe_busy`` (console-in-DFU detection)
 """
 
 from __future__ import annotations
@@ -321,64 +325,161 @@ class SettingsMixin:
         otherwise refuses. The bootloader's persistent anti-rollback floor is
         still the final authority at boot and may reject the image, leaving
         the slot empty - so this is a bench/recovery option.
+
+        Requires the console application to be running (``hvConnected``):
+        the updater reads the app version and asks the app to reboot into
+        DFU. For a unit already parked in a bootloader (no serial port) use
+        :meth:`recoverConsoleFirmware`.
         """
+        self._start_console_update(firmware_path, force, recovery=False)
+
+    @pyqtSlot(str)
+    @pyqtSlot(str, bool)
+    def recoverConsoleFirmware(self, firmware_path: str,
+                               force: bool = False) -> None:
+        """Reflash a console parked in a bootloader's USB DFU (no serial port).
+
+        Built without an HV handle, ``LIFUFirmwareUpdate(hv=None)`` classifies
+        the unit from its USB product string and runs the matching route:
+        ``STM32 BOOTLOADER`` -> production image, ``LIFU BL DFU`` -> RAM-updater
+        migration then signed app, ``OW DFU`` -> signed app. The legacy route
+        rewrites the bootloader in place, so the status text asks the operator
+        to keep the console powered and close other flashing tools. Same
+        thread/signal contract as :meth:`updateConsoleFirmware`.
+        """
+        self._start_console_update(firmware_path, force, recovery=True)
+
+    def _start_console_update(self, firmware_path: str, force: bool,
+                              recovery: bool) -> None:
+        """Shared worker behind :meth:`updateConsoleFirmware` (app running)
+        and :meth:`recoverConsoleFirmware` (unit parked in DFU)."""
         def _run():
-            # The provided file must be a signed image (the bundled default
-            # is). This is a sanity check on a user-browsed file; the actual
-            # cohort/path is chosen by LIFUFirmwareUpdate at run time.
+            # Sanity check on a browsed file; the SDK picks the route itself.
             if not self.isConsoleFirmwareSigned(firmware_path):
                 msg = "Firmware file is not a valid signed console image."
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
                 return
 
-            # The DFU sequence reboots the device into the bootloader; any
-            # polling round-trip in flight against the soon-to-disappear
-            # CDC interface causes spurious comm timeouts. Pause polling
-            # for the duration of the update.
+            # The device reboots into DFU: pause polling so in-flight reads
+            # don't surface as comm timeouts.
             prev_paused = self._monitoring_paused
             self._monitoring_paused = True
-            # Updating the console also drops 12V, so the TX modules power
-            # off and re-enumerate. Any TX query that races that window
-            # fails ("get_device_count timed out"). Those errors are
-            # EXPECTED here, so suppress the popups for the duration.
+            # 12V drops during the update, so TX modules re-enumerate; their
+            # query failures are expected and must not raise popups.
             prev_fw_active = self._fw_update_active
             self._fw_update_active = True
+            operation_label = "recovery" if recovery else "update"
             try:
                 from openlifu_sdk.io.LIFUFirmwareUpdate import LIFUFirmwareUpdate
 
                 def _progress(written: int, total: int, label: str) -> None:
                     self.fwUpdateProgress.emit(label, written, total)
 
-                self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
-                logger.info("Console firmware update: %s (force=%s)",
-                            firmware_path, force)
-                # Auto-detect the unit's state and run the right path
-                # (ROM-DFU migration / RAM-updater migration / signed-app
-                # update). Keyless: the bootloader verifies at boot.
-                fw = LIFUFirmwareUpdate(hv=self.interface.hvcontroller)
+                if recovery:
+                    dfu_bootloader = (f"{self._console_dfu_kind} "
+                                      f"{self._console_dfu_version}").strip() or "unknown"
+                    self.fwUpdateStatus.emit(
+                        "console", False,
+                        f"Starting console recovery (bootloader: {dfu_bootloader}). Keep the "
+                        "console powered and close any other flashing tool until "
+                        "this finishes…")
+                    logger.info("Console firmware recovery from DFU (%s): %s (force=%s)",
+                                dfu_bootloader, firmware_path, force)
+                    # No serial port: the SDK classifies the unit over USB DFU.
+                    fw = LIFUFirmwareUpdate(hv=None)
+                else:
+                    self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
+                    logger.info("Console firmware update: %s (force=%s)",
+                                firmware_path, force)
+                    # The SDK auto-detects the unit's state and route.
+                    fw = LIFUFirmwareUpdate(hv=self.interface.hvcontroller)
                 result = fw.update(signed_app=firmware_path, force=force,
                                    progress_callback=_progress)
                 done = result.summary
                 if result.reboot_required:
                     done += " Power-cycle the console to boot the new application."
                 self.fwUpdateStatus.emit("console", True, done)
-                logger.info("Console firmware update complete: %s", result.summary)
+                logger.info("Console firmware %s complete: %s", operation_label, result.summary)
                 # New firmware -> cached version/HWID is stale.
                 self._invalidate_device_caches("HV")
+                if recovery:
+                    # Leaving the bootloader; the next probe refreshes the state.
+                    self._set_console_dfu_state("", "")
             except Exception as e:
-                msg = f"Console update failed: {e}"
+                msg = f"Console {operation_label} failed: {e}"
+                if recovery and "secure bootloader DFU did not appear" in str(e):
+                    # After the legacy -> secure swap the new bootloader's DFU
+                    # often needs a power cycle to enumerate; the swap is done.
+                    msg += (" The bootloader swap itself has very likely completed: "
+                            "power-cycle the console, wait for the status here to "
+                            "show it in its secure bootloader (\"secure-bl\"), then "
+                            "click Recover again to install the application.")
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
             finally:
                 self._monitoring_paused = prev_paused
-                # TX modules re-enumerate after the console comes back; drop
-                # the stale cache so the next query re-reads them, and stop
-                # suppressing real errors.
+                # TX modules re-enumerate; drop their cache and stop suppressing.
                 self._invalidate_device_caches("TX")
                 self._fw_update_active = prev_fw_active
 
         threading.Thread(target=_run, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Console-in-DFU detection (drives the Settings "Recover Firmware" state)
+    # ------------------------------------------------------------------
+    @pyqtSlot()
+    def probeConsoleDfu(self) -> None:
+        """Look for a console parked in a bootloader's USB DFU.
+
+        Polled by Settings (~2 s) only while the console serial port is
+        absent. Reads the USB product string of a 0483:DF11 device via the SDK
+        (a descriptor read, not a DFU transaction); blocking USB I/O, so it
+        runs on a daemon thread and publishes via ``consoleDfuStateChanged``.
+        Skipped while connected, mid-update, or while a probe is running; an
+        unclassifiable device counts as "none". Transmitter bootloaders use
+        the same strings, so a transmitter in DFU looks identical here.
+        """
+        if (self._hvConnected or self._fw_update_active
+                or self._console_dfu_probe_busy):
+            return
+        self._console_dfu_probe_busy = True
+
+        def _run():
+            kind = version = ""
+            try:
+                from openlifu_sdk.io.LIFUDFU import DFU_KIND_UNKNOWN, LIFUDFUManager
+                kind, version = LIFUDFUManager().detect_console_dfu_kind()
+                if kind == DFU_KIND_UNKNOWN:
+                    kind = version = ""
+            except RuntimeError as e:
+                # Normal: nothing enumerated (or no USB backend).
+                logger.debug("Console DFU probe: %s", e)
+                kind = version = ""
+            except Exception as e:
+                logger.warning("Console DFU probe failed: %s", e)
+                kind = version = ""
+            finally:
+                # A console that came up on its serial port meanwhile wins.
+                if self._hvConnected:
+                    kind = version = ""
+                self._set_console_dfu_state(kind, version)
+                self._console_dfu_probe_busy = False
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _set_console_dfu_state(self, kind: str, version: str) -> None:
+        """Publish the console's DFU state ("" = none) if it changed; backs the
+        ``consoleDfuState`` / ``consoleDfuKind`` / ``consoleDfuVersion`` properties."""
+        kind, version = (kind or ""), (version or "")
+        if (kind, version) == (self._console_dfu_kind, self._console_dfu_version):
+            return
+        self._console_dfu_kind, self._console_dfu_version = kind, version
+        if kind:
+            logger.info("Console DFU device present: %s %s", kind, version)
+        else:
+            logger.debug("Console DFU device gone")
+        self.consoleDfuStateChanged.emit()
 
     def _tx_module_cohort(self, module: int) -> tuple[str | None, str]:
         """(cohort, version) of a transmitter module from its running app
