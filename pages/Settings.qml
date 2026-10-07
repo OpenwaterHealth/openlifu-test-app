@@ -427,6 +427,22 @@ Rectangle {
         onTriggered: LIFUConnector.queryNumModules()
     }
 
+    // While the console serial port is absent, look for the console in a
+    // bootloader's USB DFU (interrupted update, or app rejected at boot).
+    // The connector does the USB probe on a background thread; this only
+    // schedules it. Paused during a console update, when the unit is in DFU
+    // on purpose.
+    Timer {
+        id: consoleDfuProbeTimer
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: settingsPage.visible
+                 && !LIFUConnector.hvConnected
+                 && !settingsPage.consoleUpdating
+        onTriggered: LIFUConnector.probeConsoleDfu()
+    }
+
     // Delay on fresh TX connection to let the device stabilise
     Timer {
         id: txConnectTimer
@@ -2011,13 +2027,17 @@ Rectangle {
                                 width: 16
                                 height: 16
                                 radius: 8
-                                color: LIFUConnector.hvConnected ? "#2ECC71" : "#E74C3C"
+                                color: LIFUConnector.hvConnected ? "#2ECC71"
+                                    : (LIFUConnector.consoleDfuState.length > 0 ? "#E67E22" : "#E74C3C")
                                 border.color: "black"
                                 border.width: 1
                             }
 
                             Text {
-                                text: LIFUConnector.hvConnected ? "Console Connected" : "Console Not Connected"
+                                text: LIFUConnector.hvConnected ? "Console Connected"
+                                    : (LIFUConnector.consoleDfuState.length > 0
+                                        ? "Console in bootloader (DFU): " + LIFUConnector.consoleDfuState
+                                        : "Console Not Connected")
                                 font.pixelSize: 14
                                 color: "#BDC3C7"
                                 Layout.fillWidth: true
@@ -2214,21 +2234,32 @@ Rectangle {
                             property bool consoleFileSigned:
                                 LIFUConnector.isConsoleFirmwareSigned(
                                     settingsPage.consoleEffectivePath)
-                            enabled: LIFUConnector.hvConnected && !consoleUpdating
-                                && consoleFileSigned
-                            property color baseColor: settingsPage.updateButtonColor(
-                                consoleCurrentVersion.text,
-                                (consoleFileVersion.text === "—" ? "" : consoleFileVersion.text),
-                                LIFUConnector.minConsoleFirmwareVersion)
+                            // Console seen in a bootloader's USB DFU with no
+                            // serial port (see consoleDfuProbeTimer): the
+                            // button turns into "Recover Firmware".
+                            property bool consoleInDfu:
+                                !LIFUConnector.hvConnected
+                                && LIFUConnector.consoleDfuState.length > 0
+                            enabled: (LIFUConnector.hvConnected || consoleInDfu)
+                                && !consoleUpdating && consoleFileSigned
+                            property color baseColor: consoleInDfu
+                                ? "#E67E22"
+                                : settingsPage.updateButtonColor(
+                                    consoleCurrentVersion.text,
+                                    (consoleFileVersion.text === "—" ? "" : consoleFileVersion.text),
+                                    LIFUConnector.minConsoleFirmwareVersion)
                             color: !enabled ? "#3A3F4B"
                                 : (consoleUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {
                                 text: consoleUpdating
-                                    ? "Updating…"
-                                    : settingsPage.updateButtonText(
-                                        consoleCurrentVersion.text,
-                                        LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
+                                    ? (consoleUpdateButton.consoleInDfu ? "Recovering…" : "Updating…")
+                                    : consoleUpdateButton.consoleInDfu
+                                        ? "Recover Firmware v" + settingsPage._fullFwVersion(
+                                            LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
+                                        : settingsPage.updateButtonText(
+                                            consoleCurrentVersion.text,
+                                            LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
                                 anchors.fill: parent
                                 anchors.margins: 8
                                 horizontalAlignment: Text.AlignHCenter
@@ -2245,7 +2276,10 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: parent.enabled
                                 onClicked: {
-                                    fwUpdateDialog.updateTitle = "Updating Console Firmware…"
+                                    var recovering = consoleUpdateButton.consoleInDfu
+                                    fwUpdateDialog.updateTitle = recovering
+                                        ? "Recovering Console Firmware…"
+                                        : "Updating Console Firmware…"
                                     fwUpdateDialog.progressValue = 0.0
                                     fwUpdateDialog.progressLabel = ""
                                     fwUpdateDialog.statusMessage = ""
@@ -2254,9 +2288,17 @@ Rectangle {
                                     fwUpdateDialog.updateDone = false
                                     fwUpdateDialog.open()
                                     settingsPage.consoleUpdating = true
-                                    LIFUConnector.updateConsoleFirmware(
-                                        settingsPage.consoleEffectivePath,
-                                        consoleForceDowngrade.checked)
+                                    if (recovering) {
+                                        // No serial port: the SDK classifies the
+                                        // unit from its USB DFU product string.
+                                        LIFUConnector.recoverConsoleFirmware(
+                                            settingsPage.consoleEffectivePath,
+                                            consoleForceDowngrade.checked)
+                                    } else {
+                                        LIFUConnector.updateConsoleFirmware(
+                                            settingsPage.consoleEffectivePath,
+                                            consoleForceDowngrade.checked)
+                                    }
                                 }
                             }
 
@@ -2275,12 +2317,20 @@ Rectangle {
                             font.pixelSize: 11
                             visible: text.length > 0
                             text: {
-                                if (!LIFUConnector.hvConnected || consoleUpdating) return ""
+                                if (consoleUpdating) return ""
+                                if (!LIFUConnector.hvConnected
+                                    && !consoleUpdateButton.consoleInDfu) return ""
                                 // Empty field uses the included (signed) image;
                                 // only a browsed, unsigned file trips this.
                                 if (consoleFwPath.text.length > 0
                                     && !consoleUpdateButton.consoleFileSigned)
                                     return "This file is not a signed console image."
+                                if (consoleUpdateButton.consoleInDfu)
+                                    return "Console is in its bootloader ("
+                                        + LIFUConnector.consoleDfuState + "), not running "
+                                        + "an app. Recover installs the file above. Keep the "
+                                        + "console powered and close STM32CubeProgrammer or "
+                                        + "any SDK script first."
                                 return ""
                             }
                         }
