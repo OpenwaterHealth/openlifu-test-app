@@ -1,5 +1,9 @@
 # OpenLIFU Test Application
 
+## Disclaimer
+
+CAUTION - Investigational device. Limited by Federal (or United States) law to investigational use. The system described here has not been evaluated by the FDA and is not designed for the treatment or diagnosis of any disease. It is provided AS-IS, with no warranties. User assumes all liability and responsibility for identifying and mitigating risks associated with using this software.
+
 Python/QML engineering UI for OpenLIFU hardware testing, bring-up, and basic sonication workflows.
 
 ![App Image](docs/app_image.png)
