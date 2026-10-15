@@ -25,6 +25,8 @@ OpenLIFU Test App is an engineering-first interface with dedicated pages for:
 #### Windows Executable
 From the [Releases](https://github.com/OpenwaterHealth/openlifu-test-app/releases) page, download the latest `OpenLifu-TestApp*.zip` asset, extract it, and run `TestApp.exe` or `TestApp_console.exe` (to view console output).
 
+Release and release-candidate executables are code-signed by Open Water Internet, Inc.; builds from branch pushes are unsigned. See [Code signing](docs/code-signing.md).
+
 #### Python
 1. Clone this repository.
 
