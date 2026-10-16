@@ -28,6 +28,7 @@ for folder in (
     "assets",
     "preset_templates",
     "preset_solutions",
+    "drivers",          # DFU WinUSB driver, installed by lifu/dfu_driver.py
 ):
     if os.path.isdir(folder):
         datas.append((folder, folder))
