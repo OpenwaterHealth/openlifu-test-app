@@ -42,7 +42,8 @@ from PyQt6.QtCore import pyqtSlot
 
 from openlifu_sdk.io.exceptions import LIFUError
 
-from lifu import dfu_driver
+from lifu import dfu_driver, usb_hub_power
+from lifu.lifu_constants import console_needs_awake_hub_for_update
 from test_reports.test_reports import (
     check_config_against_device,
     read_test_report,
@@ -378,6 +379,54 @@ class SettingsMixin:
         self.fwUpdateStatus.emit(device_type, False, msg)
         return False
 
+    def _keep_console_hub_awake_for_update(self) -> bool:
+        """Before a normal console update on older firmware, stop Windows
+        from suspending the console's USB hub during the app -> bootloader
+        handoff (open-lifu-console-bl#2); one UAC prompt per USB port.
+
+        False, with a failure emitted, means don't start: the update would
+        likely time out with the console stuck in its bootloader. A declined
+        prompt is tolerated when a transmitter is attached, since the TX keeps
+        the hub busy. Call from a worker thread."""
+        version = self._cached_hv_fw_version
+        if version is None:
+            try:
+                version = self.interface.hvcontroller.get_version()
+            except Exception as e:
+                logger.info("Console firmware version unreadable (%s); treating as old", e)
+        if not console_needs_awake_hub_for_update(version):
+            logger.info("Console hub check: firmware %s has the hub fix, no prompt", version)
+            return True
+        found = usb_hub_power.console_hub_instances()
+        hubs = [h for h in found if usb_hub_power.hub_may_sleep(h)]
+        if not hubs:
+            logger.info("Console hub check (firmware %s): %s, no prompt", version,
+                        f"hub(s) already kept awake: {found}" if found
+                        else "no console USB2514 hub found")
+            return True
+        self.fwUpdateStatus.emit(
+            "console", False,
+            "Starting console firmware update: Windows will ask for permission "
+            "to keep the console's USB hub awake during the update…")
+        result = usb_hub_power.keep_hubs_awake(hubs)
+        if result.ok:
+            logger.info("Console USB hub kept awake for update: %s", hubs)
+            return True
+        if self._txConnected:
+            logger.warning("Console hub power unchanged (%s); TX attached, continuing",
+                           result.message)
+            self.fwUpdateStatus.emit(
+                "console", False,
+                f"Starting console firmware update anyway ({result.message}); the "
+                "attached transmitter keeps the USB hub awake…")
+            return True
+        msg = ("Console update failed: the console's USB hub could not be kept "
+               f"awake ({result.message}). Approve the Windows prompt, or attach a "
+               "transmitter, and try again.")
+        logger.error(msg)
+        self.fwUpdateStatus.emit("console", False, msg)
+        return False
+
     def _start_console_update(self, firmware_path: str, force: bool,
                               recovery: bool) -> None:
         """Shared worker behind :meth:`updateConsoleFirmware` (app running)
@@ -390,6 +439,9 @@ class SettingsMixin:
                 self.fwUpdateStatus.emit("console", False, msg)
                 return
             if not self._ensure_dfu_driver("console"):
+                return
+            # Recovery: the unit is already in DFU, past the handoff.
+            if not recovery and not self._keep_console_hub_awake_for_update():
                 return
 
             # The device reboots into DFU: pause polling so in-flight reads
