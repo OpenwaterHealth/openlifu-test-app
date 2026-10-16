@@ -195,7 +195,7 @@ class UpdateConnector(Connector):
         self._fw_update_active = False
         self.fwUpdateProgress = Emitter()
 
-    dfuState = ""
+    _console_dfu_kind = _console_dfu_version = ""
 
     def isConsoleFirmwareSigned(self, path):
         return True
@@ -203,7 +203,7 @@ class UpdateConnector(Connector):
     def _invalidate_device_caches(self, side):
         pass
 
-    def _set_dfu_state(self, *args):
+    def _set_console_dfu_state(self, *args):
         pass
 
 
