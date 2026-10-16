@@ -2327,6 +2327,12 @@ Rectangle {
                                 if (consoleFwPath.text.length > 0
                                     && !consoleUpdateButton.consoleFileSigned)
                                     return "This file is not a signed console image."
+                                if (consoleUpdateButton.consoleInDfu
+                                    && LIFUConnector.consoleDfuKind === "no-usb-driver")
+                                    return "A device is in its bootloader (DFU), but this PC "
+                                        + "has no USB driver for it yet. Recover installs the "
+                                        + "driver first (approve the Windows prompt), then the "
+                                        + "file above. Keep the console powered."
                                 if (consoleUpdateButton.consoleInDfu)
                                     return "Console is in its bootloader ("
                                         + LIFUConnector.consoleDfuState + "), not running "

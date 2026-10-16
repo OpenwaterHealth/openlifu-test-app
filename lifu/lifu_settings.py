@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -40,6 +41,8 @@ from pathlib import Path
 from PyQt6.QtCore import pyqtSlot
 
 from openlifu_sdk.io.exceptions import LIFUError
+
+from lifu import dfu_driver
 from test_reports.test_reports import (
     check_config_against_device,
     read_test_report,
@@ -47,6 +50,10 @@ from test_reports.test_reports import (
 )
 
 logger = logging.getLogger(__name__)
+
+# consoleDfuKind when a DFU device is enumerated but Windows has no driver
+# for it, so the SDK can't read its product string. Recover installs it.
+DFU_KIND_NO_DRIVER = "no-usb-driver"
 
 
 def _parse_tx_module(target: str):
@@ -349,6 +356,28 @@ class SettingsMixin:
         """
         self._start_console_update(firmware_path, force, recovery=True)
 
+    def _ensure_dfu_driver(self, device_type: str) -> bool:
+        """Make sure Windows has a USB driver for the DFU device before an
+        update reboots the unit into it (one UAC prompt per PC). False, with
+        the reason emitted, means don't start: without the driver the unit
+        would be left parked in its bootloader. Call from a worker thread."""
+        if sys.platform != "win32" or dfu_driver.is_driver_installed():
+            return True
+        self.fwUpdateStatus.emit(
+            device_type, False,
+            "Installing the USB driver for firmware updates. Approve the "
+            "Windows permission prompt…")
+        result = dfu_driver.install_driver()
+        if result.ok:
+            logger.info("DFU USB driver installed")
+            return True
+        msg = ("Firmware update not started: the USB driver for the device's "
+               f"update mode could not be installed ({result.message}). "
+               "Try again and approve the Windows prompt.")
+        logger.error(msg)
+        self.fwUpdateStatus.emit(device_type, False, msg)
+        return False
+
     def _start_console_update(self, firmware_path: str, force: bool,
                               recovery: bool) -> None:
         """Shared worker behind :meth:`updateConsoleFirmware` (app running)
@@ -359,6 +388,8 @@ class SettingsMixin:
                 msg = "Firmware file is not a valid signed console image."
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
+                return
+            if not self._ensure_dfu_driver("console"):
                 return
 
             # The device reboots into DFU: pause polling so in-flight reads
@@ -378,7 +409,9 @@ class SettingsMixin:
 
                 if recovery:
                     dfu_bootloader = (f"{self._console_dfu_kind} "
-                                      f"{self._console_dfu_version}").strip() or "unknown"
+                                      f"{self._console_dfu_version}").strip()
+                    if not dfu_bootloader or self._console_dfu_kind == DFU_KIND_NO_DRIVER:
+                        dfu_bootloader = "unknown"
                     self.fwUpdateStatus.emit(
                         "console", False,
                         f"Starting console recovery (bootloader: {dfu_bootloader}). Keep the "
@@ -456,8 +489,14 @@ class SettingsMixin:
                 logger.debug("Console DFU probe: %s", e)
                 kind = version = ""
             except Exception as e:
-                logger.warning("Console DFU probe failed: %s", e)
-                kind = version = ""
+                if sys.platform == "win32" and not dfu_driver.is_driver_installed():
+                    # Enumerated but unopenable: no driver yet. Show Recover,
+                    # which installs the driver before flashing.
+                    logger.info("Console DFU probe: device present, no USB driver (%s)", e)
+                    kind, version = DFU_KIND_NO_DRIVER, ""
+                else:
+                    logger.warning("Console DFU probe failed: %s", e)
+                    kind = version = ""
             finally:
                 # A console that came up on its serial port meanwhile wins.
                 if self._hvConnected:
@@ -558,6 +597,10 @@ class SettingsMixin:
             # signals -- the progress bar freezes and only jumps to 100% when
             # the lock is finally released. The console path (which works)
             # deliberately relies on _monitoring_paused alone; mirror it here.
+            #
+            # Only the master reboots into USB DFU; slaves update over I2C.
+            if module == 0 and not self._ensure_dfu_driver("transmitter"):
+                return
             prev_paused = self._monitoring_paused
             self._monitoring_paused = True
             prev_fw_active = self._fw_update_active
