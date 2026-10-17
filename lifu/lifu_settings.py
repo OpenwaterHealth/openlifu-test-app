@@ -16,6 +16,7 @@ Signals consumed (defined on ``LIFUConnector``):
     - ``consoleDfuStateChanged`` ()
     - ``userConfigRead`` (str, str)
     - ``userConfigStatus`` (str, bool, str)
+    - ``serialNumberConflict`` (str, str, str)
     - ``testReportLoaded`` (bool, str)
 
 Instance attributes consumed (initialized in ``LIFUConnector.__init__``):
@@ -38,9 +39,13 @@ import threading
 import time
 from pathlib import Path
 
+import base58
 from PyQt6.QtCore import pyqtSlot
 
-from openlifu_sdk.io.exceptions import LIFUError
+from openlifu_sdk.io import LIFUInterface
+from openlifu_sdk.io.exceptions import LIFUError, LIFUProtocolError
+from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
+from openlifu_sdk.io.LIFUUserConfig import LifuUserConfig
 
 from lifu import dfu_driver, usb_hub_power
 from lifu.lifu_constants import console_needs_awake_hub_for_update
@@ -70,6 +75,48 @@ def _parse_tx_module(target: str):
 def _is_console(target: str) -> bool:
     """True for the console (HV controller) target."""
     return target.strip().lower() == "console"
+
+
+# User-config key holding the unit's serial number (same key the TX test
+# report import and the default console config use).
+SERIAL_NUMBER_KEY = "sn"
+_SERIAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+
+
+def normalize_serial_number(raw: str) -> str | None:
+    """Serial from typed or scanned text, or None if it isn't one.
+
+    Barcode/QR scanners type like a keyboard and may add a trailing
+    Enter/Tab or stray whitespace, so all whitespace and control characters
+    are dropped. What's left must be 1-32 of ``A-Z a-z 0-9 . _ -``."""
+    sn = "".join(ch for ch in (raw or "") if ch.isprintable() and not ch.isspace())
+    return sn if _SERIAL_RE.match(sn) else None
+
+
+def _set_in_place(data: dict, values: dict) -> dict:
+    """``data`` with ``values`` set and nothing else touched: each key's
+    first match (any case) is replaced in place under the given name,
+    duplicates are dropped, and missing keys go first, in ``values`` order."""
+    out, placed = {}, set()
+    for k, v in data.items():
+        key = next((n for n in values if n == k.lower()), None)
+        if key is None:
+            out[k] = v
+        elif key not in placed:
+            out[key] = values[key]
+            placed.add(key)
+    missing = {k: v for k, v in values.items() if k not in placed}
+    return {**missing, **out}
+
+
+def _device_id(raw_hex: str) -> str:
+    """The Device ID the app shows for a raw hardware ID (same derivation
+    as queryHvInfo / queryTxInfo)."""
+    if not raw_hex:
+        return "N/A"
+    if len(raw_hex) > HW_ID_DATA_LENGTH:
+        return base58.b58encode(bytes.fromhex(raw_hex[:HW_ID_DATA_LENGTH])).decode("utf-8")
+    return raw_hex
 
 
 class SettingsMixin:
@@ -848,6 +895,132 @@ class SettingsMixin:
                 self.userConfigStatus.emit(target, False, msg)
             except Exception as e:
                 msg = f"Error reading config from {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+            finally:
+                self._interface_mutex.unlock()
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, str)
+    @pyqtSlot(str, str, str)
+    @pyqtSlot(str, str, str, bool)
+    def writeSerialNumber(self, target: str, serial: str, hw_ver: str = "",
+                          overwrite: bool = False) -> None:
+        """Write the target's serial number into its user config.
+
+        Console: the whole default-config identity block. ``sn`` (and
+        ``hw_ver`` when given; blank keeps the device's) come from the
+        operator; ``hwid`` and ``fw_ver`` are read live from the device,
+        ``sdk_ver`` is this app's SDK, ``updated`` is now; written first.
+        TX module: only ``sn`` and ``updated`` change (``hw_ver`` is ignored); its other
+        keys, including ``module`` and ``device``, stay exactly as they are.
+        Either way every other key is kept, and a blank (never written)
+        config starts fresh. A config the device reports but the SDK can't
+        parse is never overwritten.
+
+        A different serial already on the device is replaced only with
+        ``overwrite``; otherwise ``serialNumberConflict`` asks QML to
+        confirm. The result is read back and checked, then published through
+        ``userConfigRead`` so the editor shows what the device holds.
+
+        target: "console" or "tx_N" / "tx N" (module N).
+        """
+        sn = normalize_serial_number(serial)
+        if sn is None:
+            self.userConfigStatus.emit(
+                target, False,
+                f"Not a valid serial number: {serial.strip()!r}. Use 1-32 letters, "
+                "digits, '.', '_' or '-'.")
+            return
+        if _parse_tx_module(target) is not None:
+            hw_ver = ""   # TX: only sn is written
+        hw = normalize_serial_number(hw_ver) if (hw_ver or "").strip() else ""
+        if hw is None:
+            self.userConfigStatus.emit(
+                target, False,
+                f"Not a valid hardware version: {hw_ver.strip()!r}. Use 1-32 letters, "
+                "digits, '.', '_' or '-'.")
+            return
+        unsupported = self._user_config_unsupported_msg(target)
+        if unsupported:
+            self.userConfigStatus.emit(target, False, unsupported)
+            return
+
+        def _run():
+            self._interface_mutex.lock()
+            try:
+                module = _parse_tx_module(target)
+                if module is not None:
+                    dev, addr, label = self.interface.txdevice, {"module": module}, f"TX {module}"
+                elif _is_console(target):
+                    dev, addr, label = self.interface.hvcontroller, {}, "the console"
+                else:
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
+                try:
+                    existing = dev.read_config(**addr)
+                except LIFUProtocolError as e:
+                    # Unparseable header = never written (consoles ship blank).
+                    logger.info("No readable user config on %s (%s); starting fresh", label, e)
+                    existing = None
+                if existing is not None and existing.header.json_len and not existing.json_data:
+                    # The SDK turns truncated/invalid JSON into {} with only a
+                    # warning; writing on top of that would wipe the device.
+                    raise RuntimeError(
+                        f"the config on {label} ({existing.header.json_len} bytes) could "
+                        "not be parsed, so it was left untouched. Check it with Read Config.")
+                data = existing.to_dict() if existing is not None else {}
+
+                # Keys match in any case: the factory stub uses "SN".
+                sn_keys = [k for k in data if k.lower() == SERIAL_NUMBER_KEY]
+                current = str(data[sn_keys[0]]).strip() if sn_keys else ""
+                if current and current != sn and not overwrite:
+                    self.serialNumberConflict.emit(target, current, sn)
+                    return
+
+                if module is not None:
+                    # TX: only sn and updated change. Every other key (module,
+                    # device, test-report data...) stays as-is, in place.
+                    identity = {SERIAL_NUMBER_KEY: sn,
+                                "updated": time.strftime("%Y-%m-%d %H:%M:%S")}
+                    data = _set_in_place(data, identity)
+                else:
+                    identity = {
+                        SERIAL_NUMBER_KEY: sn,
+                        "hwid": _device_id(dev.get_hardware_id(raw_hex=True, **addr)),
+                        "hw_ver": hw,
+                        "fw_ver": dev.get_version(**addr),
+                        "sdk_ver": LIFUInterface.get_sdk_version(),
+                        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    for key in identity:
+                        found = [k for k in data if k.lower() == key]
+                        if key == "hw_ver" and not hw:
+                            identity[key] = data[found[0]] if found else ""
+                        for k in found:
+                            del data[k]
+                    data = {**identity, **data}
+
+                dev.write_config(LifuUserConfig(json_data=data), **addr)
+                written = dev.read_config(**addr)
+                if written.to_dict() != data:
+                    raise RuntimeError(
+                        f"the config read back from {label} does not match what was "
+                        f"written (sn {written.get(SERIAL_NUMBER_KEY)!r}). Check it with "
+                        "Read Config.")
+
+                logger.info("Identity written to %s: %s (serial was %r)",
+                            label, identity, current)
+                self.userConfigRead.emit(target, written.get_json_str())
+                verb = "replaced " + current + " on" if current and current != sn else "written to"
+                self.userConfigStatus.emit(target, True, f"Serial number {sn} {verb} {label}.")
+            except LIFUError as e:
+                logger.error("Error writing serial number to %s: %s", target, e)
+                self.userConfigStatus.emit(target, False, str(e))
+            except Exception as e:
+                msg = f"Error writing serial number to {target}: {e}"
                 logger.error(msg)
                 self.userConfigStatus.emit(target, False, msg)
             finally:
