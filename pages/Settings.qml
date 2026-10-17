@@ -124,10 +124,34 @@ Rectangle {
         userConfigTarget = target
         setUserConfigText("")
         userConfigTouched = false
+        serialNumberField.text = ""
+        hwVersionField.text = ""   // console and TX hw versions differ
         // The Generate button fills hwid/fw_ver from the live console.
         // Cached after the first call, so this is just a re-emit.
         if (target === "Console" && LIFUConnector.hvConnected)
             LIFUConnector.queryHvInfo()
+    }
+
+    // A writeSerialNumber call is in flight; cleared by its status/conflict.
+    property bool serialWriteBusy: false
+
+    // A top-level value in a config's JSON text ("" if none / not JSON).
+    // Case-insensitive so the factory stub's "SN" counts as "sn".
+    function configValue(text, key) {
+        var parsed
+        try {
+            parsed = JSON.parse(text)
+        } catch (e) {
+            return ""
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return ""
+        var keys = Object.keys(parsed)
+        for (var i = 0; i < keys.length; ++i) {
+            if (keys[i].toLowerCase() === key)
+                return String(parsed[keys[i]])
+        }
+        return ""
     }
 
     // True once this target's editor holds something the operator has seen:
@@ -566,7 +590,23 @@ Rectangle {
             settingsPage.userConfigTouched = true
         }
 
+        function onSerialNumberConflict(target, existing, proposed) {
+            settingsPage.serialWriteBusy = false
+            serialConflictDialog.target = target
+            serialConflictDialog.existing = existing
+            serialConflictDialog.proposed = proposed
+            serialConflictDialog.open()
+        }
+
         function onUserConfigStatus(target, success, message) {
+            if (settingsPage.serialWriteBusy) {
+                settingsPage.serialWriteBusy = false
+                // Ready for the next scan.
+                if (success) {
+                    serialNumberField.text = ""
+                    serialNumberField.forceActiveFocus()
+                }
+            }
             userConfigStatusText.flash(message, success ? "#2ECC71" : "#E74C3C")
             // Only a write that landed clears the pending state -- a failed
             // one leaves the button breathing, because the device still does
@@ -620,6 +660,73 @@ Rectangle {
         onAccepted: {
             var target = configTargetSelector.currentText.toLowerCase()
             LIFUConnector.loadTestReport(selectedFile, target)
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Serial number overwrite confirmation (from serialNumberConflict)
+    // ----------------------------------------------------------------
+    Popup {
+        id: serialConflictDialog
+        anchors.centerIn: Overlay.overlay
+        width: 440
+        padding: 20
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+
+        property string target: ""
+        property string existing: ""
+        property string proposed: ""
+        readonly property string targetLabel:
+            target === "console" ? "The console" : target.toUpperCase()
+
+        background: Rectangle {
+            color: "#1E1E20"
+            radius: 12
+            border.color: "#3E4E6F"
+            border.width: 2
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 14
+
+            Text {
+                text: "Replace serial number?"
+                color: "white"
+                font.pixelSize: 16
+                font.weight: Font.Bold
+            }
+
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#BDC3C7"
+                font.pixelSize: 13
+                text: serialConflictDialog.targetLabel + " already has serial number "
+                      + serialConflictDialog.existing + ". Replace it with "
+                      + serialConflictDialog.proposed + "?"
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: 10
+
+                Button {
+                    text: "Cancel"
+                    onClicked: serialConflictDialog.close()
+                }
+                Button {
+                    text: "Replace"
+                    onClicked: {
+                        serialConflictDialog.close()
+                        settingsPage.serialWriteBusy = true
+                        LIFUConnector.writeSerialNumber(serialConflictDialog.target,
+                                                        serialConflictDialog.proposed,
+                                                        hwVersionField.text.trim(), true)
+                    }
+                }
+            }
         }
     }
 
@@ -1486,6 +1593,197 @@ Rectangle {
                                 }
                                 color: "#2ECC71"
                                 font.pixelSize: 12
+                            }
+                        }
+
+                        // Serial number + hw_ver. Barcode/QR scanners type
+                        // the code and press Enter, so a scan assigns it
+                        // straight away; typing + Enter or Assign works the
+                        // same. Writes the default-config identity keys to
+                        // the selected target (console -> console, TX n ->
+                        // that module): sn and hw_ver from here, hwid,
+                        // fw_ver, sdk_ver and updated filled automatically.
+                        // Every other key on the device is kept.
+                        ColumnLayout {
+                            id: serialNumberBlock
+                            Layout.fillWidth: true
+                            spacing: 4
+                            visible: deviceIdRow.hasTarget
+
+                            readonly property bool canUse:
+                                !settingsPage.consoleUserConfigBlocked
+                                && !settingsPage.serialWriteBusy
+                            // What the device last returned (read or write).
+                            readonly property string current:
+                                settingsPage.configValue(settingsPage.userConfigBaseline, "sn")
+                            readonly property string currentHwVer:
+                                settingsPage.configValue(settingsPage.userConfigBaseline, "hw_ver")
+
+                            function assign() {
+                                var sn = serialNumberField.text.trim()
+                                if (sn === "" || !canUse) return
+                                // The result replaces the editor, so don't
+                                // silently drop unwritten edits.
+                                if (settingsPage.userConfigDirty) {
+                                    userConfigStatusText.flash(
+                                        "Write or revert the editor changes before assigning a serial number.",
+                                        "#E74C3C")
+                                    return
+                                }
+                                settingsPage.serialWriteBusy = true
+                                LIFUConnector.writeSerialNumber(
+                                    configTargetSelector.currentText.toLowerCase(), sn,
+                                    hwVersionField.text.trim(), false)
+                            }
+
+                            Text {
+                                text: settingsPage.configTargetIsConsole
+                                      ? "Console Serial Number:" : "Transmitter Serial Number:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+
+                                TextField {
+                                    id: serialNumberField
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 32
+                                    font.pixelSize: 13
+                                    color: "white"
+                                    enabled: serialNumberBlock.canUse
+                                    // Ignores anything else a scanner sends
+                                    // (e.g. a trailing Tab).
+                                    validator: RegularExpressionValidator {
+                                        regularExpression: /[A-Za-z0-9._-]{0,32}/
+                                    }
+                                    onAccepted: serialNumberBlock.assign()
+                                    background: Rectangle {
+                                        color: "#2A2F3B"
+                                        radius: 4
+                                        border.color: serialNumberField.activeFocus ? "#4A90E2" : "#3E4E6F"
+                                    }
+
+                                    // Hint, not placeholderText: some styles
+                                    // keep that visible as a floating label.
+                                    // Gone as soon as there is any text.
+                                    Text {
+                                        anchors.fill: parent
+                                        leftPadding: serialNumberField.leftPadding
+                                        verticalAlignment: Text.AlignVCenter
+                                        visible: serialNumberField.length === 0
+                                        text: settingsPage.serialWriteBusy
+                                              ? "Writing…" : "Scan or type, then Enter"
+                                        color: "#7F8C8D"
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: assignSerialButton
+                                    Layout.preferredWidth: 72
+                                    Layout.preferredHeight: 32
+                                    radius: 6
+                                    property bool canUse: serialNumberBlock.canUse
+                                                          && serialNumberField.text.trim().length > 0
+                                    color: !canUse ? "#2A2F3B"
+                                         : (assignSerialArea.containsMouse ? "#4A90E2" : "#3A3F4B")
+                                    border.color: !canUse ? "#3E4E6F"
+                                                : (assignSerialArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                                    opacity: canUse ? 1.0 : 0.55
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "Assign"
+                                        color: "white"
+                                        font.pixelSize: 13
+                                        font.weight: Font.Medium
+                                    }
+
+                                    MouseArea {
+                                        id: assignSerialArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        enabled: assignSerialButton.canUse
+                                        onClicked: serialNumberBlock.assign()
+                                    }
+
+                                    Behavior on color { ColorAnimation { duration: 150 } }
+                                }
+                            }
+
+                            // Hardware version: optional, kept between scans
+                            // (a batch usually shares one). Blank keeps the
+                            // device's current hw_ver. Console only: a TX
+                            // write changes nothing but sn.
+                            Text {
+                                text: "Hardware Version (Optional):"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                                visible: settingsPage.configTargetIsConsole
+                            }
+
+                            TextField {
+                                id: hwVersionField
+                                visible: settingsPage.configTargetIsConsole
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 13
+                                color: "white"
+                                enabled: serialNumberBlock.canUse
+                                validator: RegularExpressionValidator {
+                                    regularExpression: /[A-Za-z0-9._-]{0,32}/
+                                }
+                                // Assign if the serial is in; else go fill it.
+                                onAccepted: {
+                                    if (serialNumberField.text.trim().length > 0)
+                                        serialNumberBlock.assign()
+                                    else
+                                        serialNumberField.forceActiveFocus()
+                                }
+                                background: Rectangle {
+                                    color: "#2A2F3B"
+                                    radius: 4
+                                    border.color: hwVersionField.activeFocus ? "#4A90E2" : "#3E4E6F"
+                                }
+
+                                Text {
+                                    anchors.fill: parent
+                                    leftPadding: hwVersionField.leftPadding
+                                    verticalAlignment: Text.AlignVCenter
+                                    visible: hwVersionField.length === 0
+                                    text: serialNumberBlock.currentHwVer !== ""
+                                          ? "Blank keeps " + serialNumberBlock.currentHwVer
+                                          : "e.g. rev-B"
+                                    color: "#7F8C8D"
+                                    font.pixelSize: 13
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: serialNumberBlock.current !== ""
+                                      ? "On device: " + serialNumberBlock.current
+                                        + (serialNumberBlock.currentHwVer !== ""
+                                           ? " · hw " + serialNumberBlock.currentHwVer : "")
+                                      : "Read Config to see the stored serial number."
+                                color: serialNumberBlock.current !== "" ? "#2ECC71" : "#7F8C8D"
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: settingsPage.configTargetIsConsole
+                                      ? "Assign also fills hwid, fw_ver, sdk_ver and updated."
+                                      : "Assign sets sn and updated; everything else on the module is kept."
+                                color: "#7F8C8D"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
                             }
                         }
 
