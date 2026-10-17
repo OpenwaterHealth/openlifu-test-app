@@ -176,6 +176,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # User config signals
     userConfigRead = pyqtSignal(str, str)   # (target, json_str)  target: "console" | "tx_N"
     userConfigStatus = pyqtSignal(str, bool, str)  # (target, success, message)
+    # writeSerialNumber found a different serial already stored; QML asks
+    # before overwriting.
+    serialNumberConflict = pyqtSignal(str, str, str)  # (target, existing, new)
     
     # Solution loading signals
     solutionFileLoaded = pyqtSignal(str, str)  # (solution_name, message)
