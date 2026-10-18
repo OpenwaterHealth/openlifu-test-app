@@ -366,27 +366,24 @@ Rectangle {
         return "#4A90E2"                                            // blue (reinstall / compliant)
     }
 
-    // "Upgrade Firmware 1.2.5 -> 1.2.6-rc.5" / "Downgrade Firmware ..."
-    // / "Reinstall Firmware v1.2.6-rc.5" / fallback "Update Firmware".
-    // Labels show the FULL version (pre-release suffix included) so an rc
-    // build reads as an rc; the upgrade/downgrade/reinstall decision still
-    // comes from the M.m.p triple the bootloader actually enforces.
+    // "Install Firmware 1.2.7" / "Downgrade to Firmware 1.2.5" /
+    // "Reinstall Firmware 1.2.7" / fallback "Update Firmware". Only the
+    // version being installed is shown, in FULL (pre-release suffix
+    // included) so an rc build reads as an rc; the install/downgrade/
+    // reinstall decision still comes from the M.m.p triple the bootloader
+    // enforces, and a different build string at the same M.m.p (e.g.
+    // rc -> release) counts as an install.
     function updateButtonText(deviceVersion, fileVersion) {
-        var d = _parseFwVersion(deviceVersion)
         var f = _parseFwVersion(fileVersion)
         if (f === null) return "Update Firmware"
-        if (d === null) return "Install Firmware v" + _fullFwVersion(fileVersion)
-        var diff = _cmpFwVersion(f, d)
-        if (diff > 0) return "Upgrade Firmware " + _fullFwVersion(deviceVersion)
-            + " → " + _fullFwVersion(fileVersion)
-        if (diff < 0) return "Downgrade Firmware " + _fullFwVersion(deviceVersion)
-            + " → " + _fullFwVersion(fileVersion)
-        // Same M.m.p but a different build string (e.g. rc -> release) is
-        // still a meaningful change, so show both sides rather than "v X".
-        var dFull = _fullFwVersion(deviceVersion)
         var fFull = _fullFwVersion(fileVersion)
-        if (dFull !== fFull) return "Install Firmware " + dFull + " → " + fFull
-        return "Reinstall Firmware v" + fFull
+        var d = _parseFwVersion(deviceVersion)
+        if (d === null) return "Install Firmware " + fFull
+        var diff = _cmpFwVersion(f, d)
+        if (diff < 0) return "Downgrade to Firmware " + fFull
+        if (diff > 0 || _fullFwVersion(deviceVersion) !== fFull)
+            return "Install Firmware " + fFull
+        return "Reinstall Firmware " + fFull
     }
 
     // TX modules first so a connected transmitter is the initial target; the
