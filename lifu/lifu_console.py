@@ -23,7 +23,23 @@ from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ConsoleMixin"]
+__all__ = ["ConsoleMixin", "format_duration", "read_console_odometer"]
+
+
+def format_duration(seconds: int) -> str:
+    """Render an odometer total as ``"H h MM m SS s"`` (hours unbounded)."""
+    hours, rem = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:,} h {minutes:02d} m {secs:02d} s"
+
+
+def read_console_odometer(hv):
+    """Return the console's ``ConsoleOdometer``, or None when the installed
+    SDK (no ``get_odometer``) or the console firmware predates the odometer."""
+    get_odometer = getattr(hv, "get_odometer", None)
+    if get_odometer is None:
+        return None
+    return get_odometer()
 
 
 class ConsoleMixin:
@@ -60,6 +76,28 @@ class ConsoleMixin:
             self._handle_lifu_error("Console Info", e)
         except Exception as e:
             self._handle_lifu_error("Console Info", e, context="Unexpected error")
+        finally:
+            self._interface_mutex.unlock()
+
+    @pyqtSlot()
+    def queryHvOdometer(self):
+        """Fetch and emit the console's lifetime power-on / HV-on time.
+        Not cached: the totals advance while the console runs. Emits "N/A"
+        for both when the SDK or the console firmware predates the odometer."""
+        self._interface_mutex.lock()
+        try:
+            odo = read_console_odometer(self.interface.hvcontroller)
+            if odo is None:
+                self.hvOdometerReceived.emit("N/A", "N/A")
+                return
+            self.hvOdometerReceived.emit(format_duration(odo.power_on_s),
+                                         format_duration(odo.hv_on_s))
+            logger.info(f"Console odometer - power-on: {odo.power_on_s} s, HV-on: {odo.hv_on_s} s")
+        except LIFUError as e:
+            # Refreshed on page load and HV toggles; log only, like temperatures.
+            logger.warning(f"Failed to read console odometer: {e}")
+        except Exception as e:
+            logger.error(f"Error querying console odometer: {e}")
         finally:
             self._interface_mutex.unlock()
 

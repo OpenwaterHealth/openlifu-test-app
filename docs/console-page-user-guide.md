@@ -54,7 +54,7 @@ showing device info and live temperatures.
 |--------|---------|
 | **Left — Communication Tests** | Ping, Echo, Toggle LED, RGB LED |
 | **Left — Power Tests** | HV setpoint + enable, 12 V enable, monitored rail readings |
-| **Right** | HV connection LED, Device ID, Firmware Version, two on-board temperature widgets |
+| **Right** | HV connection LED, Device ID, Firmware Version, Power-On / HV-On Time, two on-board temperature widgets |
 
 ---
 
@@ -128,11 +128,17 @@ re-poll all eight channels immediately.
 | **HV** indicator | Green = connected, Red = not connected |
 | **Device ID** | Unique hardware identifier reported by the firmware |
 | **Firmware Version** | Reported by the firmware over USB |
+| **Power-On Time** | Lifetime time the console firmware has been running (odometer kept by the console) |
+| **HV-On Time** | Lifetime time the high-voltage supply has been enabled |
 | **Temperature #1 / #2** | Live readings from the two on-board temperature sensors, °C |
 
 Click the **↻** button to re-query device info and temperatures
 manually. Otherwise the values are fetched once on connect (after a
-~500 ms settle delay) and on every refresh.
+~500 ms settle delay) and on every refresh. The two odometer times are
+also re-read whenever HV turns on or off. They show `N/A` when the
+console firmware or the installed SDK predates the odometer. The console
+saves them to flash every 10 minutes and on HV-off / disconnect, so a
+sudden power loss can drop up to the last 10 minutes.
 
 ---
 

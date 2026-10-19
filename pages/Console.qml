@@ -15,6 +15,8 @@ Rectangle {
     // Properties for dynamic data
     property string firmwareVersion: "N/A"
     property string deviceId: "N/A"
+    property string powerOnTime: "N/A"
+    property string hvOnTime: "N/A"
     property real temperature1: 0.0
     property real temperature2: 0.0
     property string rgbState: "Off" // Add property for RGB state
@@ -23,6 +25,7 @@ Rectangle {
 
     function updateStates() {
         LIFUConnector.queryHvInfo()
+        LIFUConnector.queryHvOdometer()
         LIFUConnector.queryHvTemperature()
         LIFUConnector.queryPowerStatus() // Query power status
         LIFUConnector.queryRGBState() // Query RGB state
@@ -55,6 +58,8 @@ Rectangle {
             } else {
                 firmwareVersion = "N/A"
                 deviceId = "N/A"
+                powerOnTime = "N/A"
+                hvOnTime = "N/A"
                 temperature1 = 0.0
                 temperature2 = 0.0
                 rgbState = "Off" // Reset RGB state
@@ -74,6 +79,12 @@ Rectangle {
             deviceId = devId
         }
 
+        // Handle odometer response
+        function onHvOdometerReceived(powerOn, hvOn) {
+            powerOnTime = powerOn
+            hvOnTime = hvOn
+        }
+
         // Handle temperature updates
         function onTemperatureHvUpdated(temp1, temp2) {
             temperature1 = temp1
@@ -82,6 +93,9 @@ Rectangle {
 
         // Handle voltage state updates
         function onPowerStatusReceived(v12_state, hv_state) {
+            // Also fires on the 1 Hz telemetry poll; only an HV flip moves the odometer.
+            var hvChanged = (hv_state ? "On" : "Off") !== hvState
+
             if(hv_state)
                 hvState = "On"
             else
@@ -94,6 +108,8 @@ Rectangle {
 
             hvStatus.text = hvState // Update the UI with the new voltage state
             v12Status.text = v12State
+            if (hvChanged)
+                LIFUConnector.queryHvOdometer() // HV-on time moves with the HV state
         }
 
         // Handle voltage readings updates
@@ -892,6 +908,7 @@ Rectangle {
                                     onClicked: {
                                         console.log("Manual Refresh Triggered")
                                         LIFUConnector.queryHvInfo()
+                                        LIFUConnector.queryHvOdometer()
                                         LIFUConnector.queryHvTemperature()
                                     }
 
@@ -942,10 +959,24 @@ Rectangle {
                             }
                         }
 
+                        // Display lifetime odometer (from the console firmware).
+                        // Plain Text keeps these rows short so the panel still fits.
+                        RowLayout {
+                            spacing: 8
+                            Text { text: "Power-On Time:"; color: "#BDC3C7"; font.pixelSize: 14 }
+                            Text { text: powerOnTime; color: "#BDC3C7"; font.pixelSize: 14 }
+                        }
+
+                        RowLayout {
+                            spacing: 8
+                            Text { text: "HV-On Time:"; color: "#BDC3C7"; font.pixelSize: 14 }
+                            Text { text: hvOnTime; color: "#BDC3C7"; font.pixelSize: 14 }
+                        }
+
 
                         ColumnLayout {
                             Layout.alignment: Qt.AlignHCenter 
-                            spacing: 25  
+                            spacing: 0  // tight so the odometer rows above still fit
 
                             // TEMP #1 Widget
                             TemperatureWidget {

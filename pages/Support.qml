@@ -56,6 +56,8 @@ Rectangle {
     // ── State ─────────────────────────────────────────────────────────
     property string hvFwVersion:   "—"
     property string hvDeviceId:    "—"
+    property string hvPowerOnTime: "—"
+    property string hvHvOnTime:    "—"
     property real   hvTemp1:       0.0
     property real   hvTemp2:       0.0
     property bool   hvTempsReceived: false
@@ -89,6 +91,7 @@ Rectangle {
         onTriggered: {
             if (LIFUConnector.hvConnected) {
                 LIFUConnector.queryHvInfo()
+                LIFUConnector.queryHvOdometer()
                 LIFUConnector.queryHvTemperature()
                 LIFUConnector.getMonitorVoltages()
                 supportPage.diagnosticsJson = LIFUSupportConnector.collectDiagnostics()
@@ -124,6 +127,7 @@ Rectangle {
         refreshing = true
         if (LIFUConnector.hvConnected) {
             LIFUConnector.queryHvInfo()
+            LIFUConnector.queryHvOdometer()
             LIFUConnector.queryHvTemperature()
             LIFUConnector.getMonitorVoltages()
         }
@@ -143,6 +147,10 @@ Rectangle {
         function onHvDeviceInfoReceived(fwVersion, deviceId) {
             supportPage.hvFwVersion = fwVersion
             supportPage.hvDeviceId  = deviceId
+        }
+        function onHvOdometerReceived(powerOn, hvOn) {
+            supportPage.hvPowerOnTime = powerOn
+            supportPage.hvHvOnTime    = hvOn
         }
         function onTxDeviceInfoReceived(modulesList) {
             supportPage.txModules = modulesList.map(function(m) {
@@ -176,6 +184,8 @@ Rectangle {
                 hvQueryTimer.stop()
                 supportPage.hvFwVersion = "—"
                 supportPage.hvDeviceId  = "—"
+                supportPage.hvPowerOnTime = "—"
+                supportPage.hvHvOnTime  = "—"
                 supportPage.hvTemp1     = 0.0
                 supportPage.hvTemp2     = 0.0
                 supportPage.hvTempsReceived = false
@@ -473,6 +483,8 @@ Rectangle {
 
                                 InfoRow { label: "Firmware Version"; value: supportPage.hvFwVersion; valueColor: "#4A90E2" }
                                 InfoRow { label: "Device ID";        value: supportPage.hvDeviceId;  valueColor: "#BDC3C7" }
+                                InfoRow { label: "Power-On Time";    value: supportPage.hvPowerOnTime; valueColor: "#BDC3C7" }
+                                InfoRow { label: "HV-On Time";       value: supportPage.hvHvOnTime;    valueColor: "#BDC3C7" }
                             }
 
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#3E4E6F"; Layout.leftMargin: 16; Layout.rightMargin: 16 }

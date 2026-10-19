@@ -21,6 +21,8 @@ import time
 
 from PyQt6.QtCore import QObject, QStandardPaths, QThread, pyqtSignal, pyqtSlot, pyqtProperty
 
+from lifu.lifu_console import format_duration, read_console_odometer
+
 logger = logging.getLogger(__name__)
 
 # Scratch key used by the user-config diagnostic tests. Written to the device
@@ -134,6 +136,13 @@ class _DiagnosticThread(QThread):
             pass
         try:
             hv_info["hardware_id"] = iface.hvcontroller.get_hardware_id(raw_hex=True)
+        except Exception:
+            pass
+        try:
+            odo = read_console_odometer(iface.hvcontroller)
+            if odo is not None:
+                hv_info["power_on_s"] = odo.power_on_s
+                hv_info["hv_on_s"] = odo.hv_on_s
         except Exception:
             pass
         if hv_info:
@@ -700,6 +709,13 @@ class LIFUSupportConnector(QObject):
                 hv_info["hardware_id"] = self._interface.hvcontroller.get_hardware_id(raw_hex=True)
             except Exception as exc:
                 hv_info["hardware_id_error"] = str(exc)
+            try:
+                odo = read_console_odometer(self._interface.hvcontroller)
+                if odo is not None:
+                    hv_info["power_on_s"] = odo.power_on_s
+                    hv_info["hv_on_s"] = odo.hv_on_s
+            except Exception as exc:
+                hv_info["odometer_error"] = str(exc)
             if hv_info:
                 info["console"] = hv_info
 
@@ -857,6 +873,9 @@ class LIFUSupportConnector(QObject):
             si_rows += _si_row("HV Firmware", console_info["firmware_version"])
         if console_info.get("hardware_id"):
             si_rows += _si_row("HV Hardware ID", console_info["hardware_id"])
+        if console_info.get("power_on_s") is not None:
+            si_rows += _si_row("HV Power-On Time", format_duration(console_info["power_on_s"]))
+            si_rows += _si_row("HV-On Time", format_duration(console_info["hv_on_s"]))
         tx_info = sysinfo.get("transmitter", {})
         if tx_info.get("module_count") is not None:
             si_rows += _si_row("TX Module Count", tx_info["module_count"])

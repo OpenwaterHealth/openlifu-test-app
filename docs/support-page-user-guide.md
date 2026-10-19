@@ -67,6 +67,7 @@ The left card shows information for the connected Console board.
 
 - **Firmware Version** — Reported by the device over USB.
 - **Device ID** — Unique hardware identifier.
+- **Power-On Time / HV-On Time** — Lifetime odometer kept by the Console: how long the firmware has been running and how long the high-voltage supply has been enabled. Shows `N/A` on firmware or SDK versions without the odometer. Both values are also included in the diagnostics report.
 - **Power Status** — Green/red badges indicate whether the 12 V rail and the high-voltage rail are currently active.
 - **Temperatures** — Two on-board temperature sensor readings in °C, updated automatically on connect and on each Refresh.
 - **Monitor Voltages** — Eight analogue voltage monitor channels read from the Console:
