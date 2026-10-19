@@ -1793,18 +1793,17 @@ Rectangle {
                             Layout.preferredHeight: userConfigUnsupportedText.implicitHeight + 16
                             visible: settingsPage.consoleUserConfigBlocked
                             radius: 6
-                            color: "#3B2A2A"
-                            border.color: "#E74C3C"
+                            color: "#FFF3CD"
+                            border.color: "#FFE69C"
 
                             Text {
                                 id: userConfigUnsupportedText
                                 anchors.fill: parent
                                 anchors.margins: 8
-                                text: "This console's firmware does not support user config. "
-                                      + "Requires "
+                                text: "User config is not supported with this console firmware version. If required, update to "
                                       + LIFUConnector.minConsoleUserConfigFirmwareVersion
                                       + " or newer."
-                                color: "#E74C3C"
+                                color: "#664D03"
                                 font.pixelSize: 12
                                 wrapMode: Text.WordWrap
                                 verticalAlignment: Text.AlignVCenter
