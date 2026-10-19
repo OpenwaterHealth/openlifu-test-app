@@ -1,40 +1,21 @@
-"""A console update must keep the console's USB hub awake on older firmware.
+"""A console update must keep the console's USB hub awake.
 
-Console firmware older than CONSOLE_DFU_HUB_FIX_FW_VERSION hands over to its
-bootloader in a way that leaves a selectively suspended USB hub unable to
-report the DFU device, so the update times out with the console stuck in its
-bootloader. Before such an update the app asks Windows (UAC) to stop that one
-hub from sleeping. These tests pin the version gate, the safety of the
-elevated command, and the decision flow, with every system call faked.
+Console firmware hands over to its bootloader in a way that leaves a
+selectively suspended USB hub unable to report the DFU device, so the update
+times out with the console stuck in its bootloader. Before an update the app
+asks Windows (UAC) to stop that one hub from sleeping. No released firmware
+fixes this on the device side yet, so the check runs whatever the console's
+version. These tests pin the safety of the elevated command and the decision
+flow, with every system call faked.
 """
 from __future__ import annotations
 
 import pytest
 
 from lifu import lifu_settings, usb_hub_power
-from lifu.lifu_constants import (
-    CONSOLE_DFU_HUB_FIX_FW_VERSION,
-    console_needs_awake_hub_for_update,
-)
 from lifu.lifu_settings import SettingsMixin
 
 HUB = "USB\\VID_0424&PID_2514\\9&2597043D&0&3"
-
-
-# ------------------------------------------------------------- version gate
-
-@pytest.mark.parametrize("version, needs", [
-    ("1.2.6", True),
-    ("v1.2.7", True),
-    ("1.2.6-rc.6-8-ged4c55a", True),   # dev builds parse to their base version
-    (CONSOLE_DFU_HUB_FIX_FW_VERSION, False),
-    ("1.3.0", False),
-    ("2.0.0", False),
-    (None, True),                       # unreadable: ask rather than risk it
-    ("garbage", True),
-])
-def test_version_gate(version, needs):
-    assert console_needs_awake_hub_for_update(version) is needs
 
 
 # -------------------------------------------------- elevated command safety
@@ -73,20 +54,22 @@ class Emitter:
 
 
 class Hv:
-    def __init__(self, version=None, fail=False):
-        self._version, self._fail = version, fail
+    """Counts version reads: the hub check must not depend on the version."""
+
+    def __init__(self, version="9.9.9"):
+        self._version = version
+        self.version_reads = 0
 
     def get_version(self):
-        if self._fail:
-            raise RuntimeError("timeout")
+        self.version_reads += 1
         return self._version
 
 
 class Connector(SettingsMixin):
-    def __init__(self, cached_version=None, tx_connected=False, hv=None):
+    def __init__(self, cached_version=None, tx_connected=False):
         self._cached_hv_fw_version = cached_version
         self._txConnected = tx_connected
-        self.interface = type("Interface", (), {"hvcontroller": hv or Hv()})()
+        self.interface = type("Interface", (), {"hvcontroller": Hv()})()
         self.fwUpdateStatus = Emitter()
 
 
@@ -110,10 +93,12 @@ def msgs(c):
     return [m for _dev, _ok, m in c.fwUpdateStatus.calls]
 
 
-def test_fixed_firmware_never_prompts(system):
-    c = Connector(cached_version=CONSOLE_DFU_HUB_FIX_FW_VERSION)
+@pytest.mark.parametrize("cached", ["1.2.6", "9.9.9", None])
+def test_check_runs_whatever_the_firmware_version(system, cached):
+    c = Connector(cached_version=cached)
     assert c._keep_console_hub_awake_for_update() is True
-    assert system["prompts"] == [] and msgs(c) == []
+    assert system["prompts"] == [[HUB]]
+    assert c.interface.hvcontroller.version_reads == 0
 
 
 def test_hub_already_awake_does_not_prompt(system):
@@ -130,24 +115,12 @@ def test_no_console_hub_found_does_not_prompt(system):
     assert system["prompts"] == []
 
 
-def test_old_firmware_prompts_for_the_console_hub_only(system):
+def test_prompts_for_the_console_hub_only(system):
     c = Connector(cached_version="1.2.6")
     assert c._keep_console_hub_awake_for_update() is True
     assert system["prompts"] == [[HUB]]
     assert msgs(c)[0].startswith("Starting console firmware update")
     assert "permission" in msgs(c)[0]
-
-
-def test_unreadable_version_is_queried_then_treated_as_old(system):
-    c = Connector(cached_version=None, hv=Hv(fail=True))
-    assert c._keep_console_hub_awake_for_update() is True
-    assert system["prompts"] == [[HUB]]
-
-
-def test_version_read_from_device_when_not_cached(system):
-    c = Connector(cached_version=None, hv=Hv(version=CONSOLE_DFU_HUB_FIX_FW_VERSION))
-    assert c._keep_console_hub_awake_for_update() is True
-    assert system["prompts"] == []
 
 
 @pytest.mark.parametrize("status", ["declined", "failed"])
