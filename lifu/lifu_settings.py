@@ -48,7 +48,6 @@ from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 from openlifu_sdk.io.LIFUUserConfig import LifuUserConfig
 
 from lifu import dfu_driver, usb_hub_power
-from lifu.lifu_constants import console_needs_awake_hub_for_update
 from test_reports.test_reports import (
     check_config_against_device,
     read_test_report,
@@ -427,27 +426,19 @@ class SettingsMixin:
         return False
 
     def _keep_console_hub_awake_for_update(self) -> bool:
-        """Before a normal console update on older firmware, stop Windows
-        from suspending the console's USB hub during the app -> bootloader
-        handoff (open-lifu-console-bl#2); one UAC prompt per USB port.
+        """Before a normal console update, stop Windows from suspending the
+        console's USB hub during the app -> bootloader handoff
+        (open-lifu-console-bl#2); one UAC prompt per USB port. No released
+        console firmware fixes this yet, so it runs for every console.
 
         False, with a failure emitted, means don't start: the update would
         likely time out with the console stuck in its bootloader. A declined
         prompt is tolerated when a transmitter is attached, since the TX keeps
         the hub busy. Call from a worker thread."""
-        version = self._cached_hv_fw_version
-        if version is None:
-            try:
-                version = self.interface.hvcontroller.get_version()
-            except Exception as e:
-                logger.info("Console firmware version unreadable (%s); treating as old", e)
-        if not console_needs_awake_hub_for_update(version):
-            logger.info("Console hub check: firmware %s has the hub fix, no prompt", version)
-            return True
         found = usb_hub_power.console_hub_instances()
         hubs = [h for h in found if usb_hub_power.hub_may_sleep(h)]
         if not hubs:
-            logger.info("Console hub check (firmware %s): %s, no prompt", version,
+            logger.info("Console hub check: %s, no prompt",
                         f"hub(s) already kept awake: {found}" if found
                         else "no console USB2514 hub found")
             return True
