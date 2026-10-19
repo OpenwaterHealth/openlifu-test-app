@@ -134,6 +134,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
     # New Signals for data updates
     hvDeviceInfoReceived = pyqtSignal(str, str)  # (firmwareVersion, deviceId)
+    hvOdometerReceived = pyqtSignal(str, str)  # (powerOnTime, hvOnTime), "N/A" when unsupported
     monVoltagesReceived = pyqtSignal(list)  # Signal for voltage monitor readings
     txDeviceInfoReceived = pyqtSignal('QVariantList')  # list of {module, firmwareVersion, deviceId}
     temperatureHvUpdated = pyqtSignal(float, float)  # (temp1, temp2)
