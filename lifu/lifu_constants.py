@@ -119,11 +119,6 @@ MIN_TRANSMITTER_FW_VERSION = "2.0.7"
 # LIFUUserConfig); move it there once the SDK grows a capability check.
 MIN_CONSOLE_USER_CONFIG_FW_VERSION = "1.2.7"
 
-# First console firmware that resets its own USB hub before the DFU handoff
-# (open-lifu-console-bl#2). Older firmware needs the hub kept awake during an
-# update. Placeholder until that release ships: SDK-bundled 1.2.7 still needs it.
-CONSOLE_DFU_HUB_FIX_FW_VERSION = "1.3.0"
-
 # Compliance buckets surfaced to QML. Order matters: aggregate "worst"
 # state across modules picks the numerically larger value.
 FW_COMPLIANCE_OK = 0
@@ -224,16 +219,6 @@ def console_supports_user_config(version_str) -> bool:
         return True
     floor = parse_firmware_version(MIN_CONSOLE_USER_CONFIG_FW_VERSION)
     return floor is None or parsed >= floor
-
-
-def console_needs_awake_hub_for_update(version_str) -> bool:
-    """True if a console on ``version_str`` needs its USB hub kept awake for
-    an update. Unreadable versions return ``True``: asking is cheaper than a
-    console stuck in its bootloader."""
-    parsed = parse_firmware_version(version_str)
-    if parsed is None:
-        return True
-    return parsed < parse_firmware_version(CONSOLE_DFU_HUB_FIX_FW_VERSION)
 
 
 def validate_firmware_version_pins():

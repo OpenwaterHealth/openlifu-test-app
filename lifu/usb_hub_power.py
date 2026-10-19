@@ -3,15 +3,15 @@
 The console's MCU sits behind a USB2514 hub inside the console. During a
 firmware update the app detaches from USB and resets into its bootloader. With
 no transmitter attached, the console is that hub's only device, so Windows may
-selectively suspend the hub in the gap. Older console firmware hands over with
-the hub in that state, and the bootloader's brief hub-reset pulse then leaves
-the suspended hub unable to report the bootloader's DFU device: the update
-times out and the console sits invisible in its bootloader
-(OpenwaterHealth/open-lifu-console-bl#2). Console firmware with the fix resets
-the hub itself before handing over and needs none of this.
+selectively suspend the hub in the gap. Console firmware hands over with the
+hub in that state, and the bootloader's brief hub-reset pulse then leaves the
+suspended hub unable to report the bootloader's DFU device: the update times
+out and the console sits invisible in its bootloader
+(OpenwaterHealth/open-lifu-console-bl#2). No released console firmware fixes
+this on the device side yet.
 
-For older firmware the fix is the hub's "Allow the computer to turn off this
-device to save power" setting, cleared for the console's own hub only: the
+The host-side fix is the hub's "Allow the computer to turn off this device to
+save power" setting, cleared for the console's own hub only: the
 hub is found as the parent of the console's USB device, so other hubs -- even
 other USB2514s, a common dock chip -- are untouched. Reading the setting needs
 no privileges; changing it does, so :func:`keep_hubs_awake` runs one elevated
