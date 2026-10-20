@@ -106,9 +106,9 @@ Rectangle {
     }
 
     // The target the editor's contents belong to. Tracked by name rather
-    // than by index: rebuildConfigTargets() replaces the whole model, so
-    // dropping the Console (or a module count change) can slide the
-    // selection from "Console" to "TX 0" while currentIndex stays 0 --
+    // than by index: rebuildConfigTargets() replaces the whole model, so a
+    // module count change (or the TX dropping out) can slide the selection
+    // to a different target while currentIndex stays the same --
     // onCurrentIndexChanged never fires, and the old target's config, its
     // baseline and its pending state would carry over to the new one.
     property string userConfigTarget: ""
@@ -124,10 +124,34 @@ Rectangle {
         userConfigTarget = target
         setUserConfigText("")
         userConfigTouched = false
+        serialNumberField.text = ""
+        hwVersionField.text = ""   // console and TX hw versions differ
         // The Generate button fills hwid/fw_ver from the live console.
         // Cached after the first call, so this is just a re-emit.
         if (target === "Console" && LIFUConnector.hvConnected)
             LIFUConnector.queryHvInfo()
+    }
+
+    // A writeSerialNumber call is in flight; cleared by its status/conflict.
+    property bool serialWriteBusy: false
+
+    // A top-level value in a config's JSON text ("" if none / not JSON).
+    // Case-insensitive so the factory stub's "SN" counts as "sn".
+    function configValue(text, key) {
+        var parsed
+        try {
+            parsed = JSON.parse(text)
+        } catch (e) {
+            return ""
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return ""
+        var keys = Object.keys(parsed)
+        for (var i = 0; i < keys.length; ++i) {
+            if (keys[i].toLowerCase() === key)
+                return String(parsed[keys[i]])
+        }
+        return ""
     }
 
     // True once this target's editor holds something the operator has seen:
@@ -342,35 +366,34 @@ Rectangle {
         return "#4A90E2"                                            // blue (reinstall / compliant)
     }
 
-    // "Upgrade Firmware 1.2.5 -> 1.2.6-rc.5" / "Downgrade Firmware ..."
-    // / "Reinstall Firmware v1.2.6-rc.5" / fallback "Update Firmware".
-    // Labels show the FULL version (pre-release suffix included) so an rc
-    // build reads as an rc; the upgrade/downgrade/reinstall decision still
-    // comes from the M.m.p triple the bootloader actually enforces.
+    // "Install Firmware 1.2.7" / "Downgrade to Firmware 1.2.5" /
+    // "Reinstall Firmware 1.2.7" / fallback "Update Firmware". Only the
+    // version being installed is shown, in FULL (pre-release suffix
+    // included) so an rc build reads as an rc; the install/downgrade/
+    // reinstall decision still comes from the M.m.p triple the bootloader
+    // enforces, and a different build string at the same M.m.p (e.g.
+    // rc -> release) counts as an install.
     function updateButtonText(deviceVersion, fileVersion) {
-        var d = _parseFwVersion(deviceVersion)
         var f = _parseFwVersion(fileVersion)
         if (f === null) return "Update Firmware"
-        if (d === null) return "Install Firmware v" + _fullFwVersion(fileVersion)
-        var diff = _cmpFwVersion(f, d)
-        if (diff > 0) return "Upgrade Firmware " + _fullFwVersion(deviceVersion)
-            + " → " + _fullFwVersion(fileVersion)
-        if (diff < 0) return "Downgrade Firmware " + _fullFwVersion(deviceVersion)
-            + " → " + _fullFwVersion(fileVersion)
-        // Same M.m.p but a different build string (e.g. rc -> release) is
-        // still a meaningful change, so show both sides rather than "v X".
-        var dFull = _fullFwVersion(deviceVersion)
         var fFull = _fullFwVersion(fileVersion)
-        if (dFull !== fFull) return "Install Firmware " + dFull + " → " + fFull
-        return "Reinstall Firmware v" + fFull
+        var d = _parseFwVersion(deviceVersion)
+        if (d === null) return "Install Firmware " + fFull
+        var diff = _cmpFwVersion(f, d)
+        if (diff < 0) return "Downgrade to Firmware " + fFull
+        if (diff > 0 || _fullFwVersion(deviceVersion) !== fFull)
+            return "Install Firmware " + fFull
+        return "Reinstall Firmware " + fFull
     }
 
+    // TX modules first so a connected transmitter is the initial target; the
+    // Console is listed last and is the default only when no TX is connected.
     function rebuildConfigTargets() {
         var items = []
-        if (LIFUConnector.hvConnected) items.push("Console")
         if (LIFUConnector.txConnected) {
             for (var i = 0; i < txModuleCount; i++) items.push("TX " + i)
         }
+        if (LIFUConnector.hvConnected) items.push("Console")
         configTargetModel = items
     }
 
@@ -425,6 +448,22 @@ Rectangle {
         interval: 50
         running: false
         onTriggered: LIFUConnector.queryNumModules()
+    }
+
+    // While the console serial port is absent, look for the console in a
+    // bootloader's USB DFU (interrupted update, or app rejected at boot).
+    // The connector does the USB probe on a background thread; this only
+    // schedules it. Paused during a console update, when the unit is in DFU
+    // on purpose.
+    Timer {
+        id: consoleDfuProbeTimer
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: settingsPage.visible
+                 && !LIFUConnector.hvConnected
+                 && !settingsPage.consoleUpdating
+        onTriggered: LIFUConnector.probeConsoleDfu()
     }
 
     // Delay on fresh TX connection to let the device stabilise
@@ -548,7 +587,23 @@ Rectangle {
             settingsPage.userConfigTouched = true
         }
 
+        function onSerialNumberConflict(target, existing, proposed) {
+            settingsPage.serialWriteBusy = false
+            serialConflictDialog.target = target
+            serialConflictDialog.existing = existing
+            serialConflictDialog.proposed = proposed
+            serialConflictDialog.open()
+        }
+
         function onUserConfigStatus(target, success, message) {
+            if (settingsPage.serialWriteBusy) {
+                settingsPage.serialWriteBusy = false
+                // Ready for the next scan.
+                if (success) {
+                    serialNumberField.text = ""
+                    serialNumberField.forceActiveFocus()
+                }
+            }
             userConfigStatusText.flash(message, success ? "#2ECC71" : "#E74C3C")
             // Only a write that landed clears the pending state -- a failed
             // one leaves the button breathing, because the device still does
@@ -602,6 +657,73 @@ Rectangle {
         onAccepted: {
             var target = configTargetSelector.currentText.toLowerCase()
             LIFUConnector.loadTestReport(selectedFile, target)
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Serial number overwrite confirmation (from serialNumberConflict)
+    // ----------------------------------------------------------------
+    Popup {
+        id: serialConflictDialog
+        anchors.centerIn: Overlay.overlay
+        width: 440
+        padding: 20
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+
+        property string target: ""
+        property string existing: ""
+        property string proposed: ""
+        readonly property string targetLabel:
+            target === "console" ? "The console" : target.toUpperCase()
+
+        background: Rectangle {
+            color: "#1E1E20"
+            radius: 12
+            border.color: "#3E4E6F"
+            border.width: 2
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 14
+
+            Text {
+                text: "Replace serial number?"
+                color: "white"
+                font.pixelSize: 16
+                font.weight: Font.Bold
+            }
+
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#BDC3C7"
+                font.pixelSize: 13
+                text: serialConflictDialog.targetLabel + " already has serial number "
+                      + serialConflictDialog.existing + ". Replace it with "
+                      + serialConflictDialog.proposed + "?"
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: 10
+
+                Button {
+                    text: "Cancel"
+                    onClicked: serialConflictDialog.close()
+                }
+                Button {
+                    text: "Replace"
+                    onClicked: {
+                        serialConflictDialog.close()
+                        settingsPage.serialWriteBusy = true
+                        LIFUConnector.writeSerialNumber(serialConflictDialog.target,
+                                                        serialConflictDialog.proposed,
+                                                        hwVersionField.text.trim(), true)
+                    }
+                }
+            }
         }
     }
 
@@ -1396,9 +1518,9 @@ Rectangle {
                                 // syncUserConfigTarget().
                                 onCurrentTextChanged: settingsPage.syncUserConfigTarget()
 
-                                // Show the entry text as-is ("Console", "TX 0").
+                                // Show the entry text as-is ("TX 0", "Console").
                                 // Never the index: "Console" is not a module
-                                // number and its presence shifts every TX index.
+                                // number, and with no TX connected it sits at 0.
                                 displayText: (enabled && currentIndex >= 0) ? currentText : "—"
 
                                 contentItem: Text {
@@ -1471,6 +1593,197 @@ Rectangle {
                             }
                         }
 
+                        // Serial number + hw_ver. Barcode/QR scanners type
+                        // the code and press Enter, so a scan assigns it
+                        // straight away; typing + Enter or Assign works the
+                        // same. Writes the default-config identity keys to
+                        // the selected target (console -> console, TX n ->
+                        // that module): sn and hw_ver from here, hwid,
+                        // fw_ver, sdk_ver and updated filled automatically.
+                        // Every other key on the device is kept.
+                        ColumnLayout {
+                            id: serialNumberBlock
+                            Layout.fillWidth: true
+                            spacing: 4
+                            visible: deviceIdRow.hasTarget
+
+                            readonly property bool canUse:
+                                !settingsPage.consoleUserConfigBlocked
+                                && !settingsPage.serialWriteBusy
+                            // What the device last returned (read or write).
+                            readonly property string current:
+                                settingsPage.configValue(settingsPage.userConfigBaseline, "sn")
+                            readonly property string currentHwVer:
+                                settingsPage.configValue(settingsPage.userConfigBaseline, "hw_ver")
+
+                            function assign() {
+                                var sn = serialNumberField.text.trim()
+                                if (sn === "" || !canUse) return
+                                // The result replaces the editor, so don't
+                                // silently drop unwritten edits.
+                                if (settingsPage.userConfigDirty) {
+                                    userConfigStatusText.flash(
+                                        "Write or revert the editor changes before assigning a serial number.",
+                                        "#E74C3C")
+                                    return
+                                }
+                                settingsPage.serialWriteBusy = true
+                                LIFUConnector.writeSerialNumber(
+                                    configTargetSelector.currentText.toLowerCase(), sn,
+                                    hwVersionField.text.trim(), false)
+                            }
+
+                            Text {
+                                text: settingsPage.configTargetIsConsole
+                                      ? "Console Serial Number:" : "Transmitter Serial Number:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+
+                                TextField {
+                                    id: serialNumberField
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 32
+                                    font.pixelSize: 13
+                                    color: "white"
+                                    enabled: serialNumberBlock.canUse
+                                    // Ignores anything else a scanner sends
+                                    // (e.g. a trailing Tab).
+                                    validator: RegularExpressionValidator {
+                                        regularExpression: /[A-Za-z0-9._-]{0,32}/
+                                    }
+                                    onAccepted: serialNumberBlock.assign()
+                                    background: Rectangle {
+                                        color: "#2A2F3B"
+                                        radius: 4
+                                        border.color: serialNumberField.activeFocus ? "#4A90E2" : "#3E4E6F"
+                                    }
+
+                                    // Hint, not placeholderText: some styles
+                                    // keep that visible as a floating label.
+                                    // Gone as soon as there is any text.
+                                    Text {
+                                        anchors.fill: parent
+                                        leftPadding: serialNumberField.leftPadding
+                                        verticalAlignment: Text.AlignVCenter
+                                        visible: serialNumberField.length === 0
+                                        text: settingsPage.serialWriteBusy
+                                              ? "Writing…" : "Scan or type, then Enter"
+                                        color: "#7F8C8D"
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: assignSerialButton
+                                    Layout.preferredWidth: 72
+                                    Layout.preferredHeight: 32
+                                    radius: 6
+                                    property bool canUse: serialNumberBlock.canUse
+                                                          && serialNumberField.text.trim().length > 0
+                                    color: !canUse ? "#2A2F3B"
+                                         : (assignSerialArea.containsMouse ? "#4A90E2" : "#3A3F4B")
+                                    border.color: !canUse ? "#3E4E6F"
+                                                : (assignSerialArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                                    opacity: canUse ? 1.0 : 0.55
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "Assign"
+                                        color: "white"
+                                        font.pixelSize: 13
+                                        font.weight: Font.Medium
+                                    }
+
+                                    MouseArea {
+                                        id: assignSerialArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        enabled: assignSerialButton.canUse
+                                        onClicked: serialNumberBlock.assign()
+                                    }
+
+                                    Behavior on color { ColorAnimation { duration: 150 } }
+                                }
+                            }
+
+                            // Hardware version: optional, kept between scans
+                            // (a batch usually shares one). Blank keeps the
+                            // device's current hw_ver. Console only: a TX
+                            // write changes nothing but sn.
+                            Text {
+                                text: "Hardware Version (Optional):"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                                visible: settingsPage.configTargetIsConsole
+                            }
+
+                            TextField {
+                                id: hwVersionField
+                                visible: settingsPage.configTargetIsConsole
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 13
+                                color: "white"
+                                enabled: serialNumberBlock.canUse
+                                validator: RegularExpressionValidator {
+                                    regularExpression: /[A-Za-z0-9._-]{0,32}/
+                                }
+                                // Assign if the serial is in; else go fill it.
+                                onAccepted: {
+                                    if (serialNumberField.text.trim().length > 0)
+                                        serialNumberBlock.assign()
+                                    else
+                                        serialNumberField.forceActiveFocus()
+                                }
+                                background: Rectangle {
+                                    color: "#2A2F3B"
+                                    radius: 4
+                                    border.color: hwVersionField.activeFocus ? "#4A90E2" : "#3E4E6F"
+                                }
+
+                                Text {
+                                    anchors.fill: parent
+                                    leftPadding: hwVersionField.leftPadding
+                                    verticalAlignment: Text.AlignVCenter
+                                    visible: hwVersionField.length === 0
+                                    text: serialNumberBlock.currentHwVer !== ""
+                                          ? "Blank keeps " + serialNumberBlock.currentHwVer
+                                          : "e.g. rev-B"
+                                    color: "#7F8C8D"
+                                    font.pixelSize: 13
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: serialNumberBlock.current !== ""
+                                      ? "On device: " + serialNumberBlock.current
+                                        + (serialNumberBlock.currentHwVer !== ""
+                                           ? " · hw " + serialNumberBlock.currentHwVer : "")
+                                      : "Read Config to see the stored serial number."
+                                color: serialNumberBlock.current !== "" ? "#2ECC71" : "#7F8C8D"
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: settingsPage.configTargetIsConsole
+                                      ? "Assign also fills hwid, fw_ver, sdk_ver and updated."
+                                      : "Assign sets sn and updated; everything else on the module is kept."
+                                color: "#7F8C8D"
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+
                         // Firmware too old for user config on this target.
                         // Persistent (unlike userConfigStatusText, which
                         // auto-hides) because it describes a standing
@@ -1480,18 +1793,17 @@ Rectangle {
                             Layout.preferredHeight: userConfigUnsupportedText.implicitHeight + 16
                             visible: settingsPage.consoleUserConfigBlocked
                             radius: 6
-                            color: "#3B2A2A"
-                            border.color: "#E74C3C"
+                            color: "#FFF3CD"
+                            border.color: "#FFE69C"
 
                             Text {
                                 id: userConfigUnsupportedText
                                 anchors.fill: parent
                                 anchors.margins: 8
-                                text: "This console's firmware does not support user config. "
-                                      + "Requires "
+                                text: "User config is not supported with this console firmware version. If required, update to "
                                       + LIFUConnector.minConsoleUserConfigFirmwareVersion
                                       + " or newer."
-                                color: "#E74C3C"
+                                color: "#664D03"
                                 font.pixelSize: 12
                                 wrapMode: Text.WordWrap
                                 verticalAlignment: Text.AlignVCenter
@@ -2011,13 +2323,17 @@ Rectangle {
                                 width: 16
                                 height: 16
                                 radius: 8
-                                color: LIFUConnector.hvConnected ? "#2ECC71" : "#E74C3C"
+                                color: LIFUConnector.hvConnected ? "#2ECC71"
+                                    : (LIFUConnector.consoleDfuState.length > 0 ? "#E67E22" : "#E74C3C")
                                 border.color: "black"
                                 border.width: 1
                             }
 
                             Text {
-                                text: LIFUConnector.hvConnected ? "Console Connected" : "Console Not Connected"
+                                text: LIFUConnector.hvConnected ? "Console Connected"
+                                    : (LIFUConnector.consoleDfuState.length > 0
+                                        ? "Console in bootloader (DFU): " + LIFUConnector.consoleDfuState
+                                        : "Console Not Connected")
                                 font.pixelSize: 14
                                 color: "#BDC3C7"
                                 Layout.fillWidth: true
@@ -2214,21 +2530,32 @@ Rectangle {
                             property bool consoleFileSigned:
                                 LIFUConnector.isConsoleFirmwareSigned(
                                     settingsPage.consoleEffectivePath)
-                            enabled: LIFUConnector.hvConnected && !consoleUpdating
-                                && consoleFileSigned
-                            property color baseColor: settingsPage.updateButtonColor(
-                                consoleCurrentVersion.text,
-                                (consoleFileVersion.text === "—" ? "" : consoleFileVersion.text),
-                                LIFUConnector.minConsoleFirmwareVersion)
+                            // Console seen in a bootloader's USB DFU with no
+                            // serial port (see consoleDfuProbeTimer): the
+                            // button turns into "Recover Firmware".
+                            property bool consoleInDfu:
+                                !LIFUConnector.hvConnected
+                                && LIFUConnector.consoleDfuState.length > 0
+                            enabled: (LIFUConnector.hvConnected || consoleInDfu)
+                                && !consoleUpdating && consoleFileSigned
+                            property color baseColor: consoleInDfu
+                                ? "#E67E22"
+                                : settingsPage.updateButtonColor(
+                                    consoleCurrentVersion.text,
+                                    (consoleFileVersion.text === "—" ? "" : consoleFileVersion.text),
+                                    LIFUConnector.minConsoleFirmwareVersion)
                             color: !enabled ? "#3A3F4B"
                                 : (consoleUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {
                                 text: consoleUpdating
-                                    ? "Updating…"
-                                    : settingsPage.updateButtonText(
-                                        consoleCurrentVersion.text,
-                                        LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
+                                    ? (consoleUpdateButton.consoleInDfu ? "Recovering…" : "Updating…")
+                                    : consoleUpdateButton.consoleInDfu
+                                        ? "Recover Firmware v" + settingsPage._fullFwVersion(
+                                            LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
+                                        : settingsPage.updateButtonText(
+                                            consoleCurrentVersion.text,
+                                            LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
                                 anchors.fill: parent
                                 anchors.margins: 8
                                 horizontalAlignment: Text.AlignHCenter
@@ -2245,7 +2572,10 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: parent.enabled
                                 onClicked: {
-                                    fwUpdateDialog.updateTitle = "Updating Console Firmware…"
+                                    var recovering = consoleUpdateButton.consoleInDfu
+                                    fwUpdateDialog.updateTitle = recovering
+                                        ? "Recovering Console Firmware…"
+                                        : "Updating Console Firmware…"
                                     fwUpdateDialog.progressValue = 0.0
                                     fwUpdateDialog.progressLabel = ""
                                     fwUpdateDialog.statusMessage = ""
@@ -2254,9 +2584,17 @@ Rectangle {
                                     fwUpdateDialog.updateDone = false
                                     fwUpdateDialog.open()
                                     settingsPage.consoleUpdating = true
-                                    LIFUConnector.updateConsoleFirmware(
-                                        settingsPage.consoleEffectivePath,
-                                        consoleForceDowngrade.checked)
+                                    if (recovering) {
+                                        // No serial port: the SDK classifies the
+                                        // unit from its USB DFU product string.
+                                        LIFUConnector.recoverConsoleFirmware(
+                                            settingsPage.consoleEffectivePath,
+                                            consoleForceDowngrade.checked)
+                                    } else {
+                                        LIFUConnector.updateConsoleFirmware(
+                                            settingsPage.consoleEffectivePath,
+                                            consoleForceDowngrade.checked)
+                                    }
                                 }
                             }
 
@@ -2275,12 +2613,26 @@ Rectangle {
                             font.pixelSize: 11
                             visible: text.length > 0
                             text: {
-                                if (!LIFUConnector.hvConnected || consoleUpdating) return ""
+                                if (consoleUpdating) return ""
+                                if (!LIFUConnector.hvConnected
+                                    && !consoleUpdateButton.consoleInDfu) return ""
                                 // Empty field uses the included (signed) image;
                                 // only a browsed, unsigned file trips this.
                                 if (consoleFwPath.text.length > 0
                                     && !consoleUpdateButton.consoleFileSigned)
                                     return "This file is not a signed console image."
+                                if (consoleUpdateButton.consoleInDfu
+                                    && LIFUConnector.consoleDfuKind === "no-usb-driver")
+                                    return "A device is in its bootloader (DFU), but this PC "
+                                        + "has no USB driver for it yet. Recover installs the "
+                                        + "driver first (approve the Windows prompt), then the "
+                                        + "file above. Keep the console powered."
+                                if (consoleUpdateButton.consoleInDfu)
+                                    return "Console is in its bootloader ("
+                                        + LIFUConnector.consoleDfuState + "), not running "
+                                        + "an app. Recover installs the file above. Keep the "
+                                        + "console powered and close STM32CubeProgrammer or "
+                                        + "any SDK script first."
                                 return ""
                             }
                         }

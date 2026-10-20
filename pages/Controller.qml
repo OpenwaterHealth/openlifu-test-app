@@ -96,9 +96,12 @@ Rectangle {
     // Split out of fociError so the Pulse Count field can flag itself.
     property string pulseCountError: ""
 
-    // 0-based profile whose delays the element map colours in. Every focus
-    // is drawn either way. Clamped when the focus list shrinks.
-    property int selectedFocusIndex: 0
+    // 1-based focus Start fires on its own, and the one the plot details;
+    // 0 runs the whole execution order and draws the raster. Configure
+    // always sends the rastered solution, so the device holds every profile
+    // either way and this only pins the selector. Clamped when the focus
+    // list shrinks.
+    property int runProfile: 0
 
     // ListModel row edits are not observable, so anything that renders focus
     // coordinates depends on this counter instead.
@@ -133,13 +136,40 @@ Rectangle {
         return isNaN(value) ? "--" : value + " mm"
     }
 
-    function clampSelectedFocusIndex() {
-        var maxIndex = Math.max(0, fociModel.count - 1)
-        if (selectedFocusIndex > maxIndex) {
-            selectedFocusIndex = maxIndex
-        } else if (selectedFocusIndex < 0) {
-            selectedFocusIndex = 0
+    // Back to "All" when the chosen focus no longer exists, or when a single
+    // focus makes the choice moot.
+    function clampRunProfile() {
+        if (runProfile < 0 || runProfile > fociModel.count || fociModel.count <= 1) {
+            runProfile = 0
         }
+    }
+
+    // Pin a configured device to the chosen profile. No-op (true) before
+    // Configure, which applies the choice itself. Re-run after anything that
+    // re-sends the solution, since set_solution puts the device back into
+    // rastering.
+    function pinRunProfile() {
+        if (runProfile === 0 || !everConfigured) {
+            return true
+        }
+        resetProgressIdle()
+        return LIFUConnector.directSetRunProfile(runProfile,
+            triggerPulseInterval.text, triggerPulseCount.text,
+            triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
+            triggerModeDropdown.currentText)
+    }
+
+    // Push a run-profile change to a configured device. "All" has to
+    // re-send the solution: that is the only SDK path that restores the
+    // firmware's profile cycle.
+    function applyRunProfile() {
+        if (!everConfigured) {
+            return true
+        }
+        if (fociError !== "") {
+            return false
+        }
+        return runProfile === 0 ? commitPulse() : pinRunProfile()
     }
 
     // ----- Execution-order parsing -----
@@ -315,7 +345,7 @@ Rectangle {
             return
         }
         syncFocusOneFromInputs()
-        clampSelectedFocusIndex()
+        clampRunProfile()
         fociRevision++
         fociError = computeFociErrorFor(fociModel, executionOrderText, triggerPulseCount.text)
         pulseCountError = pulseCountErrorFor(fociModel, executionOrderText, triggerPulseCount.text)
@@ -394,13 +424,14 @@ Rectangle {
     // Single entry point for plot refreshes so every caller sends the
     // same focus list and execution order.
     function refreshPlot() {
-        clampSelectedFocusIndex()
+        clampRunProfile()
         LIFUConnector.generate_plot(
             xInput.text, yInput.text, zInput.text,
             frequencyInput.text, voltage.text, triggerPulseInterval.text,
             triggerPulseCount.text, triggerPulseTrainInterval.text, triggerPulseTrainCount.text,
             durationInput.text, "buffer", fociArray(), executionOrderArray(),
-            selectedFocusIndex
+            // -1 draws the whole raster; a focus is drawn as the only one firing.
+            runProfile - 1
         )
     }
 
@@ -491,7 +522,7 @@ Rectangle {
         syncInputsFromFocusOne()
         // A new solution means a new focus list, so a carried-over selection
         // would point at an unrelated profile.
-        selectedFocusIndex = 0
+        runProfile = 0
 
         frequencyInput.text = settings.frequency.toString()
         durationInput.text = settings.duration.toString()
@@ -594,6 +625,8 @@ Rectangle {
             fociArray(), executionOrderArray()
         )
         if (ok) {
+            // The re-sent solution put the device back into rastering.
+            pinRunProfile()
             refreshPlot()
         }
         return ok
@@ -1674,7 +1707,6 @@ Rectangle {
                         triggerPulseCount.dirty = true
                     }
                     syncInputsFromFocusOne()
-                    clampSelectedFocusIndex()
                     updateFociValidation()
                     // Focus geometry changed: the device needs a re-Configure
                     // (or a direct pulse push if it is already configured).
@@ -2074,7 +2106,7 @@ Rectangle {
 
                 GroupBox {
                     id: pulseGroup
-                    title: solutionLoaded ? "Pulse Settings (Delays and Apodizations Loaded Directly from Solution)" : "Pulse Settings"
+                    title: solutionLoaded ? "Pulse Settings (Delays/Apodizations Loaded from Solution)" : "Pulse Settings"
                     Layout.fillWidth: true
 
                     readonly property bool sectionReadOnly: controlsReadOnly
@@ -2495,38 +2527,46 @@ Rectangle {
                     visible: fociModel.count > 1
 
                     Text {
-                        text: "Delay profile"
+                        text: "Sequence to run"
                         font.pixelSize: 11
                         color: "#9FB3C8"
                         Layout.alignment: Qt.AlignHCenter
                     }
 
+                    // Which profile Start fires, and what the plot details.
+                    // "All" is the normal raster; a focus pins the device to
+                    // that profile alone, as if it were the only one sent.
                     ComboBox {
                         id: focusSelector
                         Layout.preferredWidth: 110
                         Layout.preferredHeight: 28
                         Layout.alignment: Qt.AlignHCenter
                         font.pixelSize: 12
-                        // Int model, not a string list: a list would be
-                        // rebuilt on every keystroke, resetting currentIndex.
-                        model: fociModel.count
+                        // Entry 0 is "All"; entry i is focus i. Int model,
+                        // not a string list: a list would be rebuilt on
+                        // every keystroke, resetting currentIndex.
+                        model: fociModel.count + 1
+                        // Stays live with a loaded solution and before
+                        // Configure, which applies the choice. Switching
+                        // mid-run would change the beam under the operator.
+                        enabled: LIFUConnector.state !== 3
 
                         // Assigned, not bound: ComboBox resets currentIndex
                         // imperatively on model change, tearing a binding down.
                         function syncFromPage() {
-                            if (currentIndex !== selectedFocusIndex) {
-                                currentIndex = selectedFocusIndex
+                            if (currentIndex !== runProfile) {
+                                currentIndex = runProfile
                             }
                         }
                         onCountChanged: syncFromPage()
                         Component.onCompleted: syncFromPage()
                         Connections {
                             target: controllerPage
-                            function onSelectedFocusIndexChanged() { focusSelector.syncFromPage() }
+                            function onRunProfileChanged() { focusSelector.syncFromPage() }
                         }
 
                         // Terse: it has to fit the gutter beside the plot.
-                        displayText: currentIndex >= 0 ? "Focus " + (currentIndex + 1) : ""
+                        displayText: currentIndex <= 0 ? "All (raster)" : "Focus " + currentIndex
 
                         // Carries the focus's colour swatch. The element map
                         // has no numbers, so colour is the only thing tying a
@@ -2540,7 +2580,8 @@ Rectangle {
                                 height: 10
                                 radius: 2
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: focusColorFor(focusSelector.currentIndex)
+                                visible: focusSelector.currentIndex > 0
+                                color: focusColorFor(focusSelector.currentIndex - 1)
                                 border.color: "#DDDDDD"
                                 border.width: 1
                             }
@@ -2548,7 +2589,7 @@ Rectangle {
                             Text {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: focusSelector.displayText
-                                color: "white"
+                                color: focusSelector.enabled ? "white" : "#888"
                                 font.pixelSize: 12
                                 elide: Text.ElideRight
                             }
@@ -2556,7 +2597,7 @@ Rectangle {
 
                         background: Rectangle {
                             color: "#222"
-                            border.color: "#999"
+                            border.color: focusSelector.enabled ? "#999" : "#555"
                             radius: 4
                             opacity: 0.9
                         }
@@ -2584,14 +2625,16 @@ Rectangle {
                                     height: 10
                                     radius: 2
                                     anchors.verticalCenter: parent.verticalCenter
-                                    color: focusColorFor(focusEntry.index)
-                                    border.color: "#DDDDDD"
+                                    color: focusEntry.index > 0
+                                           ? focusColorFor(focusEntry.index - 1) : "transparent"
+                                    border.color: focusEntry.index > 0 ? "#DDDDDD" : "transparent"
                                     border.width: 1
                                 }
 
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: fociRevision >= 0 ? focusLabelFor(focusEntry.index) : ""
+                                    text: focusEntry.index === 0 ? "All (raster)"
+                                          : (fociRevision >= 0 ? focusLabelFor(focusEntry.index - 1) : "")
                                     color: focusSelector.currentIndex === focusEntry.index
                                            ? "white" : "#D0D8E0"
                                     font.pixelSize: 12
@@ -2605,12 +2648,32 @@ Rectangle {
                             }
                         }
 
-                        onActivated: {
-                            if (index === selectedFocusIndex) {
+                        HoverHandler {
+                            id: focusSelectorHover
+                        }
+                        ToolTip.visible: focusSelectorHover.hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: "All runs the whole execution order. Pick one focus to fire only "
+                                      + "that profile on every pulse, without re-sending the solution."
+
+                        onActivated: function(index) {
+                            if (index === runProfile) {
                                 return
                             }
-                            selectedFocusIndex = index
-                            refreshPlot()
+                            var previous = runProfile
+                            runProfile = index
+                            // Through the busy overlay: "All" is a full
+                            // solution write when the device is configured.
+                            runBusy(function() {
+                                // A failed push already surfaced its error;
+                                // keep the control honest about what the
+                                // device will do. A failure that dropped the
+                                // configured state has reset us to "All".
+                                if (!applyRunProfile() && everConfigured) {
+                                    runProfile = previous
+                                }
+                                refreshPlot()
+                            })
                         }
                     }
 
@@ -2630,7 +2693,7 @@ Rectangle {
                         }
                         Text {
                             id: focusReadoutX
-                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fx") : ""
+                            text: fociRevision >= 0 ? focusCoordText(runProfile - 1, "fx") : ""
                             font.pixelSize: 11
                             color: "#D0D8E0"
                             horizontalAlignment: Text.AlignRight
@@ -2646,7 +2709,7 @@ Rectangle {
                         }
                         Text {
                             id: focusReadoutY
-                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fy") : ""
+                            text: fociRevision >= 0 ? focusCoordText(runProfile - 1, "fy") : ""
                             font.pixelSize: 11
                             color: "#D0D8E0"
                             horizontalAlignment: Text.AlignRight
@@ -2662,7 +2725,7 @@ Rectangle {
                         }
                         Text {
                             id: focusReadoutZ
-                            text: fociRevision >= 0 ? focusCoordText(selectedFocusIndex, "fz") : ""
+                            text: fociRevision >= 0 ? focusCoordText(runProfile - 1, "fz") : ""
                             font.pixelSize: 11
                             color: "#D0D8E0"
                             horizontalAlignment: Text.AlignRight
@@ -3008,6 +3071,9 @@ Rectangle {
                                     if (LIFUConnector.state >= 2) {
                                         everConfigured = true
                                         clearAllDirty()
+                                        // Configure sends the full raster; a
+                                        // chosen profile is pinned on top.
+                                        pinRunProfile()
                                     }
                                     configuredModuleCount = LIFUConnector.queryNumModulesConnected
                                     refreshPlot();
@@ -3297,6 +3363,9 @@ Rectangle {
                 // rather than leaving stale values on screen.
                 if (previousConnectorState >= 2) {
                     clearStatusTelemetry();
+                    // The device forgets its pinned profile with the rest
+                    // of the configuration, so default back to rastering.
+                    runProfile = 0
                     // Also clear the progress UI so a navigation-triggered
                     // reset (e.g. switching to Settings) doesn't leave a
                     // stale "stopped" / "finished" banner behind.
