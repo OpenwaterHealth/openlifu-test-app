@@ -103,6 +103,40 @@ Selecting **Load** will pull up the Load Solution Dialog:
 Loading a solution from disk locks the input fields (read-only grey)
 because the JSON is treated as authoritative.
 
+Both preset and file loading accept two kinds of file: solution files
+(saved by this app, or exported from openlifu-python) and JSON files,
+which hold flat fields such as `frequency_khz`, `pulse_length_us` and
+`pulse_interval_ms`. A JSON file is converted when it loads:
+- Frequency, pulse length, pulse interval, pulse count, delays,
+  apodizations and execution order come from the file. (`order` in a
+  solution file is read as the execution order.)
+- If the file has a `sensitivity`, the voltage is rescaled to the
+  connected transmitter: file voltage × file sensitivity ÷ module
+  sensitivity. The module sensitivity is read from each module's user
+  config at the file's frequency and averaged across modules. Malformed
+  table rows are skipped, and a module with no usable table, or a
+  sensitivity of zero or below at that frequency, is left out of the
+  average. If every module is left out, the file's voltage is used
+  unchanged.
+- A **Scale voltage based on transmitter sensitivity** checkbox under
+  **Voltage per Rail** turns the scaling on (the default) or off. Clear
+  it to use the file's voltage as is. Hover over it to see the file
+  voltage, the file sensitivity and the module sensitivity. It can't be
+  changed once the transmitter is configured, and it is greyed out and
+  cleared when no module has a usable sensitivity.
+- A JSON file loaded with no transmitter connected keeps its unscaled
+  voltage, and the checkbox label turns orange. Configure refuses it
+  while the box is checked: load it again with the transmitter
+  connected, or clear the box to use the file's voltage.
+- Saving it as a solution file keeps the checkbox setting.
+- Pulse train count is the largest value in the file's
+  `pulse_train_count_selections`. That is usually longer than the app's
+  safety limits allow (10 minutes on the standard voltage tables), so
+  Configure refuses it unless the safety bypass is armed on the Settings
+  page. A file without selections gets a pulse train count of 1.
+- Each focus position is worked out from that focus's delays, because
+  the file stores only a nominal depth.
+
 ![Loaded Solution](controller_loaded_solution.png)
 
 Selecting **Save** will open the Save Solution Dialog:

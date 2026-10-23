@@ -24,6 +24,7 @@ import time
 from datetime import datetime
 
 import numpy as np
+from scipy.optimize import least_squares
 
 from PyQt6.QtCore import pyqtSlot
 
@@ -626,6 +627,16 @@ class ControllerMixin:
         if solution is None:
             # get_solution already surfaced the specific reason.
             return
+        calibration = solution.get("voltage_calibration") or {}
+        if calibration.get("pending") and calibration.get("enabled", True):
+            self._emit_device_error(
+                "Configure Transmitter",
+                "This JSON file was loaded before a transmitter was connected, so its "
+                "voltage has not been scaled to the modules' sensitivity. Load it again, "
+                "or clear \"Scale voltage based on transmitter sensitivity\" to use the "
+                "file's voltage."
+            )
+            return
         if not self._validate_solution_safety(solution, "Configure Transmitter"):
             return
 
@@ -1026,7 +1037,9 @@ class ControllerMixin:
                         logger.warning(f"Skipping preset with invalid JSON root type: {file_path}")
                         continue
 
-                    display_name = solution_data.get('name') or os.path.splitext(os.path.basename(file_path))[0]
+                    # JSON files name themselves with "label".
+                    display_name = (solution_data.get('name') or solution_data.get('label')
+                                    or os.path.splitext(os.path.basename(file_path))[0])
                     presets.append({
                         "name": str(display_name),
                         "path": os.path.normpath(file_path)
@@ -1081,7 +1094,18 @@ class ControllerMixin:
                 logger.info(f"JSON keys: {list(solution_data.keys())}")
             else:
                 logger.warning(f"Unexpected JSON data type: {type(solution_data)}, value: {str(solution_data)[:100]}")
-            
+
+            # openlifu-python solutions and JSON files call the execution
+            # order "order"; this app and the SDK read "execution_order".
+            if isinstance(solution_data, dict) and "order" in solution_data and "execution_order" not in solution_data:
+                solution_data["execution_order"] = solution_data["order"]
+
+            # JSON files use flat UI-unit fields instead of the Solution
+            # layout; convert them so everything below sees a solution.
+            if isinstance(solution_data, dict) and "frequency_khz" in solution_data and "pulse" not in solution_data:
+                solution_data = self._solution_from_json_file(solution_data, normalized_path)
+                logger.info(f"Converted JSON file '{solution_data['name']}' to a solution")
+
             # Validate solution structure
             if not self._validate_solution_format(solution_data):
                 return False
@@ -1096,7 +1120,10 @@ class ControllerMixin:
                     error_message = f"Element count mismatch!\nExpected: {expected_elements} elements ({self._num_modules_connected} modules Ã— {NUM_ELEMENTS_PER_MODULE})\nFound in solution: {actual_elements} elements"
                     self.solutionLoadError.emit(error_message)
                     return False
-            
+
+            if "voltage_calibration" in solution_data:
+                self._scale_voltage_to_modules(solution_data)
+
             # Store loaded solution data
             self._loaded_solution_data = solution_data
             self._solution_loaded = True
@@ -1206,7 +1233,275 @@ class ControllerMixin:
             logger.error(error_msg)
             self.solutionLoadError.emit(error_msg)
             return False
-    
+
+
+    def _scale_voltage_to_modules(self, solution):
+        """Rescale a loaded JSON file's voltage to the connected modules.
+
+        A JSON file's voltage was set for a transducer of the file's
+        calibration ``sensitivity``, so the voltage programmed is
+        ``voltage * file sensitivity / device sensitivity``. The device
+        sensitivity is the mean, over the connected modules, of each
+        module's user-config ``module.sensitivity`` table
+        (``[[freq_hz, sensitivity], ...]``) interpolated at the pulse
+        frequency and clamped to the table's ends. Malformed rows are
+        skipped, and a module with no usable rows or a sensitivity of zero
+        or below there is left out; if every module is left out, the file's
+        voltage is used as is.
+
+        With no transmitter connected there is nothing to scale to: the
+        voltage stays unscaled and the calibration is marked ``pending``,
+        which Configure refuses while scaling is on.
+
+        Each module's sensitivity (``None`` for one left out) is kept in
+        the calibration's ``module_sensitivities``, so the page's "Scale
+        voltage based on transmitter sensitivity" checkbox can turn scaling
+        off and on again without another read (:meth:`setVoltageScaling`),
+        and a saved copy records what its voltage was scaled to.
+        """
+        calibration = solution["voltage_calibration"]
+        calibration["module_sensitivities"] = []
+        calibration["pending"] = not self._txConnected
+        if calibration["pending"]:
+            logger.warning(
+                f"No transmitter connected: file voltage {float(calibration['voltage']):.3f} V "
+                f"is not scaled to module sensitivity yet. Load the file again after connecting."
+            )
+        else:
+            frequency_hz = float(solution["pulse"]["frequency"])
+            self._interface_mutex.lock()
+            try:
+                calibration["module_sensitivities"] = [
+                    self._module_sensitivity(module, frequency_hz)
+                    for module in range(self._num_modules_connected)
+                ]
+            finally:
+                self._interface_mutex.unlock()
+            if all(value is None for value in calibration["module_sensitivities"]):
+                logger.warning(
+                    f"No usable module sensitivity at {frequency_hz / 1e3:.1f} kHz: "
+                    f"using the file voltage {float(calibration['voltage']):.3f} V unscaled."
+                )
+        self._apply_voltage_calibration(solution)
+
+
+    def _apply_voltage_calibration(self, solution):
+        """Set a loaded JSON file's voltage from its calibration, without device I/O.
+
+        The scaled voltage when scaling is on (the calibration's ``enabled``,
+        default on) and at least one module has a sensitivity; the file's
+        voltage otherwise.
+        """
+        calibration = solution["voltage_calibration"]
+        file_voltage = float(calibration["voltage"])
+        values = [value for value in calibration.get("module_sensitivities") or []
+                  if value is not None]
+        solution["voltage"] = file_voltage
+        if not values:
+            return
+        if not calibration.get("enabled", True):
+            logger.info(f"Voltage scaling off: using the file voltage {file_voltage:.3f} V")
+            return
+        device_sensitivity = sum(values) / len(values)
+        solution["voltage"] = file_voltage * float(calibration["sensitivity"]) / device_sensitivity
+        logger.info(
+            f"Scaled file voltage {file_voltage:.3f} V -> {solution['voltage']:.3f} V "
+            f"(file sensitivity {float(calibration['sensitivity']):.1f}, module sensitivity "
+            f"{device_sensitivity:.1f} at {float(solution['pulse']['frequency']) / 1e3:.1f} kHz)"
+        )
+
+
+    @pyqtSlot(bool, result='QVariantMap')
+    def setVoltageScaling(self, enabled):
+        """Turn sensitivity scaling of the loaded JSON file's voltage on or off.
+
+        Backs the Controller page's "Scale voltage based on transmitter
+        sensitivity" checkbox. Refused once the device is configured, like
+        Configure itself, so the programmed voltage always matches the
+        field. Returns the loaded solution's settings for the page.
+        """
+        solution = self._loaded_solution_data
+        if not self._solution_loaded or not solution or "voltage_calibration" not in solution:
+            return {}
+        if self._state in (READY, RUNNING):
+            logger.warning("Voltage scaling cannot change while the transmitter is configured.")
+        else:
+            solution["voltage_calibration"]["enabled"] = bool(enabled)
+            self._apply_voltage_calibration(solution)
+        return self.getLoadedSolutionSettings()
+
+
+    def _module_sensitivity(self, module, frequency_hz):
+        """Return *module*'s sensitivity at *frequency_hz*, or None if it has none.
+
+        Reads the module's user-config sensitivity table, skips malformed
+        rows, and interpolates at *frequency_hz*, clamped to the table's
+        ends. A table with no usable rows, or a value of zero or below,
+        gives None. The caller holds ``_interface_mutex``.
+        """
+        try:
+            config = json.loads(self.interface.txdevice.read_config(module=module).get_json_str())
+        except (LIFUError, OSError, ValueError, TypeError) as e:
+            logger.warning(f"Module {module}: could not read its user config: {e}")
+            return None
+        table = []
+        for row in (config.get("module") or {}).get("sensitivity") or []:
+            try:
+                table.append((float(row[0]), float(row[1])))
+            except (TypeError, ValueError, IndexError):
+                logger.warning(f"Module {module}: skipping malformed sensitivity row {row!r}")
+        if not table:
+            return None
+        freqs, sens = zip(*sorted(table))
+        value = float(np.interp(frequency_hz, freqs, sens))
+        if value <= 0:
+            logger.warning(
+                f"Module {module}: sensitivity {value:.1f} at {frequency_hz / 1e3:.1f} kHz "
+                f"is not positive; leaving the module out."
+            )
+            return None
+        return value
+
+
+    def _voltage_scaling_info(self, solution):
+        """Describe a loaded JSON file's voltage scaling for the page's checkbox.
+
+        Returns ``available`` (show the checkbox), ``enabled`` (scaling is
+        on), ``pending`` (loaded with no transmitter connected), ``possible``
+        (some module has a sensitivity) and ``note``, the checkbox's tooltip.
+        A solution without a voltage calibration gets ``available`` False.
+        """
+        calibration = solution.get("voltage_calibration")
+        if not calibration:
+            return {"available": False}
+        enabled = bool(calibration.get("enabled", True))
+        pending = bool(calibration.get("pending"))
+        module_sensitivities = calibration.get("module_sensitivities") or []
+        values = [value for value in module_sensitivities if value is not None]
+        frequency_khz = float(solution["pulse"]["frequency"]) / 1e3
+        # Same 3 decimals as the Voltage field.
+        from_file = (f"file {round(float(calibration['voltage']), 3):g} V, "
+                     f"file sensitivity {float(calibration['sensitivity']):.5g}")
+        if pending:
+            note = f"Not scaled: no transmitter was connected when the file loaded ({from_file})."
+            if enabled:
+                note += " Load the file again, or clear this box to use the file's voltage."
+        elif not values:
+            note = f"Not scaled: no module has a usable sensitivity at {frequency_khz:g} kHz ({from_file})."
+        else:
+            modules = f"module sensitivity {sum(values) / len(values):.5g} at {frequency_khz:g} kHz"
+            if len(module_sensitivities) > 1:
+                used = (f"{len(values)} of {len(module_sensitivities)}"
+                        if len(values) < len(module_sensitivities) else f"{len(values)}")
+                modules += f" (mean of {used} modules)"
+            note = (f"Scaled from {from_file}, {modules}." if enabled
+                    else f"Off: using the file's voltage as is ({from_file}, {modules}).")
+        return {"available": True, "enabled": enabled, "pending": pending,
+                "possible": bool(values), "note": note}
+
+
+    def _solution_from_json_file(self, data, file_path):
+        """Convert a JSON file to a solution dict.
+
+        JSON files hold flat UI-unit fields such as ``frequency_khz``,
+        ``pulse_length_us`` and ``pulse_interval_ms`` instead of the
+        solution layout. The conversion:
+
+        - The file's voltage and calibration ``sensitivity`` go in
+          ``voltage_calibration``, and :meth:`_scale_voltage_to_modules`
+          rescales the voltage to the connected modules once the solution
+          is loaded. A file without a sensitivity keeps its voltage.
+        - ``pulse_train_count`` is the largest of the file's
+          ``pulse_train_count_selections``. It is not checked against the
+          SDK's sequence-time limit, so Configure may refuse it unless the
+          safety bypass is armed. A file without selections gets 1.
+        - The file has no transducer and only a nominal ``depth_mm``, so the
+          transducer is the pinmap for the module count the delays imply,
+          and each focus is fitted to its delay row. That keeps the
+          element-count check, the plot and the focus list working as they
+          do for a saved solution.
+
+        Raises:
+            ValueError: If a required field is missing or malformed.
+        """
+        apodizations = data.get("apodization", data.get("apodizations"))
+        missing = [key for key in ("delays", "voltage", "pulse_length_us",
+                                   "pulse_interval_ms", "pulse_count")
+                   if key not in data]
+        if apodizations is None:
+            missing.append("apodization")
+        if missing:
+            raise ValueError(f"JSON file is missing {', '.join(missing)}")
+
+        delays = np.atleast_2d(np.array(data["delays"], dtype=float))
+        num_elements = delays.shape[1]
+        if num_elements == 0 or num_elements % NUM_ELEMENTS_PER_MODULE:
+            raise ValueError(
+                f"JSON file has {num_elements} delays per focus, which is not a "
+                f"whole number of {NUM_ELEMENTS_PER_MODULE}-element modules"
+            )
+        num_modules = num_elements // NUM_ELEMENTS_PER_MODULE
+        try:
+            pinmap_data = self._load_pinmap_data(num_modules)
+        except FileNotFoundError:
+            raise ValueError(f"No pinmap for a {num_modules}-module transducer") from None
+        element_positions = self._extract_element_positions_from_pinmap(pinmap_data)
+
+        def path_error(params, lead_mm):
+            # Delays are time-of-flight differences: each element fires early
+            # by its extra path to the focus, so |focus - e_i| = reach - lead_i.
+            focus, reach = params[:3], params[3]
+            return np.linalg.norm(focus - element_positions, axis=1) - (reach - lead_mm)
+
+        start = np.array([0.0, 0.0, float(data.get("depth_mm", 50.0))])
+        start_reach = np.linalg.norm(start - element_positions, axis=1).max()
+        foci = []
+        for row in delays:
+            fit = least_squares(path_error, np.append(start, start_reach),
+                                args=(row * SPEED_OF_SOUND * 1e3,))
+            foci.append({"position": [float(v) for v in fit.x[:3]], "units": "mm"})
+
+        pulse_interval_s = float(data["pulse_interval_ms"]) * 1e-3
+        pulse_count = int(data["pulse_count"])
+        # An unset train interval means trains run back to back.
+        train_interval_s = float(data.get("pulse_train_interval_s", 0))
+        if train_interval_s <= 0:
+            train_interval_s = pulse_count * pulse_interval_s
+        try:
+            train_counts = [int(count) for count in data.get("pulse_train_count_selections") or []]
+        except (TypeError, ValueError):
+            raise ValueError("JSON file has malformed pulse_train_count_selections") from None
+        pulse_train_count = max((count for count in train_counts if count > 0), default=1)
+
+        file_id = os.path.splitext(os.path.basename(file_path))[0]
+        solution = {
+            "id": file_id,
+            "name": str(data.get("label") or file_id),
+            "delays": data["delays"],
+            "apodizations": apodizations,
+            "pulse": {
+                "frequency": float(data["frequency_khz"]) * 1e3,
+                "duration": float(data["pulse_length_us"]) * 1e-6,
+                "amplitude": 1.0,
+            },
+            "sequence": {
+                "pulse_interval": pulse_interval_s,
+                "pulse_count": pulse_count,
+                "pulse_train_interval": train_interval_s,
+                "pulse_train_count": pulse_train_count,
+            },
+            "voltage": float(data["voltage"]),
+            "transducer": self._build_transducer_from_pinmap(pinmap_data),
+            "foci": foci,
+            "execution_order": self._parse_execution_order(data.get("execution_order"), len(foci)),
+        }
+        if float(data.get("sensitivity") or 0) > 0:
+            solution["voltage_calibration"] = {
+                "voltage": float(data["voltage"]),
+                "sensitivity": float(data["sensitivity"]),
+            }
+        return solution
+
 
     @pyqtSlot(result='QVariantMap')
     def getLoadedSolutionSettings(self):
@@ -1219,8 +1514,10 @@ class ControllerMixin:
             return {}
         
         try:
-            return self._extract_solution_settings(self._loaded_solution_data)
-            
+            settings = self._extract_solution_settings(self._loaded_solution_data)
+            settings["voltageScaling"] = self._voltage_scaling_info(self._loaded_solution_data)
+            return settings
+
         except Exception as e:
             logger.error(f"Error extracting solution settings: {e}")
             return {}
