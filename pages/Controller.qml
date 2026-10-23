@@ -26,6 +26,10 @@ Rectangle {
     property bool uiNeedsResend: false
     property int solutionConfigLabelWidth: 190
     property int solutionConfigInputWidth: 160
+    // A loaded JSON file's voltage scaling (getLoadedSolutionSettings'
+    // voltageScaling): drives the checkbox under the voltage field. Empty
+    // for every other solution.
+    property var voltageScaling: ({})
     property var txTemperatures: []
     property real hvPositiveRail: NaN
     property real hvNegativeRail: NaN
@@ -527,6 +531,7 @@ Rectangle {
         frequencyInput.text = settings.frequency.toString()
         durationInput.text = settings.duration.toString()
         voltage.text = settings.voltage.toString()
+        applyVoltageScaling(settings.voltageScaling)
 
         triggerPulseInterval.text = settings.pulseInterval.toString()
         triggerPulseCount.text = settings.pulseCount.toString()
@@ -535,6 +540,15 @@ Rectangle {
 
         updateTrainIntervalValidation()
         updateFociValidation()
+    }
+
+    // Set imperatively: a click on the checkbox breaks any binding on
+    // `checked`, and the next file loaded must still start from its own
+    // state. A file with nothing to scale to shows the box cleared.
+    function applyVoltageScaling(scaling) {
+        voltageScaling = scaling || ({})
+        scaleVoltageCheckbox.checked = voltageScaling.enabled === true
+                && (voltageScaling.possible === true || voltageScaling.pending === true)
     }
 
     // ----- Direct-edit-on-commit helpers -----
@@ -1842,6 +1856,60 @@ Rectangle {
                             }
                             onTextEdited: dirty = true
                             onEditingFinished: commitDirtyField(voltage, commitVoltage)
+                        }
+
+                        // Only while a JSON file (which carries a calibration
+                        // sensitivity) is loaded: once it is made editable the
+                        // field no longer holds its voltage. Locked with
+                        // Configure once the device is programmed, so the
+                        // field always matches what was sent.
+                        Item {
+                            Layout.columnSpan: 2
+                            Layout.fillWidth: true
+                            implicitHeight: scaleVoltageCheckbox.implicitHeight
+                            visible: solutionLoaded && voltageScaling.available === true
+
+                            // On the wrapper so the tooltip still shows while
+                            // the checkbox is disabled.
+                            HoverHandler {
+                                id: scaleVoltageHover
+                            }
+                            ToolTip {
+                                visible: scaleVoltageHover.hovered && !!voltageScaling.note
+                                text: voltageScaling.note || ""
+                                delay: 500
+                                // Wrap the longer notes instead of running
+                                // off the window.
+                                width: Math.min(implicitWidth, 420)
+                            }
+
+                            CheckBox {
+                                id: scaleVoltageCheckbox
+                                implicitHeight: 24
+                                padding: 0
+                                text: "Scale voltage based on transmitter sensitivity"
+                                enabled: LIFUConnector.state < 2
+                                         && (voltageScaling.possible === true || voltageScaling.pending === true)
+                                contentItem: Text {
+                                    text: scaleVoltageCheckbox.text
+                                    // Orange while on but not applied, which
+                                    // Configure refuses.
+                                    color: !scaleVoltageCheckbox.enabled ? "#777"
+                                           : (voltageScaling.pending === true && scaleVoltageCheckbox.checked) ? "#E67E22"
+                                           : "#BBB"
+                                    font.pixelSize: 12
+                                    verticalAlignment: Text.AlignVCenter
+                                    leftPadding: scaleVoltageCheckbox.indicator.width + 6
+                                }
+                                onToggled: {
+                                    var settings = LIFUConnector.setVoltageScaling(checked)
+                                    if (settings && settings.voltage !== undefined) {
+                                        voltage.text = settings.voltage.toString()
+                                        applyVoltageScaling(settings.voltageScaling)
+                                        refreshPlot()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
