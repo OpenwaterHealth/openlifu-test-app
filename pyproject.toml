@@ -31,10 +31,9 @@ dependencies = [
     "pyserial>=3.5",
     "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
-    # Pinned to openlifu-sdk main at the openlifu-sdk#111 merge for
-    # get_hardware_id(base58=True[, legacy_6byte=True]); repin to the
-    # release tag's commit once that release is tagged.
-    "openlifu-sdk @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@eae6f17abe816ff6eac4eefc5795dc8e7a25545b",
+    # openlifu-sdk 2.1.0-rc.3 (pre-release) is the first release with
+    # get_hardware_id(base58=True[, legacy_6byte=True]) (openlifu-sdk#111).
+    "openlifu-sdk @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@2.1.0-rc.3",
     "openlifu-verification>=1.1.0",
     "openpyxl"
 ]
