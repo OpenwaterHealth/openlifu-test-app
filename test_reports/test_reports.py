@@ -6,8 +6,6 @@ import pandas as pd
 import xarray as xa
 import datetime
 import logging
-import base58
-from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 FOCAL_GAIN_LUT = xa.DataArray.from_dict(
     {'dims': ('f0', 'crosstalk'),
@@ -317,9 +315,18 @@ def check_config_against_device(ifx, config, module=0):
     if fw_version != config['fw_ver']:
         logger.warning(f"Firmware version of the config ({config['fw_ver']}) does not match the version of the device ({fw_version})")
         return False
-    hwid_hex = ifx.txdevice.get_hardware_id(module, raw_hex=True)
-    hwid =  base58.b58encode(bytes.fromhex(hwid_hex[:HW_ID_DATA_LENGTH])).decode('utf-8')
-    if hwid != config['hwid']:
-        logger.warning(f"Hardware ID of the config ({config['hwid']}) does not match the ID of the device ({hwid})")
-        return False
-    return True
+    # Records carry the base58 of the full 12-byte UID; units calibrated
+    # before SR-004 carry base58 of only its first 6 bytes. Accept those
+    # too, but say so, so the record gets rewritten in the full form.
+    config_hwid = config.get('hwid')
+    hwid = ifx.txdevice.get_hardware_id(module, base58=True)
+    if config_hwid == hwid:
+        return True
+    legacy_hwid = ifx.txdevice.get_hardware_id(module, base58=True, legacy_6byte=True)
+    if config_hwid == legacy_hwid:
+        logger.warning(f"Module {module}: the config's hardware ID ({config_hwid}) is the legacy "
+                       f"6-byte form of the device's ID ({hwid}); recalibrate the unit or rewrite "
+                       f"its hwid in the full form")
+        return True
+    logger.warning(f"Hardware ID of the config ({config_hwid}) does not match the ID of the device ({hwid})")
+    return False

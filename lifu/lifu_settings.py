@@ -701,6 +701,9 @@ class SettingsMixin:
                         # Check against specified module
                         check_result = check_config_against_device(self.interface, config, module=module)
                         if check_result is not False:  # None means warnings but valid, False means mismatch
+                            # The report may carry the legacy 6-byte hwid; the
+                            # config written from it carries the full form.
+                            config['hwid'] = self.interface.txdevice.get_hardware_id(module, base58=True)
                             # Convert config to JSON string and populate User Config editor
                             json_str = json.dumps(config, indent=2)
                             self.userConfigRead.emit(target, json_str)

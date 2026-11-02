@@ -12,14 +12,12 @@ relevant ``pyqtSignal``\\ s, ``_handle_lifu_error``,
 """
 from __future__ import annotations
 
-import base58
 import json
 import logging
 
 from PyQt6.QtCore import pyqtSlot
 
 from openlifu_sdk.io.exceptions import LIFUError
-from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +42,8 @@ class ConsoleMixin:
         self._interface_mutex.lock()
         try:
             fw_version = self.interface.hvcontroller.get_version()
-            hw_id = self.interface.hvcontroller.get_hardware_id(raw_hex=True)
-            if hw_id:
-                if len(hw_id) > HW_ID_DATA_LENGTH:
-                    hw_id = base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
-                device_id = hw_id
-            else:
-                device_id = 'N/A'
+            hw_id = self.interface.hvcontroller.get_hardware_id(base58=True)
+            device_id = hw_id if hw_id else 'N/A'
             self._cached_hv_info = (fw_version, device_id)
             self._cached_hv_fw_version = fw_version
             self.hvDeviceInfoReceived.emit(fw_version, device_id)
