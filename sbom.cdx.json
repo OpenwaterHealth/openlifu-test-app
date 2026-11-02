@@ -56,7 +56,7 @@
         "name": "Openwater"
       },
       "publisher": "Openwater",
-      "description": "Openwater LIFU hardware I/O SDK (declared openlifu-sdk @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@409f021, pending release of openlifu-sdk#111). Bundles signed firmware images and libusb DLLs; see its own sbom.cdx.json for full composition.",
+      "description": "Openwater LIFU hardware I/O SDK (declared openlifu-sdk @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@eae6f17, the openlifu-sdk#111 merge on main, pending a tagged release). Bundles signed firmware images and libusb DLLs; see its own sbom.cdx.json for full composition.",
       "licenses": [
         {
           "license": {
