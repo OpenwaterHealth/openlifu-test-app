@@ -133,7 +133,12 @@ which hold flat fields such as `frequency_khz`, `pulse_length_us` and
   `pulse_train_count_selections`. That is usually longer than the app's
   safety limits allow (10 minutes on the standard voltage tables), so
   Configure refuses it unless the safety bypass is armed on the Settings
-  page. A file without selections gets a pulse train count of 1.
+  page. A file without selections gets a pulse train count of 1. To use
+  a different count from the file, pick it in the
+  [Advanced](#advanced-runs) dialog; that keeps the file's delays and
+  apodizations, which **Edit Solution** does not.
+- `start_C` and `shutoff_C` become the Advanced dialog's default start
+  and shutoff temperatures.
 - Each focus position is worked out from that focus's delays, because
   the file stores only a nominal depth.
 
@@ -217,6 +222,40 @@ A progress bar at the bottom of the right column tracks the current run.
 
 Progress updates are driven by unsolicited `STATUS` frames from the
 firmware, so the bar advances even when the app is not actively polling.
+During an [advanced run](#advanced-runs) the text starts with the
+repetition, e.g. `REP 2/8 RUNNING 40/375`, and keeps it after the run
+ends.
+
+<a id="advanced-runs"></a>
+
+### Advanced runs
+
+**Advanced** (next to **Edit Solution**) opens a dialog for repeated,
+temperature-gated runs. These settings are only set there. While
+**Use these settings when Start is pressed** is checked, the button reads
+**Advanced ●** and the status line ends with a summary such as
+`Advanced 8 reps, 35–75 °C, 10 min off`.
+
+| Setting | Behaviour |
+|---------|-----------|
+| **Pulse train count** | With a JSON file that has `pulse_train_count_selections`, a list of those counts (the largest is the default). Otherwise a free count, the same value as **Pulse Train Count**. |
+| **Start temperature** | A repetition starts only when the hottest module is at or below this. Defaults to the file's `start_C`, else 50 °C. |
+| **Shutoff temperature** | A repetition is stopped early when the hottest module reaches this. Defaults to the file's `shutoff_C`, else 75 °C. The TX firmware still stops at 75 °C whatever is set here. |
+| **Repetitions** | How many times the configured solution runs. |
+| **Time between repetitions** | Minutes to rest after each repetition before the next one may start. After it, the next repetition starts once the transmitter is at or below the start temperature. 0 starts it as soon as it is cool enough. |
+| **Turn off transmitter between repetitions** | Checked: HV and 12 V are off during that time; the transmitter then powers back up, is reconfigured, and starts if it is cool enough, or turns off for the same time again. Needs more than 0 minutes. Unchecked: the transmitter stays powered and is watched until it is cool enough. |
+
+With the settings on, **Start** runs the whole sequence; **Stop** ends it
+at any point, including while the transmitter is off (12 V is turned back
+on). Configure, Load, Edit Solution, Reset and the Settings tab are locked
+until the run ends. Advanced runs need the Sequence or Single trigger
+mode. If the safety bypass is armed, it stays armed across the run's own
+power cycles. The run aborts with an error if the transmitter disconnects
+on its own, does not come back within 90 s of 12 V turning on, comes back
+with a different module count, or fails to configure.
+
+Each run writes `logs/<date>_<time>_advanced_run.log` in the format of the
+openlifu-test-scripts thermal tests, so `thermal_log_plot.py` can plot it.
 
 ---
 
@@ -235,6 +274,8 @@ firmware, so the bar advances even when the app is not actively polling.
 4. Click **Start**. The progress bar begins to fill and the system state
    flips to `Running`.
 5. Wait for **FINISHED** (if using Single or Sequence mode), or click **Stop** to abort.
+   For repeated or temperature-gated runs, set up [Advanced](#advanced-runs)
+   before clicking **Start**.
 6. Edit any field and press Enter — the new value is pushed live without
    a full re-Configure (assuming you have not loaded a solution from
    file).

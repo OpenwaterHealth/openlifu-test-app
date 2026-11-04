@@ -128,9 +128,11 @@ from lifu.lifu_settings import SettingsMixin
 from lifu.lifu_console import ConsoleMixin
 from lifu.lifu_transmitter import TransmitterMixin
 from lifu.lifu_controller import ControllerMixin
+from lifu.lifu_advanced_run import AdvancedRunMixin
 
 
-class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin, ControllerMixin, BaseConnector):
+class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin, ControllerMixin,
+                    AdvancedRunMixin, BaseConnector):
     plotGenerated = pyqtSignal(str)  # Signal to notify QML when a new plot is ready
     solutionConfigured = pyqtSignal(str)  # Signal for solution configuration feedback
 
@@ -216,6 +218,10 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # prefix for LIFUError subclasses.
     deviceError = pyqtSignal(str, str)  # (title, message)
 
+    # Advanced (repeated, temperature-gated) runs on the Controller page.
+    advancedRunChanged = pyqtSignal()
+    advancedRunRepStarted = pyqtSignal(int, int)  # (repetition, total)
+
     def _make_interface(self, hv_test_mode=False):
         """Construct the underlying LIFUInterface.
 
@@ -284,6 +290,27 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
+        self._loaded_solution_path = ""
+
+        # Advanced run (see lifu_advanced_run.py). _ar_power_cycling marks the
+        # TX disconnect a planned 12 V cycle causes, so it keeps the bypass.
+        self._ar_phase = "idle"
+        self._ar_status = ""
+        self._ar_settings = {}
+        self._ar_configure_args = []
+        self._ar_modules = 0
+        self._ar_rep = 0
+        self._ar_deadline = 0.0
+        self._ar_wait_started = 0.0
+        self._ar_rep_started = 0.0
+        self._ar_last_cool_log = 0.0
+        self._ar_temps = {}
+        self._ar_power_cycling = False
+        self._ar_log_path = ""
+        self._ar_log_handler = None
+        self._ar_timer = QTimer(self)
+        self._ar_timer.setInterval(1000)
+        self._ar_timer.timeout.connect(self._ar_tick)
 
         # Optional controller-page telemetry CSV logging.
         # ``_controller_telemetry_logging_enabled`` is the user's armed
@@ -369,6 +396,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         # parser) are covered without altering their call paths.
         self.temperatureHvUpdated.connect(self._log_controller_hv_temperature)
         self.temperatureTxUpdated.connect(self._log_controller_tx_temperature)
+        self.temperatureTxUpdated.connect(self._ar_on_temperature)
         self.monVoltagesReceived.connect(self._log_controller_voltage_readings)
 
         # Background telemetry polling thread (temperature + HV voltages).
@@ -1116,8 +1144,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._num_modules_connected = 0
             self._configured = False
             self._invalidate_device_caches("TX")
-            # Re-enable safety checks on disconnect 
-            if self._bypass_safety_checks:
+            # Re-enable safety checks on disconnect, except across an
+            # advanced run's own 12 V cycle, which must reconfigure as before.
+            if self._bypass_safety_checks and not self._ar_power_cycling:
                 self._bypass_safety_checks = False
                 self.safetyBypassChanged.emit(False)
                 logger.warning("[SAFETY] Solution safety limits re-enabled "
@@ -1602,6 +1631,18 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def hvEnableMode(self):
         """Expose HV enable mode to QML."""
         return self._hv_enable_mode
+
+    @pyqtProperty(bool, notify=advancedRunChanged)
+    def advancedRunActive(self):
+        return self._ar_phase != "idle"
+
+    @pyqtProperty(str, notify=advancedRunChanged)
+    def advancedRunStatus(self):
+        return self._ar_status
+
+    @pyqtProperty(str, notify=advancedRunChanged)
+    def advancedRunLogPath(self):
+        return self._ar_log_path
 
     @pyqtProperty(bool, notify=safetyBypassChanged)
     def safetyBypassEnabled(self):

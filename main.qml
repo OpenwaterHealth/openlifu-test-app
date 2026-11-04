@@ -106,9 +106,10 @@ Window {
         var currentId = (activeMenu >= 0 && activeMenu < appTabs.length)
                         ? appTabs[activeMenu].id : ""
 
-        // Block switching to Settings while sonication is running. The
-        // user must Stop first.
-        if (targetId === "settings" && LIFUConnector.state === 3) {
+        // Block switching to Settings while sonication or an advanced run
+        // is going (leaving resets the configuration). Stop first.
+        if (targetId === "settings"
+            && (LIFUConnector.state === 3 || LIFUConnector.advancedRunActive)) {
             console.log("Cannot switch to Settings while sonication is running.")
             return
         }
