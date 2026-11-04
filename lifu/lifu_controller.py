@@ -716,6 +716,7 @@ class ControllerMixin:
             self._solution_loaded = False
             self._loaded_solution_data = None
             self._solution_name = ""
+            self._loaded_solution_path = ""
             self.solutionStateChanged.emit()
             logger.info(f"Released loaded solution '{released}' on reset")
         self.update_state()
@@ -1127,6 +1128,7 @@ class ControllerMixin:
             # Store loaded solution data
             self._loaded_solution_data = solution_data
             self._solution_loaded = True
+            self._loaded_solution_path = normalized_path
             self._solution_name = solution_data.get('name', 'Unnamed Solution')
 
             # A freshly loaded solution must be re-Configured before it can
@@ -1414,7 +1416,10 @@ class ControllerMixin:
         - ``pulse_train_count`` is the largest of the file's
           ``pulse_train_count_selections``. It is not checked against the
           SDK's sequence-time limit, so Configure may refuse it unless the
-          safety bypass is armed. A file without selections gets 1.
+          safety bypass is armed. A file without selections gets 1. The
+          selections are kept for the Advanced dialog's train-count list.
+        - ``start_C`` / ``shutoff_C`` go in ``thermal`` as the Advanced
+          dialog's default start and shutoff temperatures.
         - The file has no transducer and only a nominal ``depth_mm``, so the
           transducer is the pinmap for the module count the delays imply,
           and each focus is fitted to its delay row. That keeps the
@@ -1495,6 +1500,12 @@ class ControllerMixin:
             "foci": foci,
             "execution_order": self._parse_execution_order(data.get("execution_order"), len(foci)),
         }
+        selections = sorted({count for count in train_counts if count > 0})
+        if selections:
+            solution["pulse_train_count_selections"] = selections
+        thermal = {key: float(data[key]) for key in ("start_C", "shutoff_C") if data.get(key) is not None}
+        if thermal:
+            solution["thermal"] = thermal
         if float(data.get("sensitivity") or 0) > 0:
             solution["voltage_calibration"] = {
                 "voltage": float(data["voltage"]),
@@ -1541,5 +1552,31 @@ class ControllerMixin:
             self._solution_loaded = False
             self._loaded_solution_data = None
             self._solution_name = ""
+            self._loaded_solution_path = ""
             self.solutionStateChanged.emit()
             logger.info(f"Released solution '{solution_name}' - UI fields preserved, controls are now editable")
+
+
+    @pyqtSlot(int, result=bool)
+    def setLoadedTrainCount(self, count):
+        """Set a loaded solution's pulse train count, keeping its file data.
+
+        Used by the Advanced dialog's train-count list, so picking another
+        count does not release the file's delays and apodizations the way
+        Edit Solution does. A configured device is dropped back to
+        CONNECTED so the new count is sent by the next Configure.
+        """
+        if not self._solution_loaded or self._state == RUNNING or self._ar_phase != "idle":
+            return False
+        if count < 1:
+            return False
+        sequence = self._loaded_solution_data["sequence"]
+        if int(sequence.get("pulse_train_count", 0)) == count:
+            return True
+        sequence["pulse_train_count"] = int(count)
+        logger.info(f"Loaded solution pulse train count set to {count}")
+        if self._configured:
+            self._configured = False
+            self.update_state()
+            self._apply_auto_hv_for_state()
+        return True
