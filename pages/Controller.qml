@@ -58,6 +58,19 @@ Rectangle {
     property bool savePathAuto: true
     property string controllerTelemetryLogPath: ""
 
+    // Advanced run settings, edited only in the Advanced dialog. The
+    // status line shows them while they are on, so none runs unnoticed.
+    property bool advEnabled: false
+    property string advRepetitions: "1"
+    property string advStartC: ""
+    property string advShutoffC: ""
+    property string advRestMinutes: "10"
+    property bool advRestInSeconds: false
+    property bool advPowerOff: false
+    property var advDefaults: ({})
+    property int advRep: 0
+    property int advReps: 0
+
     // Sonication progress UI state. Driven by Start/Stop button clicks
     // plus unsolicited STATUS frames from the firmware. State machine:
     //   "idle"     -> bar is empty, no text (or "READY")
@@ -646,6 +659,67 @@ Rectangle {
         return ok
     }
 
+    // Defaults come from a loaded JSON file's start_C / shutoff_C and
+    // train-count choices, else the app's thermal thresholds.
+    function loadAdvancedDefaults() {
+        advDefaults = LIFUConnector.getAdvancedRunDefaults()
+        advStartC = advDefaults.startC.toString()
+        advShutoffC = advDefaults.shutoffC.toString()
+    }
+
+    // "" when the advanced settings can start a run, otherwise why not.
+    function advancedError() {
+        var reps = Number(advRepetitions)
+        var start = Number(advStartC)
+        var shutoff = Number(advShutoffC)
+        if (!Number.isInteger(reps) || reps < 1) {
+            return "Repetitions must be a whole number, at least 1."
+        }
+        if (advStartC.trim() === "" || isNaN(start)) {
+            return "Enter a start temperature."
+        }
+        if (advShutoffC.trim() === "" || isNaN(shutoff)) {
+            return "Enter a shutoff temperature."
+        }
+        if (start >= shutoff) {
+            return "The start temperature must be below the shutoff temperature."
+        }
+        var rest = Number(advRestMinutes)
+        if (advRestMinutes.trim() === "" || isNaN(rest) || rest < 0) {
+            return "Enter the time between repetitions (0 or more)."
+        }
+        if (advPowerOff && rest <= 0) {
+            return "Turning the transmitter off needs more than 0 time between repetitions."
+        }
+        if (triggerModeDropdown.currentText === "Continuous") {
+            return "Advanced runs need the Sequence or Single trigger mode."
+        }
+        return ""
+    }
+
+    function advancedSummary() {
+        return advRepetitions + (advRepetitions === "1" ? " rep, " : " reps, ")
+               + advStartC + "–" + advShutoffC + " °C, "
+               + advRestMinutes + (advRestInSeconds ? " s " : " min ") + (advPowerOff ? "off" : "on")
+    }
+
+    function configureArgs() {
+        return [xInput.text, yInput.text, zInput.text, frequencyInput.text, voltage.text,
+                triggerPulseInterval.text, triggerPulseCount.text,
+                triggerPulseTrainInterval.text, triggerPulseTrainCount.text, durationInput.text,
+                triggerModeDropdown.currentText, fociArray(), executionOrderArray()]
+    }
+
+    function advancedSettings() {
+        return {
+            repetitions: Number(advRepetitions),
+            startC: Number(advStartC),
+            shutoffC: Number(advShutoffC),
+            restMinutes: Number(advRestMinutes) / (advRestInSeconds ? 60 : 1),
+            powerOff: advPowerOff
+        }
+    }
+
     function getSystemStateText() {
         return "Status: " + (LIFUConnector.state === 0 ? "Disconnected"
                             : LIFUConnector.state === 1 ? "Connected"
@@ -665,16 +739,20 @@ Rectangle {
         // read-only while running, so this line is the only place the
         // operator can see the override is still armed mid-sonication.
         var bypass = LIFUConnector.safetyBypassEnabled ? "  ⚠ LIMITS BYPASSED" : ""
+        if (LIFUConnector.advancedRunActive) {
+            return "Status: " + LIFUConnector.advancedRunStatus + bypass
+        }
         if (statusOverrideText !== "") {
             return statusOverrideText + bypass
         }
+        var advanced = advEnabled ? "  ·  Advanced " + advancedSummary() : ""
         if (LIFUConnector.firmwareUpdateRequired) {
-            return "Status: Firmware Update Required" + bypass
+            return "Status: Firmware Update Required" + advanced + bypass
         }
         if (LIFUConnector.firmwareUpdateAvailable) {
-            return "Status: Firmware Update Available" + bypass
+            return "Status: Firmware Update Available" + advanced + bypass
         }
-        return getSystemStateText() + bypass
+        return getSystemStateText() + advanced + bypass
     }
 
     function getStatusColor() {
@@ -848,6 +926,7 @@ Rectangle {
         progressState = "idle"
         progressCurrent = 0
         progressTotal = 0
+        advReps = 0
     }
 
     function startProgressFromUi() {
@@ -892,9 +971,13 @@ Rectangle {
             return ""
         }
         if (progressState === "stopped") {
-            return "STOPPED"
+            return advReps > 0 ? "REP " + advRep + "/" + advReps + " STOPPED" : "STOPPED"
         }
         var prefix = progressState === "finished" ? "FINISHED" : "RUNNING"
+        // Kept after the run ends so the bar says how far it got.
+        if (advReps > 0) {
+            prefix = "REP " + advRep + "/" + advReps + " " + prefix
+        }
         if (progressMode === "Continuous") {
             return prefix + " " + progressCurrent
         }
@@ -1079,6 +1162,227 @@ Rectangle {
                 }
             }
 
+            Item { Layout.preferredWidth: 6 }
+        }
+    }
+
+    Dialog {
+        id: advancedDialog
+        title: "Advanced"
+        modal: true
+        focus: true
+        width: 500
+        height: 470
+        x: (controllerPage.width - width) / 2
+        y: (controllerPage.height - height) / 2
+
+        // Locked while running; settings can't change under a live run.
+        readonly property bool locked: LIFUConnector.state === 3 || LIFUConnector.advancedRunActive
+        readonly property var selections: advDefaults.trainCountSelections || []
+        // A loaded file with train-count choices gets the list; anything
+        // else (no file, or after Edit Solution) gets a free count.
+        readonly property bool useTrainList: solutionLoaded && selections.length > 0
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#3E4E6F"
+            border.width: 2
+            radius: 8
+        }
+
+        onOpened: {
+            if (useTrainList) {
+                trainCountList.currentIndex = selections.indexOf(parseInt(triggerPulseTrainCount.text))
+            }
+            advTrainCountField.text = triggerPulseTrainCount.text
+        }
+
+        component AdvLabel: Text {
+            color: "#BBB"
+            font.pixelSize: 13
+        }
+
+        component AdvField: TextField {
+            Layout.preferredWidth: 90
+            Layout.preferredHeight: 30
+            font.pixelSize: 13
+            color: enabled ? "white" : "#888"
+            enabled: !advancedDialog.locked
+            background: Rectangle {
+                color: parent.enabled ? "#222" : "#333"
+                border.color: parent.enabled ? "#999" : "#777"
+                radius: 4
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+
+            CheckBox {
+                id: advEnabledCheckbox
+                text: "Use these settings when Start is pressed"
+                checked: advEnabled
+                enabled: !advancedDialog.locked
+                onToggled: advEnabled = checked
+                contentItem: Text {
+                    text: advEnabledCheckbox.text
+                    color: "white"
+                    font.pixelSize: 13
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: advEnabledCheckbox.indicator.width + 6
+                }
+            }
+
+            GridLayout {
+                columns: 3
+                columnSpacing: 10
+                rowSpacing: 8
+                Layout.fillWidth: true
+
+                AdvLabel { text: "Pulse train count" }
+                ComboBox {
+                    id: trainCountList
+                    visible: advancedDialog.useTrainList
+                    Layout.preferredWidth: 90
+                    Layout.preferredHeight: 30
+                    model: advancedDialog.selections
+                    enabled: !advancedDialog.locked
+                    onActivated: function(index) {
+                        var count = advancedDialog.selections[index]
+                        if (LIFUConnector.setLoadedTrainCount(count)) {
+                            triggerPulseTrainCount.text = count.toString()
+                            updateFociValidation()
+                            refreshPlot()
+                        }
+                    }
+                }
+                AdvField {
+                    id: advTrainCountField
+                    visible: !advancedDialog.useTrainList
+                    // A loaded file without choices keeps its own count.
+                    enabled: !advancedDialog.locked && !controlsReadOnly
+                    validator: IntValidator { bottom: 1 }
+                    onEditingFinished: {
+                        if (text === triggerPulseTrainCount.text) {
+                            return
+                        }
+                        triggerPulseTrainCount.text = text
+                        triggerPulseTrainCount.dirty = true
+                        commitDirtyField(triggerPulseTrainCount, commitSequence)
+                        updateFociValidation()
+                        refreshPlot()
+                    }
+                }
+                AdvLabel {
+                    text: advancedDialog.useTrainList ? "from the file" : ""
+                    color: "#7FA2C7"
+                    font.pixelSize: 11
+                }
+
+                AdvLabel { text: "Start temperature" }
+                AdvField {
+                    text: advStartC
+                    onTextEdited: advStartC = text
+                }
+                AdvLabel {
+                    text: "°C" + (advDefaults.fromFile ? "  (start_C from the file)" : "")
+                }
+
+                AdvLabel { text: "Shutoff temperature" }
+                AdvField {
+                    text: advShutoffC
+                    onTextEdited: advShutoffC = text
+                }
+                AdvLabel {
+                    text: "°C" + (advDefaults.fromFile ? "  (shutoff_C from the file)" : "")
+                }
+
+                AdvLabel { text: "Repetitions" }
+                AdvField {
+                    text: advRepetitions
+                    validator: IntValidator { bottom: 1 }
+                    onTextEdited: advRepetitions = text
+                }
+                Item { width: 1; height: 1 }
+
+                AdvLabel { text: "Time between repetitions" }
+                AdvField {
+                    text: advRestMinutes
+                    onTextEdited: advRestMinutes = text
+                }
+                ComboBox {
+                    Layout.preferredWidth: 100
+                    Layout.preferredHeight: 30
+                    model: ["minutes", "seconds"]
+                    currentIndex: advRestInSeconds ? 1 : 0
+                    enabled: !advancedDialog.locked
+                    onActivated: function(index) { advRestInSeconds = index === 1 }
+                }
+            }
+
+            CheckBox {
+                id: advPowerOffCheckbox
+                text: "Turn off transmitter between repetitions"
+                checked: advPowerOff
+                enabled: !advancedDialog.locked
+                onToggled: advPowerOff = checked
+                contentItem: Text {
+                    text: advPowerOffCheckbox.text
+                    color: "#BBB"
+                    font.pixelSize: 13
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: advPowerOffCheckbox.indicator.width + 6
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#9FB3C8"
+                font.pixelSize: 11
+                text: advPowerOff
+                      ? "After each repetition, HV and 12 V turn off for the time between repetitions. The transmitter then powers back up, is reconfigured, and starts once it is at or below the start temperature; if not, it turns off for that long again."
+                      : "The transmitter stays powered for the time between repetitions, then the next one starts once it is at or below the start temperature."
+            }
+
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#E67E22"
+                font.pixelSize: 12
+                visible: text !== ""
+                text: {
+                    var error = advancedError()
+                    if (error !== "") {
+                        return error
+                    }
+                    var firmware = advDefaults.firmwareShutoffC
+                    return Number(advShutoffC) > firmware
+                           ? "The TX firmware still stops a run at " + firmware + " °C." : ""
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            Item { Layout.fillWidth: true }
+            Button {
+                text: "Reset to Defaults"
+                enabled: !advancedDialog.locked
+                onClicked: {
+                    loadAdvancedDefaults()
+                    advRepetitions = "1"
+                    advRestMinutes = "10"
+                    advRestInSeconds = false
+                    advPowerOff = false
+                }
+            }
+            Button {
+                text: "Close"
+                onClicked: advancedDialog.close()
+            }
             Item { Layout.preferredWidth: 6 }
         }
     }
@@ -1769,6 +2073,7 @@ Rectangle {
     Component.onCompleted: {
         applySettingsToUi(LIFUConnector.getDefaultSolutionSettings())
         updateTrainIntervalValidation()
+        loadAdvancedDefaults()
         controllerLogCheckbox.checked = LIFUConnector.isControllerTelemetryLoggingEnabled()
         controllerTelemetryLogPath = LIFUConnector.getControllerTelemetryLogPath()
         // Draw the defaults rather than parking on the "no data" placeholder.
@@ -2494,6 +2799,7 @@ Rectangle {
                         text: "Load"
                         Layout.fillWidth: true
                         enabled: (!solutionLoaded) && (LIFUConnector.state <2) && !visualPressed
+                                 && !LIFUConnector.advancedRunActive
                         background: Rectangle {
                             color: (loadPresetButton.down || loadPresetButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                             radius: 4
@@ -2530,6 +2836,7 @@ Rectangle {
                         text: "Edit Solution"
                         Layout.fillWidth: true
                         enabled: solutionLoaded && (LIFUConnector.state < 3) && !visualPressed
+                                 && !LIFUConnector.advancedRunActive
                         background: Rectangle {
                             color: (editSolutionButton.down || editSolutionButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                             radius: 4
@@ -2541,6 +2848,18 @@ Rectangle {
                                 statusOverrideText = ""
                             })
                         }
+                    }
+
+                    Button {
+                        id: advancedButton
+                        text: advEnabled ? "Advanced ●" : "Advanced"
+                        Layout.fillWidth: true
+                        background: Rectangle {
+                            color: advancedButton.down ? "#2F333D" : "#3A3F4B"
+                            radius: 4
+                            border.color: advEnabled ? "#269cf6" : "#BDC3C7"
+                        }
+                        onClicked: advancedDialog.open()
                     }
                 }
             }
@@ -2853,6 +3172,7 @@ Rectangle {
                             color: getStatusColor()
                             horizontalAlignment: Text.AlignHCenter
                             Layout.fillWidth: true
+                            elide: Text.ElideRight
                             SequentialAnimation on opacity {
                                 running: LIFUConnector.state === 3
                                 loops: Animation.Infinite
@@ -3108,6 +3428,7 @@ Rectangle {
                             enabled: LIFUConnector.txConnected && LIFUConnector.state <2 && !visualPressed
                                      && !LIFUConnector.firmwareUpdateRequired
                                      && fociError === ""
+                                     && !LIFUConnector.advancedRunActive
                             background: Rectangle {
                                 color: (configureButton.down || configureButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
@@ -3161,6 +3482,8 @@ Rectangle {
                                      && LIFUConnector.hvConnected
                                      && LIFUConnector.hvEnableMode !== 2
                                      && !visualPressed
+                                     && !LIFUConnector.advancedRunActive
+                                     && (!advEnabled || advancedError() === "")
                             background: Rectangle {
                                 color: (startButton.down || startButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
@@ -3168,7 +3491,13 @@ Rectangle {
                             }
                             onClicked: {
                                 runWithButtonFeedback(startButton, function() {
-                                    console.log("Starting Sonication...");
+                                    if (advEnabled) {
+                                        // The run starts each repetition and
+                                        // reports it through advancedRunRepStarted.
+                                        LIFUConnector.startAdvancedRun(configureArgs(), advancedSettings())
+                                        return
+                                    }
+                                    advReps = 0
                                     startProgressFromUi()
                                     LIFUConnector.start_sonication();
                                 })
@@ -3180,7 +3509,7 @@ Rectangle {
                             property bool visualPressed: false
                             text: "Stop"
                             Layout.fillWidth: true
-                            enabled: (LIFUConnector.state === 3) && !visualPressed  // RUNNING
+                            enabled: (LIFUConnector.state === 3 || LIFUConnector.advancedRunActive) && !visualPressed
                             background: Rectangle {
                                 color: (stopButton.down || stopButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
@@ -3193,7 +3522,11 @@ Rectangle {
                                         progressState = "stopped"
                                     }
                                     clearStatusTelemetry()
-                                    LIFUConnector.stop_sonication();
+                                    if (LIFUConnector.advancedRunActive) {
+                                        LIFUConnector.stopAdvancedRun()
+                                    } else {
+                                        LIFUConnector.stop_sonication();
+                                    }
                                 })
                             }
                         }
@@ -3204,6 +3537,7 @@ Rectangle {
                             text: "Reset"
                             Layout.fillWidth: true
                             enabled: (LIFUConnector.state >= 2 && LIFUConnector.state !== 3) && !visualPressed  // READY (configured), not RUNNING
+                                     && !LIFUConnector.advancedRunActive
                             background: Rectangle {
                                 color: (resetButton.down || resetButton.visualPressed) ? "#2F333D" : "#3A3F4B"
                                 radius: 4
@@ -3269,7 +3603,10 @@ Rectangle {
             if (descriptor === "TX") {
                 txTemperatures = [];
                 configuredModuleCount = 0;
-                resetProgressIdle();
+                // An advanced run's own power cycle keeps the bar.
+                if (!LIFUConnector.advancedRunActive) {
+                    resetProgressIdle();
+                }
             }
             if (descriptor === "HV") {
                 hvPositiveRail = NaN;
@@ -3296,6 +3633,7 @@ Rectangle {
         function onSolutionFileLoaded(solutionName, message) {
             console.log("Solution loaded: " + solutionName + " - " + message);
             applySolutionSettings();
+            loadAdvancedDefaults();
             // A loaded solution always describes a fixed pulse-train
             // sequence, so default the Trigger Mode to "Sequence".
             triggerModeDropdown.currentIndex = 2;
@@ -3380,6 +3718,22 @@ Rectangle {
             if (!running && progressState === "running" && progressMode === "Continuous") {
                 progressState = "stopped"
             }
+        }
+
+        function onAdvancedRunRepStarted(rep, total) {
+            advRep = rep
+            advReps = total
+            startProgressFromUi()
+        }
+
+        // The progress bar keeps the outcome once the run ends; an abort
+        // also raises the device-error popup.
+        function onAdvancedRunChanged() {
+            if (LIFUConnector.advancedRunActive || advReps === 0) {
+                return
+            }
+            progressState = LIFUConnector.advancedRunStatus.indexOf("Finished") === 0
+                            ? "finished" : "stopped"
         }
 
         function onNumModulesUpdated() {
