@@ -2075,6 +2075,7 @@ Rectangle {
         updateTrainIntervalValidation()
         loadAdvancedDefaults()
         controllerLogCheckbox.checked = LIFUConnector.isControllerTelemetryLoggingEnabled()
+        controllerIdleLogCheckbox.checked = LIFUConnector.isControllerTelemetryIdleLoggingEnabled()
         controllerTelemetryLogPath = LIFUConnector.getControllerTelemetryLogPath()
         // Draw the defaults rather than parking on the "no data" placeholder.
         // The plot is built from the fields, so it needs no device.
@@ -3391,19 +3392,68 @@ Rectangle {
                             }
                         }
 
-                        Text {
-                            Layout.fillWidth: true
+                        CheckBox {
+                            id: controllerIdleLogCheckbox
+                            implicitHeight: 24
+                            padding: 0
+                            Layout.preferredHeight: 24
                             Layout.alignment: Qt.AlignVCenter
-                            text: controllerTelemetryLogPath !== ""
-                                  ? ("Log: " + controllerTelemetryLogPath)
-                                  : ""
+                            text: "Include idle readings in log"
+                            checked: false
+                            visible: controllerLogCheckbox.checked
+                            contentItem: Text {
+                                text: controllerIdleLogCheckbox.text
+                                color: !controllerIdleLogCheckbox.enabled ? "#777" : "#BBB"
+                                font.pixelSize: 12
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: controllerIdleLogCheckbox.indicator.width + 6
+                            }
+                            onToggled: {
+                                LIFUConnector.setControllerTelemetryIdleLoggingEnabled(checked)
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
+                    }
+
+                    // Long paths scroll sideways; the text stays selectable for copying.
+                    Flickable {
+                        id: controllerLogPathFlick
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: controllerLogPathText.implicitHeight
+                                                + (contentWidth > width ? 10 : 0)
+                        visible: controllerTelemetryLogPath !== ""
+                        clip: true
+                        contentWidth: controllerLogPathText.implicitWidth
+                        contentHeight: controllerLogPathText.implicitHeight
+                        flickableDirection: Flickable.HorizontalFlick
+                        boundsBehavior: Flickable.StopAtBounds
+                        // Drags select text instead of panning; use the scrollbar or wheel.
+                        interactive: false
+                        ScrollBar.horizontal: ScrollBar {
+                            policy: controllerLogPathFlick.contentWidth > controllerLogPathFlick.width
+                                    ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                        }
+
+                        TextEdit {
+                            id: controllerLogPathText
+                            text: "Log: " + controllerTelemetryLogPath
                             color: "#7FA2C7"
+                            selectionColor: "#3A6EA5"
+                            selectedTextColor: "#FFFFFF"
                             font.pixelSize: 11
-                            wrapMode: Text.NoWrap
-                            elide: Text.ElideMiddle
-                            maximumLineCount: 1
-                            verticalAlignment: Text.AlignVCenter
-                            horizontalAlignment: Text.AlignRight
+                            readOnly: true
+                            selectByMouse: true
+                            wrapMode: TextEdit.NoWrap
+                        }
+
+                        WheelHandler {
+                            orientation: Qt.Vertical | Qt.Horizontal
+                            onWheel: function(event) {
+                                var dx = event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y
+                                var maxX = Math.max(0, controllerLogPathFlick.contentWidth - controllerLogPathFlick.width)
+                                controllerLogPathFlick.contentX = Math.max(0, Math.min(maxX, controllerLogPathFlick.contentX - dx))
+                            }
                         }
                     }
 
