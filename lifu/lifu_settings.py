@@ -39,12 +39,10 @@ import threading
 import time
 from pathlib import Path
 
-import base58
 from PyQt6.QtCore import pyqtSlot
 
 from openlifu_sdk.io import LIFUInterface
 from openlifu_sdk.io.exceptions import LIFUError, LIFUProtocolError
-from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 from openlifu_sdk.io.LIFUUserConfig import LifuUserConfig
 
 from lifu import dfu_driver, usb_hub_power
@@ -106,16 +104,6 @@ def _set_in_place(data: dict, values: dict) -> dict:
             placed.add(key)
     missing = {k: v for k, v in values.items() if k not in placed}
     return {**missing, **out}
-
-
-def _device_id(raw_hex: str) -> str:
-    """The Device ID the app shows for a raw hardware ID (same derivation
-    as queryHvInfo / queryTxInfo)."""
-    if not raw_hex:
-        return "N/A"
-    if len(raw_hex) > HW_ID_DATA_LENGTH:
-        return base58.b58encode(bytes.fromhex(raw_hex[:HW_ID_DATA_LENGTH])).decode("utf-8")
-    return raw_hex
 
 
 class SettingsMixin:
@@ -980,7 +968,7 @@ class SettingsMixin:
                 else:
                     identity = {
                         SERIAL_NUMBER_KEY: sn,
-                        "hwid": _device_id(dev.get_hardware_id(raw_hex=True, **addr)),
+                        "hwid": dev.get_hardware_id(base58=True, **addr),
                         "hw_ver": hw,
                         "fw_ver": dev.get_version(**addr),
                         "sdk_ver": LIFUInterface.get_sdk_version(),
