@@ -23,7 +23,6 @@ import copy
 from plot.plot import generate_ultrasound_plot_from_solution, profile_color_hex  # Import the function directly
 from test_reports.test_reports import read_test_report, test_report_to_config, check_config_against_device
 from openlifu_sdk.io import LIFUInterface, LIFUInterfaceStatus
-from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 from openlifu_sdk.io.exceptions import (
     LIFUError,
     LIFUCommunicationError,

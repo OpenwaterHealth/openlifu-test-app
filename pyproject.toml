@@ -31,7 +31,9 @@ dependencies = [
     "pyserial>=3.5",
     "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
-    "openlifu-sdk>=2.0.16",
+    # openlifu-sdk 2.1.0-rc.3 (pre-release) is the first release with
+    # get_hardware_id(base58=True[, legacy_6byte=True]) (openlifu-sdk#111).
+    "openlifu-sdk @ git+https://github.com/OpenwaterHealth/openlifu-sdk.git@2.1.0-rc.3",
     "openlifu-verification>=1.1.0",
     "openpyxl"
 ]

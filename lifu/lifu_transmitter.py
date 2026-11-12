@@ -11,7 +11,6 @@ relevant ``pyqtSignal``\\ s, the trigger-state helper
 """
 from __future__ import annotations
 
-import base58
 import json
 import logging
 
@@ -19,7 +18,6 @@ from PyQt6.QtCore import pyqtSlot
 
 from openlifu_sdk.io import LIFUInterfaceStatus
 from openlifu_sdk.io.exceptions import LIFUError
-from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 from lifu.lifu_constants import HV_EN_WHILE_RUNNING, READY
 
@@ -64,16 +62,11 @@ class TransmitterMixin:
                     logger.warning(f"Module {module_idx}: failed to read firmware version: {e}")
                     fw_version = "N/A"
                 try:
-                    hw_id = self.interface.txdevice.get_hardware_id(module=module_idx, raw_hex=True)
+                    hw_id = self.interface.txdevice.get_hardware_id(module=module_idx, base58=True)
                 except LIFUError as e:
                     logger.warning(f"Module {module_idx}: failed to read hardware id: {e}")
                     hw_id = ""
-                if hw_id:
-                    if len(hw_id) > HW_ID_DATA_LENGTH:
-                        hw_id = base58.b58encode(bytes.fromhex(hw_id[:HW_ID_DATA_LENGTH])).decode('utf-8')
-                    device_id = hw_id
-                else:
-                    device_id = 'N/A'
+                device_id = hw_id if hw_id else 'N/A'
                 logger.info(
                     f"Module {module_idx} - Firmware Version: {fw_version}, HWID: {device_id}"
                 )
