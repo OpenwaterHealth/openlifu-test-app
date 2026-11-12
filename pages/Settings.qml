@@ -985,8 +985,8 @@ Rectangle {
     // (TX 0) user_config under the ``device`` key.
     //
     // ``template`` is derived from (txModuleCount, freq) where ``freq`` is
-    // pulled from the user_config currently in the editor. The mapping
-    // matches openlifu.xdc.transducerarray._DEFAULT_TEMPLATE_IDS:
+    // pulled from the user_config currently in the editor. Supported
+    // transducer template IDs:
     //   (1, 155) -> openlifu_1x155
     //   (1, 400) -> openlifu_1x400
     //   (2, 155) -> openlifu_2x155
@@ -1012,9 +1012,8 @@ Rectangle {
         property string errorText: ""
 
         function _resolveTemplateId(parsed) {
-            // Pull freq from the user_config. The python pipeline keys on the
-            // top-level "freq" field of the user_config (see
-            // openlifu.xdc.transducerarray._DEFAULT_TEMPLATE_IDS).
+            // The template is keyed on the top-level "freq" field (kHz) of
+            // the user_config and the connected TX module count.
             var freq = parsed && parsed.freq
             if (freq === undefined || freq === null) return ""
             var nMod = settingsPage.txModuleCount
@@ -1240,13 +1239,10 @@ Rectangle {
                             : (parent.hovered ? "#FFFFFF" : "#BDC3C7")
                     }
                     onClicked: {
-                        // Build the device blob. We mirror the schema produced
-                        // by openlifu.xdc.TransducerArray.to_device_config():
-                        //   { id, name, modules: [{hwid: ...}, ...], attrs: {} }
-                        // The "transform" per module is left to the consumer
-                        // (transducerarray.from_module_user_configs falls back
-                        // to the template's per-module transform when no
-                        // explicit transform is given here).
+                        // Build the device blob stored under user_config "device":
+                        //   { id, name, template, modules: [{hwid: ...}, ...], attrs: {} }
+                        // No per-module "transform" is written; readers of this
+                        // block use the template's per-module transform.
                         var modulesBlob = []
                         for (var i = 0; i < addDeviceConfigDialog.moduleHwids.length; ++i) {
                             modulesBlob.push({ "hwid": addDeviceConfigDialog.moduleHwids[i] })
