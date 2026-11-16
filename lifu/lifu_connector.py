@@ -127,9 +127,11 @@ from lifu.lifu_settings import SettingsMixin
 from lifu.lifu_console import ConsoleMixin
 from lifu.lifu_transmitter import TransmitterMixin
 from lifu.lifu_controller import ControllerMixin
+from lifu.lifu_advanced_run import AdvancedRunMixin
 
 
-class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin, ControllerMixin, BaseConnector):
+class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin, ControllerMixin,
+                    AdvancedRunMixin, BaseConnector):
     plotGenerated = pyqtSignal(str)  # Signal to notify QML when a new plot is ready
     solutionConfigured = pyqtSignal(str)  # Signal for solution configuration feedback
 
@@ -215,6 +217,10 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     # prefix for LIFUError subclasses.
     deviceError = pyqtSignal(str, str)  # (title, message)
 
+    # Advanced (repeated, temperature-gated) runs on the Controller page.
+    advancedRunChanged = pyqtSignal()
+    advancedRunRepStarted = pyqtSignal(int, int)  # (repetition, total)
+
     def _make_interface(self, hv_test_mode=False):
         """Construct the underlying LIFUInterface.
 
@@ -283,12 +289,35 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._solution_loaded = False
         self._loaded_solution_data = None
         self._solution_name = ""
+        self._loaded_solution_path = ""
+
+        # Advanced run (see lifu_advanced_run.py). _ar_power_cycling marks the
+        # TX disconnect a planned 12 V cycle causes, so it keeps the bypass.
+        self._ar_phase = "idle"
+        self._ar_status = ""
+        self._ar_settings = {}
+        self._ar_configure_args = []
+        self._ar_modules = 0
+        self._ar_rep = 0
+        self._ar_deadline = 0.0
+        self._ar_wait_started = 0.0
+        self._ar_rep_started = 0.0
+        self._ar_last_cool_log = 0.0
+        self._ar_temps = {}
+        self._ar_power_cycling = False
+        self._ar_log_path = ""
+        self._ar_log_handler = None
+        self._ar_timer = QTimer(self)
+        self._ar_timer.setInterval(1000)
+        self._ar_timer.timeout.connect(self._ar_tick)
 
         # Optional controller-page telemetry CSV logging.
         # ``_controller_telemetry_logging_enabled`` is the user's armed
         # preference (checkbox state). A CSV file is opened only while
-        # sonication is actively RUNNING.
+        # sonication is actively RUNNING, unless idle logging is also on,
+        # in which case one file stays open and runs become marker rows.
         self._controller_telemetry_logging_enabled = False
+        self._controller_telemetry_idle_enabled = False
         self._controller_telemetry_log_path = ""
         self._controller_telemetry_t0 = 0.0
         self._controller_telemetry_csv = None
@@ -368,6 +397,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         # parser) are covered without altering their call paths.
         self.temperatureHvUpdated.connect(self._log_controller_hv_temperature)
         self.temperatureTxUpdated.connect(self._log_controller_tx_temperature)
+        self.temperatureTxUpdated.connect(self._ar_on_temperature)
         self.monVoltagesReceived.connect(self._log_controller_voltage_readings)
 
         # Background telemetry polling thread (temperature + HV voltages).
@@ -426,10 +456,13 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         """
         if bool(enabled):
             self._controller_telemetry_logging_enabled = True
-            # If the user arms logging while already RUNNING, begin
-            # immediately for the active run.
-            if self._state == RUNNING and self._controller_telemetry_csv is None:
-                self._start_controller_telemetry_logger()
+            # If the user arms logging while already RUNNING (or idle
+            # logging is on), begin immediately.
+            if ((self._state == RUNNING or self._controller_telemetry_idle_enabled)
+                    and self._controller_telemetry_csv is None):
+                self._start_controller_telemetry_logger(
+                    "run_started" if self._state == RUNNING else "logging_started")
+                self._controller_telemetry_sample_timer.start()
             else:
                 self.controllerTelemetryLoggingChanged.emit(True, self._controller_telemetry_log_path)
             return
@@ -443,6 +476,24 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def isControllerTelemetryLoggingEnabled(self):
         return bool(self._controller_telemetry_logging_enabled)
 
+    @pyqtSlot(bool)
+    def setControllerTelemetryIdleLoggingEnabled(self, enabled: bool):
+        """Also sample while not sonicating, into one continuous file."""
+        self._controller_telemetry_idle_enabled = bool(enabled)
+        if not self._controller_telemetry_logging_enabled:
+            return
+        if enabled and self._controller_telemetry_csv is None:
+            self._start_controller_telemetry_logger("logging_started")
+            self._controller_telemetry_sample_timer.start()
+        elif not enabled and self._state != RUNNING and self._controller_telemetry_csv is not None:
+            self._append_controller_telemetry_row("logging_stopped")
+            self._close_controller_telemetry_logger(clear_enabled=False)
+            self.controllerTelemetryLoggingChanged.emit(True, "")
+
+    @pyqtSlot(result=bool)
+    def isControllerTelemetryIdleLoggingEnabled(self):
+        return bool(self._controller_telemetry_idle_enabled)
+
     @pyqtSlot(result=str)
     def getControllerTelemetryLogPath(self):
         return self._controller_telemetry_log_path or ""
@@ -451,6 +502,11 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         """Open a fresh CSV file for the current run if logging is armed."""
         if not self._controller_telemetry_logging_enabled:
             return
+        if self._controller_telemetry_idle_enabled and self._controller_telemetry_csv is not None:
+            # Continuous file: mark the run instead of rotating.
+            self._append_controller_telemetry_row("run_started")
+            self._capture_controller_telemetry_snapshot("run_start_snapshot")
+            return
         # Always rotate file per run.
         self._close_controller_telemetry_logger(clear_enabled=False)
         self._start_controller_telemetry_logger()
@@ -458,18 +514,23 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
     def _stop_controller_telemetry_run(self):
         """Close the active run CSV but preserve the armed checkbox state."""
-        self._controller_telemetry_sample_timer.stop()
         armed = self._controller_telemetry_logging_enabled
+        if armed and self._controller_telemetry_idle_enabled and self._controller_telemetry_csv is not None:
+            # Keep the continuous file open and sampling.
+            self._append_controller_telemetry_row("run_stopped")
+            return
+        self._controller_telemetry_sample_timer.stop()
         if self._controller_telemetry_csv is not None:
             self._append_controller_telemetry_row("run_stopped")
         self._close_controller_telemetry_logger(clear_enabled=False)
         self.controllerTelemetryLoggingChanged.emit(bool(armed), "")
 
     def _controller_telemetry_sample_tick(self):
-        """Periodic run-time telemetry sample while logging is active."""
-        if self._state != RUNNING:
-            return
-        self._capture_controller_telemetry_snapshot("periodic_snapshot")
+        """Periodic telemetry sample while logging is active."""
+        if self._state == RUNNING:
+            self._capture_controller_telemetry_snapshot("periodic_snapshot")
+        elif self._controller_telemetry_idle_enabled:
+            self._capture_controller_telemetry_snapshot("idle_snapshot")
 
     def _capture_controller_telemetry_snapshot(self, reading: str):
         """Best-effort one-shot telemetry sample for run-boundary logging."""
@@ -524,7 +585,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             hv_negative=hv_negative,
         )
 
-    def _start_controller_telemetry_logger(self):
+    def _start_controller_telemetry_logger(self, first_reading: str = "run_started"):
         """Open a CSV file for controller telemetry samples."""
         try:
             logs_dir = os.path.join(os.getcwd(), "logs")
@@ -552,8 +613,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._controller_telemetry_t0 = time.monotonic()
             self._controller_telemetry_log_path = log_path
             logger.info("Controller telemetry logging enabled: %s", log_path)
-            self._append_controller_telemetry_row("run_started")
-            self._capture_controller_telemetry_snapshot("run_start_snapshot")
+            self._append_controller_telemetry_row(first_reading)
+            self._capture_controller_telemetry_snapshot(
+                "run_start_snapshot" if first_reading == "run_started" else "idle_snapshot")
             self.controllerTelemetryLoggingChanged.emit(
                 bool(self._controller_telemetry_logging_enabled),
                 log_path,
@@ -1115,8 +1177,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
             self._num_modules_connected = 0
             self._configured = False
             self._invalidate_device_caches("TX")
-            # Re-enable safety checks on disconnect 
-            if self._bypass_safety_checks:
+            # Re-enable safety checks on disconnect, except across an
+            # advanced run's own 12 V cycle, which must reconfigure as before.
+            if self._bypass_safety_checks and not self._ar_power_cycling:
                 self._bypass_safety_checks = False
                 self.safetyBypassChanged.emit(False)
                 logger.warning("[SAFETY] Solution safety limits re-enabled "
@@ -1601,6 +1664,18 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def hvEnableMode(self):
         """Expose HV enable mode to QML."""
         return self._hv_enable_mode
+
+    @pyqtProperty(bool, notify=advancedRunChanged)
+    def advancedRunActive(self):
+        return self._ar_phase != "idle"
+
+    @pyqtProperty(str, notify=advancedRunChanged)
+    def advancedRunStatus(self):
+        return self._ar_status
+
+    @pyqtProperty(str, notify=advancedRunChanged)
+    def advancedRunLogPath(self):
+        return self._ar_log_path
 
     @pyqtProperty(bool, notify=safetyBypassChanged)
     def safetyBypassEnabled(self):
