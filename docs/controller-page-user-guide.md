@@ -54,7 +54,7 @@ left sidebar.
 | Pulse Interval | ms | Time between pulse starts |
 | Pulse Count | — | Pulses per train (disabled in Single mode) |
 | Pulse Train Interval | s | Time between train starts (disabled in Single mode) |
-| Pulse Train Count | — | Number of trains (Sequence mode only) |
+| Pulse Train Count | — | Number of trains (Sequence mode only). With a loaded JSON file that has `pulse_train_count_selections`, a list of those counts |
 
 When using Trigger Mode "Single", the Pulse Train Interval and Pulse Train Count fields are disabled, and the device will emit a single train of pulses when Start is pressed. In "Continuous" mode, the device will emit trains of pulses indefinitely until Stop is pressed; the Pulse Train Interval field is enabled but ignored, and the Pulse Train Count field is disabled. In "Sequence" mode, the device will emit a fixed number of pulse trains as specified by the Pulse Train Count field; both the Pulse Train Interval and Pulse Train Count fields are enabled.
 
@@ -133,9 +133,10 @@ which hold flat fields such as `frequency_khz`, `pulse_length_us` and
   `pulse_train_count_selections`. That is usually longer than the app's
   safety limits allow (10 minutes on the standard voltage tables), so
   Configure refuses it unless the safety bypass is armed on the Settings
-  page. A file without selections gets a pulse train count of 1. To use
-  a different count from the file, pick it in the
-  [Advanced](#advanced-runs) dialog; that keeps the file's delays and
+  page. A file without selections gets a pulse train count of 1. While
+  the file is loaded, **Pulse Train Count** is a list of the file's
+  counts and stays selectable although the rest of Sequence Settings is
+  locked. Picking another count keeps the file's delays and
   apodizations, which **Edit Solution** does not.
 - `start_C` and `shutoff_C` become the Advanced dialog's default start
   and shutoff temperatures.
@@ -223,8 +224,15 @@ A progress bar at the bottom of the right column tracks the current run.
 Progress updates are driven by unsolicited `STATUS` frames from the
 firmware, so the bar advances even when the app is not actively polling.
 During an [advanced run](#advanced-runs) the text starts with the
-repetition, e.g. `REP 2/8 RUNNING 40/375`, and keeps it after the run
-ends.
+run number, e.g. `RUN 2/8 RUNNING 40/375`, and keeps it after the
+advanced run ends.
+
+**Save temp/voltage log** writes TX, ambient and HV temperatures and the
+HV rails to `logs/controller_telemetry_<date>_<time>.csv`, one file per
+Start. **Include idle readings in log** keeps one file open and sampling
+between runs, with runs marked in it. While logging is on, the line
+below the checkboxes shows the file being written, else the last file
+written, else the folder the next file will go in.
 
 <a id="advanced-runs"></a>
 
@@ -234,18 +242,17 @@ ends.
 temperature-gated runs. These settings are only set there. While
 **Use these settings when Start is pressed** is checked, the button reads
 **Advanced ●** and the status line ends with a summary such as
-`Advanced 8 reps, 35–75 °C, 10 min off`.
+`Advanced 8 runs, 35–75 °C, 10 min off`.
 
 | Setting | Behaviour |
 |---------|-----------|
-| **Pulse train count** | With a JSON file that has `pulse_train_count_selections`, a list of those counts (the largest is the default). Otherwise a free count, the same value as **Pulse Train Count**. |
-| **Start temperature** | A repetition starts only when the hottest module is at or below this. Defaults to the file's `start_C`, else 50 °C. |
-| **Shutoff temperature** | A repetition is stopped early when the hottest module reaches this. Defaults to the file's `shutoff_C`, else 75 °C. The TX firmware still stops at 75 °C whatever is set here. |
-| **Repetitions** | How many times the configured solution runs. |
-| **Time between repetitions** | Minutes to rest after each repetition before the next one may start. After it, the next repetition starts once the transmitter is at or below the start temperature. 0 starts it as soon as it is cool enough. |
-| **Turn off transmitter between repetitions** | Checked: HV and 12 V are off during that time; the transmitter then powers back up, is reconfigured, and starts if it is cool enough, or turns off for the same time again. Needs more than 0 minutes. Unchecked: the transmitter stays powered and is watched until it is cool enough. |
+| **Start temperature** | A run starts only when the hottest module is at or below this. Defaults to the file's `start_C`, else 50 °C. |
+| **Shutoff temperature** | A run is stopped early when the hottest module reaches this. Defaults to the file's `shutoff_C`, else 75 °C. The TX firmware still stops at 75 °C whatever is set here. |
+| **Runs** | How many times the configured solution runs. The pulse train count per run is **Pulse Train Count** in Sequence Settings. |
+| **Time between runs** | Minutes or seconds to rest after each run before the next one may start. After it, the next run starts once the transmitter is at or below the start temperature. 0 starts it as soon as it is cool enough. |
+| **Turn off transmitter between runs** | Checked: HV and 12 V are off during that time; the transmitter then powers back up, is reconfigured, and starts if it is cool enough, or turns off for the same time again. Needs more than 0 minutes. Unchecked: the transmitter stays powered and is watched until it is cool enough. |
 
-With the settings on, **Start** runs the whole sequence; **Stop** ends it
+With the settings on, **Start** runs all of them in turn; **Stop** ends it
 at any point, including while the transmitter is off (12 V is turned back
 on). Configure, Load, Edit Solution, Reset and the Settings tab are locked
 until the run ends. Advanced runs need the Sequence or Single trigger
@@ -254,7 +261,7 @@ power cycles. The run aborts with an error if the transmitter disconnects
 on its own, does not come back within 90 s of 12 V turning on, comes back
 with a different module count, or fails to configure.
 
-Each run writes `logs/<date>_<time>_advanced_run.log` in the format of the
+Each advanced run writes `logs/<date>_<time>_advanced_run.log` in the format of the
 openlifu-test-scripts thermal tests, so `thermal_log_plot.py` can plot it.
 
 ---

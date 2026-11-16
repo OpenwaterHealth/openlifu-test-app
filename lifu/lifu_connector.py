@@ -319,6 +319,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._controller_telemetry_logging_enabled = False
         self._controller_telemetry_idle_enabled = False
         self._controller_telemetry_log_path = ""
+        # The most recently closed file, shown between runs.
+        self._controller_telemetry_last_log_path = ""
         self._controller_telemetry_t0 = 0.0
         self._controller_telemetry_csv = None
         self._controller_telemetry_file_handle = None
@@ -498,6 +500,20 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def getControllerTelemetryLogPath(self):
         return self._controller_telemetry_log_path or ""
 
+    @pyqtSlot(result=str)
+    def getControllerTelemetryLastLogPath(self):
+        """The last file closed, or "" if none has been written this session."""
+        return self._controller_telemetry_last_log_path or ""
+
+    @pyqtSlot(result=str)
+    def getControllerTelemetryLogDir(self):
+        """Folder that new telemetry files are created in."""
+        return self._controller_telemetry_log_dir()
+
+    @staticmethod
+    def _controller_telemetry_log_dir():
+        return os.path.join(os.getcwd(), "logs")
+
     def _start_controller_telemetry_run_if_armed(self):
         """Open a fresh CSV file for the current run if logging is armed."""
         if not self._controller_telemetry_logging_enabled:
@@ -588,7 +604,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     def _start_controller_telemetry_logger(self, first_reading: str = "run_started"):
         """Open a CSV file for controller telemetry samples."""
         try:
-            logs_dir = os.path.join(os.getcwd(), "logs")
+            logs_dir = self._controller_telemetry_log_dir()
             os.makedirs(logs_dir, exist_ok=True)
             stamp = time.strftime("%Y%m%d_%H%M%S")
             log_path = os.path.join(logs_dir, f"controller_telemetry_{stamp}.csv")
@@ -646,6 +662,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
                 logger.warning("Error closing controller telemetry log: %s", e)
         if self._controller_telemetry_logging_enabled and self._controller_telemetry_log_path:
             logger.info("Controller telemetry logging disabled: %s", self._controller_telemetry_log_path)
+        if self._controller_telemetry_log_path:
+            self._controller_telemetry_last_log_path = self._controller_telemetry_log_path
         self._controller_telemetry_file_handle = None
         self._controller_telemetry_csv = None
         self._controller_telemetry_t0 = 0.0
