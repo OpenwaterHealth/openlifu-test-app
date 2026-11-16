@@ -50,6 +50,11 @@ Rectangle {
     property bool pulseCountActive: true
     property bool trainIntervalActive: triggerModeDropdown.currentText !== "Single"
     property bool trainCountActive: triggerModeDropdown.currentText === "Sequence"
+    // A loaded file's pulse_train_count_selections. While that file is
+    // loaded, Pulse Train Count is picked from this list (the rest of the
+    // section stays locked); otherwise it is a free field.
+    readonly property var trainCountSelections: advDefaults.trainCountSelections || []
+    readonly property bool useTrainCountList: solutionLoaded && trainCountSelections.length > 0
     
     // Property to track if train interval is less than pulse interval x pulse count
     property bool trainIntervalTooShort: false
@@ -57,6 +62,8 @@ Rectangle {
     property string saveSolutionPath: ""
     property bool savePathAuto: true
     property string controllerTelemetryLogPath: ""
+    property string controllerTelemetryLastLogPath: ""
+    property string controllerTelemetryLogDir: ""
 
     // Advanced run settings, edited only in the Advanced dialog. The
     // status line shows them while they are on, so none runs unnoticed.
@@ -673,7 +680,7 @@ Rectangle {
         var start = Number(advStartC)
         var shutoff = Number(advShutoffC)
         if (!Number.isInteger(reps) || reps < 1) {
-            return "Repetitions must be a whole number, at least 1."
+            return "Runs must be a whole number, at least 1."
         }
         if (advStartC.trim() === "" || isNaN(start)) {
             return "Enter a start temperature."
@@ -686,10 +693,10 @@ Rectangle {
         }
         var rest = Number(advRestMinutes)
         if (advRestMinutes.trim() === "" || isNaN(rest) || rest < 0) {
-            return "Enter the time between repetitions (0 or more)."
+            return "Enter the time between runs (0 or more)."
         }
         if (advPowerOff && rest <= 0) {
-            return "Turning the transmitter off needs more than 0 time between repetitions."
+            return "Turning the transmitter off needs more than 0 time between runs."
         }
         if (triggerModeDropdown.currentText === "Continuous") {
             return "Advanced runs need the Sequence or Single trigger mode."
@@ -698,7 +705,7 @@ Rectangle {
     }
 
     function advancedSummary() {
-        return advRepetitions + (advRepetitions === "1" ? " rep, " : " reps, ")
+        return advRepetitions + (advRepetitions === "1" ? " run, " : " runs, ")
                + advStartC + "–" + advShutoffC + " °C, "
                + advRestMinutes + (advRestInSeconds ? " s " : " min ") + (advPowerOff ? "off" : "on")
     }
@@ -971,12 +978,12 @@ Rectangle {
             return ""
         }
         if (progressState === "stopped") {
-            return advReps > 0 ? "REP " + advRep + "/" + advReps + " STOPPED" : "STOPPED"
+            return advReps > 0 ? "RUN " + advRep + "/" + advReps + " STOPPED" : "STOPPED"
         }
         var prefix = progressState === "finished" ? "FINISHED" : "RUNNING"
         // Kept after the run ends so the bar says how far it got.
         if (advReps > 0) {
-            prefix = "REP " + advRep + "/" + advReps + " " + prefix
+            prefix = "RUN " + advRep + "/" + advReps + " " + prefix
         }
         if (progressMode === "Continuous") {
             return prefix + " " + progressCurrent
@@ -1172,29 +1179,18 @@ Rectangle {
         modal: true
         focus: true
         width: 500
-        height: 470
+        height: 430
         x: (controllerPage.width - width) / 2
         y: (controllerPage.height - height) / 2
 
         // Locked while running; settings can't change under a live run.
         readonly property bool locked: LIFUConnector.state === 3 || LIFUConnector.advancedRunActive
-        readonly property var selections: advDefaults.trainCountSelections || []
-        // A loaded file with train-count choices gets the list; anything
-        // else (no file, or after Edit Solution) gets a free count.
-        readonly property bool useTrainList: solutionLoaded && selections.length > 0
 
         background: Rectangle {
             color: "#1E1E20"
             border.color: "#3E4E6F"
             border.width: 2
             radius: 8
-        }
-
-        onOpened: {
-            if (useTrainList) {
-                trainCountList.currentIndex = selections.indexOf(parseInt(triggerPulseTrainCount.text))
-            }
-            advTrainCountField.text = triggerPulseTrainCount.text
         }
 
         component AdvLabel: Text {
@@ -1239,46 +1235,6 @@ Rectangle {
                 rowSpacing: 8
                 Layout.fillWidth: true
 
-                AdvLabel { text: "Pulse train count" }
-                ComboBox {
-                    id: trainCountList
-                    visible: advancedDialog.useTrainList
-                    Layout.preferredWidth: 90
-                    Layout.preferredHeight: 30
-                    model: advancedDialog.selections
-                    enabled: !advancedDialog.locked
-                    onActivated: function(index) {
-                        var count = advancedDialog.selections[index]
-                        if (LIFUConnector.setLoadedTrainCount(count)) {
-                            triggerPulseTrainCount.text = count.toString()
-                            updateFociValidation()
-                            refreshPlot()
-                        }
-                    }
-                }
-                AdvField {
-                    id: advTrainCountField
-                    visible: !advancedDialog.useTrainList
-                    // A loaded file without choices keeps its own count.
-                    enabled: !advancedDialog.locked && !controlsReadOnly
-                    validator: IntValidator { bottom: 1 }
-                    onEditingFinished: {
-                        if (text === triggerPulseTrainCount.text) {
-                            return
-                        }
-                        triggerPulseTrainCount.text = text
-                        triggerPulseTrainCount.dirty = true
-                        commitDirtyField(triggerPulseTrainCount, commitSequence)
-                        updateFociValidation()
-                        refreshPlot()
-                    }
-                }
-                AdvLabel {
-                    text: advancedDialog.useTrainList ? "from the file" : ""
-                    color: "#7FA2C7"
-                    font.pixelSize: 11
-                }
-
                 AdvLabel { text: "Start temperature" }
                 AdvField {
                     text: advStartC
@@ -1297,7 +1253,7 @@ Rectangle {
                     text: "°C" + (advDefaults.fromFile ? "  (shutoff_C from the file)" : "")
                 }
 
-                AdvLabel { text: "Repetitions" }
+                AdvLabel { text: "Runs" }
                 AdvField {
                     text: advRepetitions
                     validator: IntValidator { bottom: 1 }
@@ -1305,7 +1261,7 @@ Rectangle {
                 }
                 Item { width: 1; height: 1 }
 
-                AdvLabel { text: "Time between repetitions" }
+                AdvLabel { text: "Time between runs" }
                 AdvField {
                     text: advRestMinutes
                     onTextEdited: advRestMinutes = text
@@ -1322,7 +1278,7 @@ Rectangle {
 
             CheckBox {
                 id: advPowerOffCheckbox
-                text: "Turn off transmitter between repetitions"
+                text: "Turn off transmitter between runs"
                 checked: advPowerOff
                 enabled: !advancedDialog.locked
                 onToggled: advPowerOff = checked
@@ -1341,8 +1297,8 @@ Rectangle {
                 color: "#9FB3C8"
                 font.pixelSize: 11
                 text: advPowerOff
-                      ? "After each repetition, HV and 12 V turn off for the time between repetitions. The transmitter then powers back up, is reconfigured, and starts once it is at or below the start temperature; if not, it turns off for that long again."
-                      : "The transmitter stays powered for the time between repetitions, then the next one starts once it is at or below the start temperature."
+                      ? "After each run, HV and 12 V turn off for the time between runs. The transmitter then powers back up, is reconfigured, and starts once it is at or below the start temperature; if not, it turns off for that long again."
+                      : "The transmitter stays powered for the time between runs, then the next one starts once it is at or below the start temperature."
             }
 
             Text {
@@ -2077,6 +2033,8 @@ Rectangle {
         controllerLogCheckbox.checked = LIFUConnector.isControllerTelemetryLoggingEnabled()
         controllerIdleLogCheckbox.checked = LIFUConnector.isControllerTelemetryIdleLoggingEnabled()
         controllerTelemetryLogPath = LIFUConnector.getControllerTelemetryLogPath()
+        controllerTelemetryLastLogPath = LIFUConnector.getControllerTelemetryLastLogPath()
+        controllerTelemetryLogDir = LIFUConnector.getControllerTelemetryLogDir()
         // Draw the defaults rather than parking on the "no data" placeholder.
         // The plot is built from the fields, so it needs no device.
         refreshPlot()
@@ -2460,6 +2418,7 @@ Rectangle {
                         TextField { 
                             id: triggerPulseTrainCount
                             property bool dirty: false
+                            visible: !useTrainCountList
                             Layout.preferredWidth: solutionConfigInputWidth
                             Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignLeft
@@ -2474,6 +2433,34 @@ Rectangle {
                             }
                             onTextEdited: dirty = true
                             onEditingFinished: commitDirtyField(triggerPulseTrainCount, commitSequence)
+                        }
+                        ComboBox {
+                            id: trainCountList
+                            visible: useTrainCountList
+                            Layout.preferredWidth: solutionConfigInputWidth
+                            Layout.preferredHeight: 32
+                            Layout.alignment: Qt.AlignLeft
+                            font.pixelSize: 14
+                            model: trainCountSelections
+                            // Picking a count keeps the file's delays and apodizations;
+                            // only a run in progress locks it.
+                            enabled: LIFUConnector.state !== 3 && !LIFUConnector.advancedRunActive
+                            currentIndex: trainCountSelections.indexOf(parseInt(triggerPulseTrainCount.text))
+                            onActivated: function(index) {
+                                var count = trainCountSelections[index]
+                                if (LIFUConnector.setLoadedTrainCount(count)) {
+                                    triggerPulseTrainCount.text = count.toString()
+                                    updateFociValidation()
+                                    refreshPlot()
+                                }
+                                // A pick breaks the binding; restore it so the field stays the source.
+                                currentIndex = Qt.binding(function() {
+                                    return trainCountSelections.indexOf(parseInt(triggerPulseTrainCount.text))
+                                })
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 500
+                            ToolTip.text: "Pulse train counts offered by the loaded file"
                         }
                     }
                 }
@@ -3422,7 +3409,9 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: controllerLogPathText.implicitHeight
                                                 + (contentWidth > width ? 10 : 0)
-                        visible: controllerTelemetryLogPath !== ""
+                        // Shown whenever logging is on: the open file, else the last
+                        // one written, else the folder the next run's file goes in.
+                        visible: controllerLogCheckbox.checked
                         clip: true
                         contentWidth: controllerLogPathText.implicitWidth
                         contentHeight: controllerLogPathText.implicitHeight
@@ -3437,7 +3426,12 @@ Rectangle {
 
                         TextEdit {
                             id: controllerLogPathText
-                            text: "Log: " + controllerTelemetryLogPath
+                            text: controllerTelemetryLogPath !== ""
+                                  ? "Log: " + controllerTelemetryLogPath
+                                  : controllerTelemetryLastLogPath !== ""
+                                    ? "Last log: " + controllerTelemetryLastLogPath
+                                    : "Log folder: " + controllerTelemetryLogDir
+                                      + "  (file created at Start)"
                             color: "#7FA2C7"
                             selectionColor: "#3A6EA5"
                             selectedTextColor: "#FFFFFF"
@@ -3799,6 +3793,7 @@ Rectangle {
 
         function onControllerTelemetryLoggingChanged(enabled, logPath) {
             controllerTelemetryLogPath = logPath
+            controllerTelemetryLastLogPath = LIFUConnector.getControllerTelemetryLastLogPath()
             if (controllerLogCheckbox.checked !== enabled) {
                 controllerLogCheckbox.checked = enabled
             }

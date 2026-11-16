@@ -93,13 +93,13 @@ class AdvancedRunMixin:
             return False
         problem = None
         if reps < 1:
-            problem = "Repetitions must be at least 1."
+            problem = "Runs must be at least 1."
         elif start_c >= shutoff_c:
             problem = "The start temperature must be below the shutoff temperature."
         elif rest_min < 0:
-            problem = "The time between repetitions can't be negative."
+            problem = "The time between runs can't be negative."
         elif power_off and rest_min <= 0:
-            problem = "Turning the transmitter off needs more than 0 minutes between repetitions."
+            problem = "Turning the transmitter off needs more than 0 minutes between runs."
         elif len(configure_args) < 11 or configure_args[10] == "Continuous":
             problem = "Advanced runs need the Sequence or Single trigger mode; Continuous never ends."
         elif self._state != READY:
@@ -239,7 +239,7 @@ class AdvancedRunMixin:
                 self._ar_power_off()
             else:
                 self._ar_write(f"Transmitter will stay on for {s['rest_min']:g} minutes "
-                               "before the next repetition.")
+                               "before the next run.")
                 self._ar_phase = "resting"
                 self._ar_deadline = time.monotonic() + s["rest_min"] * 60
                 self._ar_set_status(f"resting with the transmitter on until {self._ar_clock(s['rest_min'])}")
@@ -273,7 +273,7 @@ class AdvancedRunMixin:
             return
         self.start_sonication()
         if self._state != RUNNING:
-            self._ar_abort(f"Repetition {k} did not start.")
+            self._ar_abort(f"Run {k} did not start.")
             return
         self._ar_phase = "running"
         self._ar_rep_started = time.monotonic()
@@ -286,8 +286,8 @@ class AdvancedRunMixin:
         self._ar_write("Trigger stopped successfully.")
         self._ar_write(f"TEST CASE {k} ran for a total of {elapsed // 60} min {elapsed % 60:02d} s.")
         if k >= n:
-            self._ar_write("Repetition complete." if n == 1 else f"All {n} repetitions complete.")
-            self._ar_finish(f"Finished {n}/{n} repetitions.")
+            self._ar_write("Run complete." if n == 1 else f"All {n} runs complete.")
+            self._ar_finish(f"Finished {n}/{n} runs.")
             return
         self._ar_rep += 1
         self._ar_begin_rep()
@@ -419,9 +419,9 @@ class AdvancedRunMixin:
 
     def _ar_log_header(self):
         s = self._ar_settings
-        between = (f"{s['rest_min']:g} minutes between repetitions with the transmitter "
+        between = (f"{s['rest_min']:g} minutes between runs with the transmitter "
                    + ("off" if s["power_off"] else "on"))
-        self._ar_write(f"Advanced run: {s['repetitions']} repetition(s), {between}.")
+        self._ar_write(f"Advanced run: {s['repetitions']} run(s), {between}.")
         self._ar_write(f"Max Starting Temperature: {s['start_c']:g}C")
         self._ar_write(f"Shutoff Temperature: {s['shutoff_c']:g}C")
         if s["shutoff_c"] > FIRMWARE_SHUTOFF_C:
@@ -466,5 +466,5 @@ class AdvancedRunMixin:
                 f"of {self._ar_settings['start_c']:g}C for test case {self._ar_rep}.")
 
     def _ar_set_status(self, text):
-        self._ar_status = f"Rep {self._ar_rep}/{self._ar_settings['repetitions']}: {text}"
+        self._ar_status = f"Run {self._ar_rep}/{self._ar_settings['repetitions']}: {text}"
         self.advancedRunChanged.emit()
