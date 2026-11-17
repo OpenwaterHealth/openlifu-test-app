@@ -290,6 +290,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._loaded_solution_data = None
         self._solution_name = ""
         self._loaded_solution_path = ""
+        # Hardware IDs of the modules a loaded JSON file's voltage was scaled
+        # to; Configure refuses the file if different modules are connected.
+        self._loaded_solution_module_uids = []
 
         # Advanced run (see lifu_advanced_run.py). _ar_power_cycling marks the
         # TX disconnect a planned 12 V cycle causes, so it keeps the bypass.
@@ -305,6 +308,16 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         self._ar_last_cool_log = 0.0
         self._ar_temps = {}
         self._ar_power_cycling = False
+        # Program the TX again from the captured settings before the next run.
+        self._ar_needs_configure = False
+        # HV was cut by a power-off rest and must come back (with settling).
+        self._ar_hv_restore = False
+        # Set while the run itself reconfigures, so its locks let it through.
+        self._ar_reconfiguring = False
+        # A failed stop being retried: the outcome to report and the tries.
+        self._ar_pending_status = ""
+        self._ar_stop_attempts = 0
+        self._ar_hv_confirmed_off = False
         self._ar_log_path = ""
         self._ar_log_handler = None
         self._ar_timer = QTimer(self)

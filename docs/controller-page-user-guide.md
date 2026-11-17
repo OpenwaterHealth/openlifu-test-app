@@ -138,6 +138,11 @@ which hold flat fields such as `frequency_khz`, `pulse_length_us` and
   counts and stays selectable although the rest of Sequence Settings is
   locked. Picking another count keeps the file's delays and
   apodizations, which **Edit Solution** does not.
+- The scaled voltage belongs to the modules connected at load. If
+  different modules are connected later (a swapped transmitter, or a
+  different module count), Configure refuses the file until it is loaded
+  again. An advanced run's own power cycles bring back the same modules,
+  so they pass.
 - `start_C` and `shutoff_C` become the Advanced dialog's default start
   and shutoff temperatures.
 - Each focus position is worked out from that focus's delays, because
@@ -254,8 +259,23 @@ temperature-gated runs. These settings are only set there. While
 
 With the settings on, **Start** runs all of them in turn; **Stop** ends it
 at any point, including while the transmitter is off (12 V is turned back
-on). Configure, Load, Edit Solution, Reset and the Settings tab are locked
-until the run ends. Advanced runs need the Sequence or Single trigger
+on). Every setting on the page is locked until the run ends, rests
+included: the solution and sequence fields, Trigger Mode, the focus
+selector, HV enable mode, voltage scaling, Configure, Load, Edit Solution,
+Reset and the Settings tab. Every run after the first reprograms the
+transmitter from the settings captured at Start, with a selected single
+focus pinned again. After a rest with the transmitter off, HV is turned
+back on and allowed to settle before the run starts, whatever the HV
+enable mode.
+
+A run starts only when every module has a temperature reading less than
+15 s old. While a run is going, it is stopped if any module goes without a
+fresh reading for 30 s, or twice the longest gap between the firmware's
+end-of-train status frames plus 10 s if that is longer, because the
+shutoff temperature can't be checked without them. If a stop fails, HV is
+turned off at once and the stop is retried 3 more times, 5 s apart; the
+run reports its outcome only after that, and says whether HV was
+confirmed off. Advanced runs need the Sequence or Single trigger
 mode. If the safety bypass is armed, it stays armed across the run's own
 power cycles. The run aborts with an error if the transmitter disconnects
 on its own, does not come back within 90 s of 12 V turning on, comes back
