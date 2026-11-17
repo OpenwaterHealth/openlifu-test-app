@@ -126,6 +126,13 @@ the identity keys around it, keeping the order above (`sn` before
 Every other key is kept on both. A different serial already on the
 device is only replaced after you confirm.
 
+On a TX module that holds calibration (`module.sensitivity`), Assign
+first checks that the stored `hwid` is this module's, in its full form or
+the legacy 6-byte one (which it upgrades). If the calibration is for
+another module, or has no `hwid`, Assign is refused and nothing is
+written: stamping this module's `hwid` on it would let another module's
+calibration pass as this one's. Load the module's own test report first.
+
 ### Test reports
 
 **Load Test Report** finds each value by its row label (Serial Number,

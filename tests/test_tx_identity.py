@@ -151,7 +151,8 @@ def test_blank_hw_ver_keeps_the_test_reports_hardware_rev():
 
 
 def test_blank_hw_ver_keeps_an_existing_value_whatever_its_case():
-    stored = {"HW_VER": "rev-A", "module": {"sensitivity": [[400000, 3500]]}}
+    stored = {"HW_VER": "rev-A", "hwid": encode_hwid(UIDS[0], base58=True),
+              "module": {"sensitivity": [[400000, 3500]]}}
     tx = TxDevice({0: stored})
     data, _ = assign(tx, "TXM-1")
     assert data["HW_VER"] == "rev-A"
@@ -166,7 +167,7 @@ def test_assign_on_a_blank_module_writes_the_whole_identity():
 
 
 def test_missing_identity_keys_are_added_without_moving_the_rest():
-    stored = {"freq": 400, "module": {"sensitivity": [[400000, 3500]]}, "device": {"id": "d"}}
+    stored = {"freq": 400, "module": {"id": "txm_400"}, "device": {"id": "d"}}
     tx = TxDevice({0: stored})
     data, _ = assign(tx, "TXM-3", "EVT")
     assert list(data)[-3:] == ["freq", "module", "device"]
@@ -301,9 +302,9 @@ ORDER = ["sn", "hwid", "hw_ver", "fw_ver", "sdk_ver", "updated"]
 
 
 def test_a_module_assigned_by_the_old_assign_gets_identity_in_order():
-    # The old TX Assign wrote only sn and updated, at the top.
+    # The old TX Assign on a blank module wrote only sn and updated.
     stored = {"sn": "TXM-9", "updated": "2026-11-01 09:00:00",
-              "freq": 400, "module": {"sensitivity": [[400000, 3500]]}}
+              "freq": 400, "module": {"id": "txm_400"}}
     tx = TxDevice({0: stored})
     data, _ = assign(tx, "TXM-9", "EVT")
     assert list(data) == ORDER + ["freq", "module"]
@@ -329,3 +330,62 @@ def test_a_kept_upper_case_hw_ver_still_anchors_the_order():
     tx = TxDevice({0: stored})
     data, _ = assign(tx, "TXM-12")
     assert list(data) == ["sn", "hwid", "HW_VER", "fw_ver", "sdk_ver", "updated", "module"]
+
+
+# ------------------------------------------------ calibration ownership
+
+def refused(stored, module=0):
+    """Assign on *stored*: it must be refused with nothing written."""
+    tx = TxDevice({module: stored})
+    c = Connector(tx)
+    c.writeSerialNumber(f"tx_{module}", "TXM-20", "EVT", True)
+    ok, message = c.userConfigStatus.calls[-1][1:]
+    assert ok is False
+    assert tx.configs[module] == stored
+    assert c.serialNumberConflict.calls == []
+    return message
+
+
+def test_another_modules_calibration_is_not_relabelled():
+    other = dict(REPORT_CONFIG, hwid=encode_hwid(UIDS[1], base58=True))
+    message = refused(other, module=0)
+    assert encode_hwid(UIDS[1], base58=True) in message
+    assert "test report" in message
+
+
+def test_calibration_without_a_hwid_is_not_relabelled():
+    message = refused({k: v for k, v in REPORT_CONFIG.items() if k != "hwid"})
+    assert "no hardware ID" in message
+
+
+def test_calibration_with_an_empty_hwid_is_not_relabelled():
+    refused(dict(REPORT_CONFIG, hwid=""))
+
+
+def test_refused_before_asking_about_a_different_serial():
+    other = dict(REPORT_CONFIG, sn="SOMEONE-ELSE", hwid=encode_hwid(UIDS[1], base58=True))
+    tx = TxDevice({0: other})
+    c = Connector(tx)
+    c.writeSerialNumber("tx_0", "TXM-21", "", False)
+    assert c.serialNumberConflict.calls == []
+    assert c.userConfigStatus.calls[-1][1] is False
+
+
+def test_this_modules_legacy_hwid_is_upgraded():
+    legacy = dict(REPORT_CONFIG, hwid=encode_hwid(UIDS[0], base58=True, legacy_6byte=True))
+    data, _ = assign(TxDevice({0: legacy}), "WLM44Q80010")
+    assert data["hwid"] == encode_hwid(UIDS[0], base58=True)
+    assert data["module"] == REPORT_CONFIG["module"]
+
+
+def test_a_config_without_calibration_takes_this_modules_hwid():
+    stored = {"sn": "TXM-22", "hwid": encode_hwid(UIDS[1], base58=True),
+              "module": {"id": "txm_400"}, "device": {}}
+    data, _ = assign(TxDevice({0: stored}), "TXM-22")
+    assert data["hwid"] == encode_hwid(UIDS[0], base58=True)
+
+
+def test_upper_case_keys_are_checked_too():
+    other = {"HWID": encode_hwid(UIDS[1], base58=True),
+             "Module": {"Sensitivity": [[400000, 3500]]}}
+    refused(other)

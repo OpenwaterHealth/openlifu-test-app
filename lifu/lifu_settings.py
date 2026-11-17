@@ -130,6 +130,37 @@ def _set_in_place(data: dict, values: dict, order=IDENTITY_KEYS) -> dict:
     return dict(items)
 
 
+def _first(data: dict, key: str):
+    """The value of *key* in *data*, matched in any case, or None."""
+    return next((v for k, v in data.items() if k.lower() == key), None)
+
+
+def _calibration_owner_problem(data: dict, hwid: str, legacy_hwid: str) -> str | None:
+    """Why Assign must not stamp *hwid* on this TX config, or None if it may.
+
+    The stored ``hwid`` is what ties a config's calibration
+    (``module.sensitivity``) to its module: the operator interface refuses
+    a calibration whose ``hwid`` isn't the module's. Assign writes the
+    module's own ``hwid``, so on a config that carries calibration it must
+    first confirm that calibration is this module's. Its full form or the
+    legacy 6-byte one (which Assign upgrades) both are. A config without
+    calibration can take any ``hwid``.
+    """
+    module = _first(data, "module")
+    if not (isinstance(module, dict) and _first(module, "sensitivity")):
+        return None
+    stored = _first(data, "hwid")
+    if stored in (hwid, legacy_hwid):
+        return None
+    if stored in (None, ""):
+        owner = "has no hardware ID, so it can't be confirmed to be this module's"
+    else:
+        owner = f"is for hardware ID {stored}, not this module's {hwid}"
+    return (f"The calibration stored on this module {owner}. Assign would relabel it "
+            "as this module's, so nothing was written. Load this module's own test "
+            "report and write it first.")
+
+
 class SettingsMixin:
     """Mixin providing the Settings-page slots/helpers for ``LIFUConnector``."""
 
@@ -978,6 +1009,17 @@ class SettingsMixin:
                         f"the config on {label} ({existing.header.json_len} bytes) could "
                         "not be parsed, so it was left untouched. Check it with Read Config.")
                 data = existing.to_dict() if existing is not None else {}
+
+                if module is not None:
+                    # Checked before asking about a serial conflict, so a
+                    # confirmation is never followed by a refusal.
+                    problem = _calibration_owner_problem(
+                        data, dev.get_hardware_id(base58=True, **addr),
+                        dev.get_hardware_id(base58=True, legacy_6byte=True, **addr))
+                    if problem:
+                        logger.warning("Assign refused on %s: %s", label, problem)
+                        self.userConfigStatus.emit(target, False, problem)
+                        return
 
                 # Keys match in any case: the factory stub uses "SN".
                 sn_keys = [k for k in data if k.lower() == SERIAL_NUMBER_KEY]
