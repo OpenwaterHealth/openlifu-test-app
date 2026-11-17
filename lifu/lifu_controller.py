@@ -317,6 +317,8 @@ class ControllerMixin:
 
     @pyqtSlot(str, result=bool)
     def directSetVoltage(self, voltage_str):
+        if self._locked_by_advanced_run("Set Voltage"):
+            return False
         logger.info(f"Directly setting voltage to {voltage_str} V")
         """Directly set the HV rail voltage without reconfiguring the solution."""
         if not self._hvConnected:
@@ -368,6 +370,8 @@ class ControllerMixin:
         without them a pulse-interval edit would reach the hardware with
         nothing validating the resulting duty cycle.
         """
+        if self._locked_by_advanced_run("Set Sequence"):
+            return False
         logger.info(f"Directly setting sequence parameters: pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
             self._emit_device_error("Set Sequence", "No TX device connected.")
@@ -456,6 +460,8 @@ class ControllerMixin:
         partway leaves the device in an unknown state, so it also drops the
         configured flag to force a re-Configure.
         """
+        if self._locked_by_advanced_run("Set Run Profile"):
+            return False
         logger.info(f"Pinning run profile {profile}: pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
             self._emit_device_error("Run Profile", "No TX device connected.")
@@ -530,6 +536,8 @@ class ControllerMixin:
     @pyqtSlot(str, str, str, str, str, str, str, str, str, str, str, 'QVariantList', 'QVariantList', result=bool)
     def directSetPulse(self, xInput, yInput, zInput, freq, voltage, pulseInterval, pulseCount, trainInterval, trainCount, durationS, mode, foci=None, executionOrder=None):
         """Directly update pulse/transducer settings without touching the HV controller."""
+        if self._locked_by_advanced_run("Set Pulse"):
+            return False
         logger.info(f"Directly setting pulse parameters: voltage={voltage}V freq={freq}kHz focus=({xInput},{yInput},{zInput})mm pulse_len={durationS}us pulse_int={pulseInterval}ms pulses={pulseCount} train_int={trainInterval}s trains={trainCount} mode={mode}")
         if not self._txConnected:
             self._emit_device_error("Set Pulse", "No TX device connected.")
@@ -637,6 +645,13 @@ class ControllerMixin:
                 "file's voltage."
             )
             return
+        if self._scaled_for_other_modules(solution):
+            self._emit_device_error(
+                "Configure Transmitter",
+                "The transmitter modules changed since this JSON file was loaded, so its "
+                "voltage was scaled for other modules. Load the file again."
+            )
+            return
         if not self._validate_solution_safety(solution, "Configure Transmitter"):
             return
 
@@ -710,6 +725,8 @@ class ControllerMixin:
         the solution from the on-screen parameters rather than re-using
         the buffered file-loaded solution.
         """
+        if self._locked_by_advanced_run("Reset"):
+            return
         self._configured = False
         if self._solution_loaded:
             released = self._solution_name
@@ -727,6 +744,24 @@ class ControllerMixin:
     @pyqtSlot()
     def start_sonication(self):
         """Start the beam, transitioning to RUNNING state."""
+        self._start_sonication()
+
+    def _locked_by_advanced_run(self, title):
+        """True (after telling the user) while an advanced run owns the settings.
+
+        The run reprograms the TX from the settings captured at its Start;
+        a change in between would reach the next run unchecked. The run's
+        own reconfiguring is let through.
+        """
+        if self._ar_phase == "idle" or self._ar_reconfiguring:
+            return False
+        self._emit_device_error(title, "Settings can't change during an advanced run. Stop it first.")
+        return True
+
+    def _start_sonication(self, force_hv_on=False):
+        """start_sonication, optionally turning HV on (and waiting for it to
+        settle) whatever the HV mode -- used after an advanced run's
+        power-off rest, which cut the rail."""
         if self._state != READY:
             return
         if not self._hv_ready():
@@ -740,7 +775,7 @@ class ControllerMixin:
             # Determine HV control parameters based on enable mode.
             # AUTO already energized HV at Configure time, but turn_hv_on=True
             # is harmless if it's already on. WHILE_RUNNING turns it on now.
-            turn_hv_on = self._hv_enable_mode == HV_EN_WHILE_RUNNING
+            turn_hv_on = self._hv_enable_mode == HV_EN_WHILE_RUNNING or force_hv_on
             wait_for_settle = turn_hv_on  # Always wait for settle
 
             # Enable the unsolicited STATUS stream so the UI gets push-mode
@@ -834,6 +869,8 @@ class ControllerMixin:
     @pyqtSlot(int)
     def setHvEnableMode(self, hv_en_mode):
         """Set HV enable mode (0=AUTO, 1=ON, 2=OFF, 3=WHILE_RUNNING)."""
+        if self._locked_by_advanced_run("HV Enable Mode"):
+            return
         if hv_en_mode not in HV_EN_MODES:
             logger.warning(f"Invalid HV enable mode: {hv_en_mode}")
             return
@@ -1066,6 +1103,8 @@ class ControllerMixin:
         Returns:
             bool: True if loading was successful, False otherwise
         """
+        if self._locked_by_advanced_run("Load Solution"):
+            return False
         try:
             logger.info(f"Attempting to load solution from: {file_path}")
             
@@ -1264,6 +1303,7 @@ class ControllerMixin:
         calibration = solution["voltage_calibration"]
         calibration["module_sensitivities"] = []
         calibration["pending"] = not self._txConnected
+        self._loaded_solution_module_uids = []
         if calibration["pending"]:
             logger.warning(
                 f"No transmitter connected: file voltage {float(calibration['voltage']):.3f} V "
@@ -1277,6 +1317,7 @@ class ControllerMixin:
                     self._module_sensitivity(module, frequency_hz)
                     for module in range(self._num_modules_connected)
                 ]
+                self._loaded_solution_module_uids = self._connected_module_uids() or []
             finally:
                 self._interface_mutex.unlock()
             if all(value is None for value in calibration["module_sensitivities"]):
@@ -1322,6 +1363,8 @@ class ControllerMixin:
         Configure itself, so the programmed voltage always matches the
         field. Returns the loaded solution's settings for the page.
         """
+        if self._locked_by_advanced_run("Voltage Scaling"):
+            return self.getLoadedSolutionSettings()
         solution = self._loaded_solution_data
         if not self._solution_loaded or not solution or "voltage_calibration" not in solution:
             return {}
@@ -1332,6 +1375,46 @@ class ControllerMixin:
             self._apply_voltage_calibration(solution)
         return self.getLoadedSolutionSettings()
 
+
+    def _connected_module_uids(self):
+        """Raw hardware IDs of the connected modules, or None if any can't be read.
+
+        The caller holds ``_interface_mutex``.
+        """
+        try:
+            return [self.interface.txdevice.get_hardware_id(module, raw_hex=True)
+                    for module in range(self._num_modules_connected)]
+        except (LIFUError, OSError, ValueError, TypeError) as e:
+            logger.warning(f"Could not read the modules' hardware IDs: {e}")
+            return None
+
+    def _scaled_for_other_modules(self, solution):
+        """True if a loaded JSON file's voltage was scaled to modules that
+        are no longer the ones connected.
+
+        A loaded file survives a TX disconnect, but its sensitivities are
+        read only at load. Swapping the transmitter would otherwise program
+        a voltage scaled for the old modules. An advanced run's own power
+        cycles bring back the same modules, so they pass. IDs that can't be
+        read count as changed.
+        """
+        if not self._solution_loaded:
+            return False
+        calibration = solution.get("voltage_calibration") or {}
+        if not calibration.get("enabled", True) or calibration.get("pending"):
+            return False
+        if all(value is None for value in calibration.get("module_sensitivities") or []):
+            return False  # the file's own voltage is used, nothing was scaled
+        self._interface_mutex.lock()
+        try:
+            current = self._connected_module_uids()
+        finally:
+            self._interface_mutex.unlock()
+        if current != self._loaded_solution_module_uids:
+            logger.warning(f"Loaded file was scaled for modules {self._loaded_solution_module_uids}, "
+                           f"connected modules are {current}")
+            return True
+        return False
 
     def _module_sensitivity(self, module, frequency_hz):
         """Return *module*'s sensitivity at *frequency_hz*, or None if it has none.
@@ -1537,6 +1620,8 @@ class ControllerMixin:
     @pyqtSlot()
     def makeLoadedSolutionEditable(self):
         """Release the loaded solution data while preserving UI field values."""
+        if self._locked_by_advanced_run("Edit Solution"):
+            return
         if self._hv_enable_mode == HV_EN_ON and self._hvConnected:
             try:
                 self.interface.hvcontroller.turn_hv_off()

@@ -17,7 +17,10 @@ Rectangle {
     // Controls are only locked when a solution was loaded from disk or while
     // the device is actively running. Manually-entered solutions can be
     // re-configured at any other time.
+    // An advanced run reprograms the TX from the settings captured at its
+    // Start, so they stay locked for the whole run, rests included.
     property bool controlsReadOnly: solutionLoaded || LIFUConnector.state === 3
+                                    || LIFUConnector.advancedRunActive
     // True once Configure has succeeded at least once on the current
     // (manually-entered) solution. Drives the green/orange field coloring
     // and the on-commit directSet behavior.
@@ -723,7 +726,9 @@ Rectangle {
             startC: Number(advStartC),
             shutoffC: Number(advShutoffC),
             restMinutes: Number(advRestMinutes) / (advRestInSeconds ? 60 : 1),
-            powerOff: advPowerOff
+            powerOff: advPowerOff,
+            // A pinned focus is pinned again after every reprogram.
+            runProfile: runProfile
         }
     }
 
@@ -2152,7 +2157,7 @@ Rectangle {
                                 implicitHeight: 24
                                 padding: 0
                                 text: "Scale voltage based on transmitter sensitivity"
-                                enabled: LIFUConnector.state < 2
+                                enabled: LIFUConnector.state < 2 && !LIFUConnector.advancedRunActive
                                          && (voltageScaling.possible === true || voltageScaling.pending === true)
                                 contentItem: Text {
                                     text: scaleVoltageCheckbox.text
@@ -2224,7 +2229,7 @@ Rectangle {
                             // parameter fields) the user can still flip
                             // Single/Continuous/Sequence; once Configured
                             // the change commits via directSetSequence().
-                            enabled: LIFUConnector.state !== 3
+                            enabled: LIFUConnector.state !== 3 && !LIFUConnector.advancedRunActive
 							
 							background: Rectangle {
                                 color: "#222"
@@ -2924,7 +2929,7 @@ Rectangle {
                         // Stays live with a loaded solution and before
                         // Configure, which applies the choice. Switching
                         // mid-run would change the beam under the operator.
-                        enabled: LIFUConnector.state !== 3
+                        enabled: LIFUConnector.state !== 3 && !LIFUConnector.advancedRunActive
 
                         // Assigned, not bound: ComboBox resets currentIndex
                         // imperatively on model change, tearing a binding down.
@@ -3200,7 +3205,7 @@ Rectangle {
                             implicitWidth: 140
                             implicitHeight: 26
                             font.pixelSize: 12
-                            enabled: LIFUConnector.state !== 3  // Disable when running
+                            enabled: LIFUConnector.state !== 3 && !LIFUConnector.advancedRunActive
                             Component.onCompleted: currentIndex = LIFUConnector.hvEnableMode
                             background: Rectangle {
                                 color: "#222"
