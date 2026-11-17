@@ -38,8 +38,14 @@ __all__ = ["AdvancedRunMixin"]
 FIRMWARE_SHUTOFF_C = 75.0
 # How long the TX may take to re-enumerate after 12 V comes back on.
 POWER_ON_TIMEOUT_S = 90.0
-# A temperature older than this is not trusted to start or stop a repetition.
+# A temperature older than this is not trusted to start a run.
 TEMP_MAX_AGE_S = 15.0
+# Shortest time a running run may go without fresh readings from every
+# module before it is stopped (see _ar_running_stale_limit_s).
+RUNNING_TEMP_MAX_AGE_S = 30.0
+# A stop that fails is retried this many times, this far apart, with HV off.
+STOP_RETRIES = 3
+STOP_RETRY_INTERVAL_S = 5.0
 # Spacing of the cooldown samples logged while the TX stays powered.
 COOLING_LOG_INTERVAL_S = 10.0
 
@@ -110,33 +116,39 @@ class AdvancedRunMixin:
             self._emit_device_error("Advanced Run", problem)
             return False
 
+        try:
+            run_profile = int(settings.get("runProfile", 0) or 0)
+        except (TypeError, ValueError):
+            run_profile = 0
         self._ar_configure_args = list(configure_args)
         self._ar_settings = {"repetitions": reps, "start_c": start_c, "shutoff_c": shutoff_c,
-                             "rest_min": rest_min, "power_off": power_off}
+                             "rest_min": rest_min, "power_off": power_off,
+                             "run_profile": run_profile}
         self._ar_modules = self._num_modules_connected
         self._ar_rep = 1
         self._ar_temps = {}
-        self._ar_open_log()
-        self._ar_log_header()
-        self._ar_timer.start()
+        self._ar_needs_configure = False
+        self._ar_hv_restore = False
+        self._ar_stop_attempts = 0
+        # Anything here can fail (an unwritable logs folder, a full disk);
+        # an exception escaping this QML slot would abort the app.
         try:
+            self._ar_open_log()
+            self._ar_log_header()
+            self._ar_timer.start()
             self._ar_begin_rep()
         except Exception as e:
             logger.exception("Advanced run failed to start")
             self._ar_abort(f"Unexpected error: {e}")
-        return self._ar_phase != "idle"
+        return self._ar_phase not in ("idle", "stopping")
 
     @pyqtSlot()
     def stopAdvancedRun(self):
         """Abort the run, stopping a repetition in progress and powering the TX back up."""
-        if self._ar_phase == "idle":
+        if self._ar_phase in ("idle", "stopping"):
             return
         self._ar_write("Advanced run stopped by user.")
-        if self._state == RUNNING:
-            self.stop_sonication()
-        if self._ar_phase in ("powered_off", "powering_on"):
-            self._ar_set_12v(True)
-        self._ar_finish("Stopped by user.")
+        self._ar_halt("Stopped by user.")
 
     # ------------------------------------------------------------------
     # State machine
@@ -156,17 +168,25 @@ class AdvancedRunMixin:
         if phase == "idle":
             self._ar_timer.stop()
             return
+        now = time.monotonic()
+        if phase == "stopping":
+            self._ar_retry_stop(now)
+            return
         if phase not in ("powered_off", "powering_on") and not self._txConnected:
             self._ar_abort("The transmitter disconnected during the advanced run.")
             return
-        now = time.monotonic()
 
         if phase == "running":
             if self._state != RUNNING:
                 self._ar_rep_finished()
                 return
-            reading = self._ar_hottest()
+            limit = self._ar_running_stale_limit_s()
+            reading = self._ar_hottest(max_age=limit)
             if reading is None:
+                # Without fresh readings from every module the shutoff
+                # temperature can't be enforced, so the run stops.
+                self._ar_abort(f"No temperature reading from every module for {limit:g} s; "
+                               f"the shutoff temperature can't be enforced.")
                 return
             temp, ambient = reading
             self._ar_write(f"TX Temp: {temp:.2f}C, Ambient Temp: {ambient:.2f}C")
@@ -177,6 +197,8 @@ class AdvancedRunMixin:
                 self.stop_sonication()
                 if self._state != RUNNING:
                     self._ar_rep_finished()
+                else:
+                    self._ar_abort("The transmitter did not stop at the shutoff temperature.")
             return
 
         if phase == "cooling":
@@ -269,12 +291,17 @@ class AdvancedRunMixin:
                            f"starting temperature of {s['start_c']:g}C.")
         self._ar_write(f"TX temperature of {temp:.2f}C is within the allowed starting "
                        f"temperature of {s['start_c']:g}C. Proceeding with test case {k}.")
-        if self._state != READY and not self._ar_configure():
+        # Every run after the first is programmed again from the settings
+        # captured at Start, so nothing changed in between reaches it.
+        if (self._state != READY or self._ar_needs_configure) and not self._ar_configure():
             return
-        self.start_sonication()
+        # After a power-off rest the HV rail is off whatever the HV mode;
+        # turning it on here also waits for it to settle.
+        self._start_sonication(force_hv_on=self._ar_hv_restore)
         if self._state != RUNNING:
             self._ar_abort(f"Run {k} did not start.")
             return
+        self._ar_hv_restore = False
         self._ar_phase = "running"
         self._ar_rep_started = time.monotonic()
         self._ar_set_status("running")
@@ -290,10 +317,12 @@ class AdvancedRunMixin:
             self._ar_finish(f"Finished {n}/{n} runs.")
             return
         self._ar_rep += 1
+        self._ar_needs_configure = True
         self._ar_begin_rep()
 
     def _ar_power_off(self):
         self._ar_power_cycling = True
+        self._ar_hv_restore = True
         self._ar_set_12v(False)
         self._ar_phase = "powered_off"
         self._ar_deadline = time.monotonic() + self._ar_settings["rest_min"] * 60
@@ -335,10 +364,24 @@ class AdvancedRunMixin:
             self._ar_power_off()
 
     def _ar_configure(self):
-        self.configure_transmitter(*self._ar_configure_args)
-        if self._state != READY:
-            self._ar_abort("Configure failed while reprogramming the transmitter.")
-            return False
+        """Program the TX from the settings captured at Start, pinned profile included."""
+        args = self._ar_configure_args
+        self._ar_reconfiguring = True
+        try:
+            self.configure_transmitter(*args)
+            if self._state != READY:
+                self._ar_abort("Configure failed while reprogramming the transmitter.")
+                return False
+            profile = self._ar_settings.get("run_profile", 0)
+            # set_solution puts the device back to cycling every focus;
+            # the Configure button pins the chosen one again the same way.
+            if profile > 0 and not self.directSetRunProfile(profile, args[5], args[6], args[7],
+                                                            args[8], args[10]):
+                self._ar_abort(f"Could not select focus {profile} after reprogramming the transmitter.")
+                return False
+        finally:
+            self._ar_reconfiguring = False
+        self._ar_needs_configure = False
         return True
 
     def _ar_set_12v(self, on):
@@ -360,17 +403,81 @@ class AdvancedRunMixin:
 
     def _ar_abort(self, message):
         self._ar_write(f"Advanced run aborted: {message}", logging.ERROR)
+        self._ar_halt(f"Aborted: {message}")
+        self._emit_device_error("Advanced Run", message)
+
+    def _ar_halt(self, status):
+        """Stop the TX and end the run with *status*.
+
+        A failed stop leaves the app RUNNING because the TX may still be
+        transmitting. The run then does not end: HV is turned off at once
+        and the stop is retried, and only after that is an outcome reported.
+        """
         if self._state == RUNNING:
             self.stop_sonication()
+        if self._state == RUNNING:
+            self._ar_write("The transmitter did not stop. Turning HV off.", logging.ERROR)
+            self._ar_hv_emergency_off()
+            self._ar_phase = "stopping"
+            self._ar_pending_status = status
+            self._ar_stop_attempts = 0
+            self._ar_deadline = time.monotonic() + STOP_RETRY_INTERVAL_S
+            self._ar_set_status("the transmitter did not stop; HV off, retrying the stop")
+            self._ar_timer.start()
+            return
         if self._ar_phase in ("powered_off", "powering_on"):
             self._ar_set_12v(True)
-        self._ar_finish(f"Aborted: {message}")
+        self._ar_finish(status)
+
+    def _ar_retry_stop(self, now):
+        """Phase "stopping": retry a failed stop until it works or retries run out."""
+        if self._state != RUNNING:
+            # A STOPPED frame or a TX disconnect ended it meanwhile.
+            self._ar_write("The transmitter stopped.")
+            self._ar_finish(self._ar_pending_status)
+            return
+        if now < self._ar_deadline:
+            return
+        self._ar_stop_attempts += 1
+        self.stop_sonication()
+        if self._state != RUNNING:
+            self._ar_write("The transmitter stopped.")
+            self._ar_finish(self._ar_pending_status)
+            return
+        if self._ar_stop_attempts < STOP_RETRIES:
+            self._ar_deadline = now + STOP_RETRY_INTERVAL_S
+            return
+        hv = "HV is off" if self._ar_hv_confirmed_off else "HV could not be confirmed off"
+        message = (f"The transmitter did not stop after {STOP_RETRIES + 1} attempts and {hv}. "
+                   "Press Stop again, or turn the system off.")
+        self._ar_write(message, logging.ERROR)
+        self._ar_finish(f"{self._ar_pending_status} The transmitter did not stop.")
         self._emit_device_error("Advanced Run", message)
+
+    def _ar_hv_emergency_off(self):
+        """Turn HV off and record whether the console confirms it."""
+        self._ar_hv_confirmed_off = False
+        if not self._hvConnected:
+            self._ar_write("HV could not be turned off: the console is not connected.", logging.ERROR)
+            return
+        self._interface_mutex.lock()
+        try:
+            self.interface.hvcontroller.turn_hv_off()
+            self._ar_hv_confirmed_off = not self.interface.hvcontroller.get_hv_status()
+        except Exception as e:
+            self._ar_write(f"Could not turn HV off: {e}", logging.ERROR)
+        finally:
+            self._interface_mutex.unlock()
+        self._ar_write("HV turned off." if self._ar_hv_confirmed_off
+                       else "HV could not be confirmed off.",
+                       logging.WARNING if self._ar_hv_confirmed_off else logging.ERROR)
 
     def _ar_finish(self, status):
         self._ar_timer.stop()
         self._ar_phase = "idle"
         self._ar_power_cycling = False
+        self._ar_hv_restore = False
+        self._ar_needs_configure = False
         self._ar_status = status
         self._ar_close_log()
         self.advancedRunChanged.emit()
@@ -382,13 +489,38 @@ class AdvancedRunMixin:
     def _ar_on_temperature(self, module, tx_temp, amb_temp):
         self._ar_temps[int(module)] = (float(tx_temp), float(amb_temp), time.monotonic())
 
-    def _ar_hottest(self, refresh=False):
-        """(tx, ambient) of the hottest module with a recent reading, or None."""
+    def _ar_hottest(self, refresh=False, max_age=TEMP_MAX_AGE_S):
+        """(tx, ambient) of the hottest module, or None.
+
+        None unless every module the run started with has a reading at most
+        *max_age* seconds old: a module whose reading went stale may be the
+        hottest one.
+        """
         if refresh and self._state != RUNNING:
             self.queryTxTemperature()
         now = time.monotonic()
-        fresh = [(t, a) for t, a, at in self._ar_temps.values() if now - at <= TEMP_MAX_AGE_S]
-        return max(fresh) if fresh else None
+        readings = []
+        for module in range(max(self._ar_modules, 1)):
+            entry = self._ar_temps.get(module)
+            if entry is None or now - entry[2] > max_age:
+                return None
+            readings.append(entry[:2])
+        return max(readings)
+
+    def _ar_running_stale_limit_s(self):
+        """How long a run may go without fresh readings from every module.
+
+        Module 0's temperature comes from the STATUS frame the firmware sends
+        at the end of each pulse train, so the limit allows two of the
+        longest gaps between frames, and at least RUNNING_TEMP_MAX_AGE_S.
+        """
+        args = self._ar_configure_args
+        try:
+            train_s = float(args[5]) / 1000 * int(args[6])
+            gap_s = train_s if args[10] == "Single" else max(float(args[7]), train_s)
+        except (IndexError, TypeError, ValueError):
+            gap_s = 0.0
+        return max(RUNNING_TEMP_MAX_AGE_S, 2 * gap_s + 10)
 
     # ------------------------------------------------------------------
     # Run log
