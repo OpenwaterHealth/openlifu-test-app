@@ -90,20 +90,44 @@ def normalize_serial_number(raw: str) -> str | None:
     return sn if _SERIAL_RE.match(sn) else None
 
 
-def _set_in_place(data: dict, values: dict) -> dict:
-    """``data`` with ``values`` set and nothing else touched: each key's
-    first match (any case) is replaced in place under the given name,
-    duplicates are dropped, and missing keys go first, in ``values`` order."""
-    out, placed = {}, set()
+# Order of the identity keys in a user config (the default config's and
+# a test report's).
+IDENTITY_KEYS = ("sn", "hwid", "hw_ver", "fw_ver", "sdk_ver", "updated")
+
+
+def _set_in_place(data: dict, values: dict, order=IDENTITY_KEYS) -> dict:
+    """``data`` with ``values`` set and nothing else touched.
+
+    Each key's first match (any case) is replaced in place under the given
+    name, and duplicates are dropped. A missing key goes next to its
+    neighbours in *order*: right after the nearest earlier one present,
+    else right before the nearest later one, else first. So adding
+    ``hwid`` to ``{"sn", "updated", "module"}`` gives ``sn, hwid, updated,
+    module``, never ``hwid`` above ``sn``. Keys outside *order* keep their
+    places; missing ones of those go first.
+    """
+    items, placed = [], set()
     for k, v in data.items():
         key = next((n for n in values if n == k.lower()), None)
         if key is None:
-            out[k] = v
+            items.append((k, v))
         elif key not in placed:
-            out[key] = values[key]
+            items.append((key, values[key]))
             placed.add(key)
-    missing = {k: v for k, v in values.items() if k not in placed}
-    return {**missing, **out}
+    rank = {key: i for i, key in enumerate(order)}
+    missing = [k for k in values if k not in placed]
+    missing.sort(key=lambda k: rank.get(k, -1))
+    for key in missing:
+        names = [k for k, _ in items]
+        if key in rank:
+            # Any case counts: a kept "HW_VER" still marks hw_ver's place.
+            before = [i for i, n in enumerate(names) if rank.get(n.lower(), len(order)) < rank[key]]
+            after = [i for i, n in enumerate(names) if rank[key] < rank.get(n.lower(), -1)]
+            at = before[-1] + 1 if before else (after[0] if after else 0)
+        else:
+            at = 0
+        items.insert(at, (key, values[key]))
+    return dict(items)
 
 
 class SettingsMixin:
@@ -888,12 +912,17 @@ class SettingsMixin:
                           overwrite: bool = False) -> None:
         """Write the target's serial number into its user config.
 
-        Console: the whole default-config identity block. ``sn`` (and
+        Both targets get the default-config identity block. ``sn`` (and
         ``hw_ver`` when given; blank keeps the device's) come from the
         operator; ``hwid`` and ``fw_ver`` are read live from the device,
-        ``sdk_ver`` is this app's SDK, ``updated`` is now; written first.
-        TX module: only ``sn`` and ``updated`` change (``hw_ver`` is ignored); its other
-        keys, including ``module`` and ``device``, stay exactly as they are.
+        ``sdk_ver`` is this app's SDK, ``updated`` is now.
+        Console: the identity block is written first.
+        TX module: each identity key is replaced where it already is (any
+        case; duplicates dropped) and new ones go first, so a config loaded
+        from a test report keeps its layout, and its ``freq``, ``module``
+        (calibration) and ``device`` blocks are never touched. A blank
+        ``hw_ver`` leaves the module's own value, the test report's
+        hardware rev included, exactly as it is.
         Either way every other key is kept, and a blank (never written)
         config starts fresh. A config the device reports but the SDK can't
         parse is never overwritten.
@@ -912,8 +941,6 @@ class SettingsMixin:
                 f"Not a valid serial number: {serial.strip()!r}. Use 1-32 letters, "
                 "digits, '.', '_' or '-'.")
             return
-        if _parse_tx_module(target) is not None:
-            hw_ver = ""   # TX: only sn is written
         hw = normalize_serial_number(hw_ver) if (hw_ver or "").strip() else ""
         if hw is None:
             self.userConfigStatus.emit(
@@ -960,10 +987,24 @@ class SettingsMixin:
                     return
 
                 if module is not None:
-                    # TX: only sn and updated change. Every other key (module,
-                    # device, test-report data...) stays as-is, in place.
-                    identity = {SERIAL_NUMBER_KEY: sn,
-                                "updated": time.strftime("%Y-%m-%d %H:%M:%S")}
+                    # TX: the identity keys are set in place; every other key
+                    # (freq, module, device, test-report data...) is kept.
+                    identity = {
+                        SERIAL_NUMBER_KEY: sn,
+                        "hwid": dev.get_hardware_id(base58=True, **addr),
+                        "hw_ver": hw,
+                        "fw_ver": dev.get_version(**addr),
+                        "sdk_ver": LIFUInterface.get_sdk_version(),
+                        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    if not hw:
+                        # Blank keeps the module's hw_ver, whatever its case;
+                        # a module without one gets an empty one, as the
+                        # console does.
+                        if any(k.lower() == "hw_ver" for k in data):
+                            del identity["hw_ver"]
+                        else:
+                            identity["hw_ver"] = ""
                     data = _set_in_place(data, identity)
                 else:
                     identity = {
