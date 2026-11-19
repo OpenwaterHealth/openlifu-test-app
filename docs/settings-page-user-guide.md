@@ -95,11 +95,57 @@ default; click **Read Config** to populate it.
 | Button | Behaviour |
 |--------|-----------|
 | **Read Config** | Read the user config from the selected target into the editor |
-| **Load Test Report** | Open a file picker for an Excel test report (`.xlsx`/`.xls`). The matching configuration values are converted via [`test_reports/test_reports.py`](../test_reports/test_reports.py) and pasted into the editor. The report's device serial is checked against the selected target |
+| **Load Test Report** | Open a file picker for an Excel test report (`.xlsx`/`.xls`). The matching configuration values are converted via [`test_reports/test_reports.py`](../test_reports/test_reports.py) and pasted into the editor. The report is matched to the selected TX module by hardware ID (see [Test reports](#test-reports)) |
 | **Write Config** | Validate the editor contents as JSON and push them to the selected target's persistent storage |
 
 A status line above the editor flashes green on success or red on
 failure for ~4 seconds, then hides itself.
+
+### Serial number and identity
+
+Type or scan a serial number and press **Enter** or **Assign**. The
+optional **Hardware Version** box is there for the console and for TX
+modules; it is kept between scans, and left blank it keeps the value
+already on the device. Assign writes the identity keys to the selected
+target:
+
+| Key | Value |
+|-----|-------|
+| `sn` | The serial number entered |
+| `hwid` | The device's hardware ID (full 12-byte form), read live |
+| `hw_ver` | The hardware version entered; blank keeps the device's |
+| `fw_ver` | The device's firmware version, read live |
+| `sdk_ver` | This app's SDK version |
+| `updated` | Now |
+
+On the console the identity keys are written first. On a TX module each
+key is replaced where it already is, and a missing one is added next to
+the identity keys around it, keeping the order above (`sn` before
+`hwid`, and so on). A config loaded from a test report keeps its layout, and its
+`freq`, `module` (calibration) and `device` blocks are never changed.
+Every other key is kept on both. A different serial already on the
+device is only replaced after you confirm.
+
+On a TX module that holds calibration (`module.sensitivity`), Assign
+first checks that the stored `hwid` is this module's, in its full form or
+the legacy 6-byte one (which it upgrades). If the calibration is for
+another module, or has no `hwid`, Assign is refused and nothing is
+written: stamping this module's `hwid` on it would let another module's
+calibration pass as this one's. Load the module's own test report first.
+
+### Test reports
+
+**Load Test Report** finds each value by its row label (Serial Number,
+Frequency, Hardware Rev, Hardware ID, Firmware Version, and SDK Version
+under Test Information), not by its row number, so a report with a row
+added or removed still loads. Serial Number and Frequency are required.
+Hardware Rev, Hardware ID, Firmware Version and SDK Version are left out
+of the config when the report has no such row or leaves it empty. Values
+are trimmed, so a serial typed with a trailing space loads without it.
+
+The report is matched to the module by hardware ID. A different firmware
+version stops the load; a missing one is only logged. Versions compare
+with or without a leading `v` (`v2.0.8` matches `2.0.8`).
 
 ### JSON shape
 

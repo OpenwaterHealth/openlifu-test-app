@@ -1606,9 +1606,8 @@ Rectangle {
                             readonly property bool canUse:
                                 !settingsPage.consoleUserConfigBlocked
                                 && !settingsPage.serialWriteBusy
-                            // What the device last returned (read or write).
-                            readonly property string current:
-                                settingsPage.configValue(settingsPage.userConfigBaseline, "sn")
+                            // The device's hw_ver as last read or written,
+                            // shown as what a blank hardware version keeps.
                             readonly property string currentHwVer:
                                 settingsPage.configValue(settingsPage.userConfigBaseline, "hw_ver")
 
@@ -1705,23 +1704,30 @@ Rectangle {
                                     }
 
                                     Behavior on color { ColorAnimation { duration: 150 } }
+
+                                    // What Assign writes besides the serial. A
+                                    // HoverHandler, not the MouseArea, so it
+                                    // shows while the button is disabled too.
+                                    HoverHandler { id: assignHover }
+                                    ToolTip.visible: assignHover.hovered
+                                    ToolTip.delay: 2000
+                                    ToolTip.text: "Assign also fills hwid, fw_ver, sdk_ver and updated fields."
                                 }
                             }
 
                             // Hardware version: optional, kept between scans
                             // (a batch usually shares one). Blank keeps the
-                            // device's current hw_ver. Console only: a TX
-                            // write changes nothing but sn.
+                            // device's current hw_ver (for a TX, the test
+                            // report's hardware rev). Cleared on a target
+                            // change: console and TX versions differ.
                             Text {
                                 text: "Hardware Version (Optional):"
                                 color: "#BDC3C7"
                                 font.pixelSize: 12
-                                visible: settingsPage.configTargetIsConsole
                             }
 
                             TextField {
                                 id: hwVersionField
-                                visible: settingsPage.configTargetIsConsole
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 32
                                 font.pixelSize: 13
@@ -1755,28 +1761,6 @@ Rectangle {
                                     font.pixelSize: 13
                                     elide: Text.ElideRight
                                 }
-                            }
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: serialNumberBlock.current !== ""
-                                      ? "On device: " + serialNumberBlock.current
-                                        + (serialNumberBlock.currentHwVer !== ""
-                                           ? " · hw " + serialNumberBlock.currentHwVer : "")
-                                      : "Read Config to see the stored serial number."
-                                color: serialNumberBlock.current !== "" ? "#2ECC71" : "#7F8C8D"
-                                font.pixelSize: 11
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: settingsPage.configTargetIsConsole
-                                      ? "Assign also fills hwid, fw_ver, sdk_ver and updated."
-                                      : "Assign sets sn and updated; everything else on the module is kept."
-                                color: "#7F8C8D"
-                                font.pixelSize: 11
-                                wrapMode: Text.WordWrap
                             }
                         }
 
