@@ -71,6 +71,10 @@ Rectangle {
     // ----------------------------------------------------------------
     property string userConfigBaseline: ""
     property bool userConfigGenerated: false
+    // Load Test Report fills the editor through userConfigRead, the same
+    // signal as a Read Config, so the baseline matches the report rather
+    // than the device. This flag keeps it pending until it is written.
+    property bool userConfigFromReport: false
 
     // Held while the editor and its baseline are being set together. They
     // are two assignments and bindings re-evaluate between them, so the gap
@@ -89,6 +93,7 @@ Rectangle {
         userConfigEditor.text = text
         userConfigBaseline = text
         userConfigGenerated = false
+        userConfigFromReport = false
         userConfigUpdating = false
     }
 
@@ -97,12 +102,15 @@ Rectangle {
             ? "Config modified, click 'Write Config' to save the changes."
             : userConfigGenerated
               ? "Default config generated. Click 'Write Config' to program the device."
-              : ""
+              : userConfigFromReport
+                ? "Test report loaded. Click 'Write Config' to program the device."
+                : ""
 
     // Clears the pending state: the editor now matches the device.
     function markUserConfigSaved(text) {
         userConfigBaseline = text
         userConfigGenerated = false
+        userConfigFromReport = false
     }
 
     // The target the editor's contents belong to. Tracked by name rather
@@ -614,6 +622,10 @@ Rectangle {
 
         function onTestReportLoaded(success, message) {
             userConfigStatusText.flash(message, success ? "#2ECC71" : "#E74C3C")
+            // The report is in the editor (userConfigRead came first) but
+            // not on the device yet.
+            if (success)
+                settingsPage.userConfigFromReport = true
         }
 
         function onTxDeviceInfoReceived(modulesList) {
@@ -1606,17 +1618,13 @@ Rectangle {
                             readonly property bool canUse:
                                 !settingsPage.consoleUserConfigBlocked
                                 && !settingsPage.serialWriteBusy
-                            // The device's hw_ver as last read or written,
-                            // shown as what a blank hardware version keeps.
-                            readonly property string currentHwVer:
-                                settingsPage.configValue(settingsPage.userConfigBaseline, "hw_ver")
-
                             function assign() {
                                 var sn = serialNumberField.text.trim()
                                 if (sn === "" || !canUse) return
                                 // The result replaces the editor, so don't
-                                // silently drop unwritten edits.
-                                if (settingsPage.userConfigDirty) {
+                                // silently drop unwritten edits, a loaded
+                                // test report or a generated default.
+                                if (settingsPage.pendingWriteMessage !== "") {
                                     userConfigStatusText.flash(
                                         "Write or revert the editor changes before assigning a serial number.",
                                         "#E74C3C")
@@ -1754,9 +1762,7 @@ Rectangle {
                                     leftPadding: hwVersionField.leftPadding
                                     verticalAlignment: Text.AlignVCenter
                                     visible: hwVersionField.length === 0
-                                    text: serialNumberBlock.currentHwVer !== ""
-                                          ? "Blank keeps " + serialNumberBlock.currentHwVer
-                                          : "e.g. rev-B"
+                                    text: "e.g. rev-B"
                                     color: "#7F8C8D"
                                     font.pixelSize: 13
                                     elide: Text.ElideRight
@@ -1873,73 +1879,6 @@ Rectangle {
                                 hoverEnabled: true
                                 acceptedButtons: Qt.NoButton
                                 visible: !readConfigButton.canUse
-                            }
-
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                        }
-
-                        // Add Device Configuration
-                        //
-                        // Lifts the array-level "device" block (id/name/template/modules)
-                        // into the lead module's (TX 0) user_config. Only enabled when:
-                        //   * a TX device is connected,
-                        //   * the target component is "TX 0" (the lead module),
-                        //   * the editor holds something parseable,
-                        //   * no connected device is below the app's hard
-                        //     minimum firmware version.
-                        // The actual prompt + merge happens in addDeviceConfigDialog.
-                        Rectangle {
-                            id: addDeviceConfigButton
-                            Layout.fillWidth: true
-                            height: 40
-                            radius: 6
-                            // Editor non-empty?
-                            property bool editorHasContent: userConfigEditor.text.trim().length > 0
-                            // Target is TX 0 specifically?
-                            property bool targetIsLeadModule:
-                                configTargetSelector.enabled &&
-                                configTargetSelector.currentText === "TX 0"
-                            property bool canUse:
-                                LIFUConnector.txConnected &&
-                                targetIsLeadModule &&
-                                editorHasContent &&
-                                !LIFUConnector.firmwareUpdateRequired
-                            color: !canUse
-                                ? "#2A2F3B"
-                                : (addDeviceConfigArea.containsMouse ? "#8E44AD" : "#3A3F4B")
-                            border.color: !canUse
-                                ? "#3E4E6F"
-                                : (addDeviceConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
-                            opacity: canUse ? 1.0 : 0.55
-
-                            Text {
-                                anchors.centerIn: parent
-                                text: "Add Device Configuration"
-                                color: "white"
-                                font.pixelSize: 13
-                                font.weight: Font.Medium
-                            }
-
-                            MouseArea {
-                                id: addDeviceConfigArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                enabled: addDeviceConfigButton.canUse
-                                onClicked: addDeviceConfigDialog.openForCurrentConfig()
-                            }
-
-                            ToolTip.visible: addDeviceConfigHoverArea.containsMouse
-                                && LIFUConnector.firmwareUpdateRequired
-                            ToolTip.text: "Disabled: update transmitter firmware to "
-                                + LIFUConnector.minTransmitterFirmwareVersion
-                                + " or newer (Firmware Update section above)."
-                            ToolTip.delay: 400
-                            MouseArea {
-                                id: addDeviceConfigHoverArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                acceptedButtons: Qt.NoButton
-                                visible: !addDeviceConfigButton.canUse
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -2145,6 +2084,73 @@ Rectangle {
                                 hoverEnabled: true
                                 acceptedButtons: Qt.NoButton
                                 visible: !writeConfigButton.canUse
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Add Device Configuration
+                        //
+                        // Lifts the array-level "device" block (id/name/template/modules)
+                        // into the lead module's (TX 0) user_config. Only enabled when:
+                        //   * a TX device is connected,
+                        //   * the target component is "TX 0" (the lead module),
+                        //   * the editor holds something parseable,
+                        //   * no connected device is below the app's hard
+                        //     minimum firmware version.
+                        // The actual prompt + merge happens in addDeviceConfigDialog.
+                        Rectangle {
+                            id: addDeviceConfigButton
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            // Editor non-empty?
+                            property bool editorHasContent: userConfigEditor.text.trim().length > 0
+                            // Target is TX 0 specifically?
+                            property bool targetIsLeadModule:
+                                configTargetSelector.enabled &&
+                                configTargetSelector.currentText === "TX 0"
+                            property bool canUse:
+                                LIFUConnector.txConnected &&
+                                targetIsLeadModule &&
+                                editorHasContent &&
+                                !LIFUConnector.firmwareUpdateRequired
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : (addDeviceConfigArea.containsMouse ? "#8E44AD" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (addDeviceConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Add Device Configuration"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: addDeviceConfigArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: addDeviceConfigButton.canUse
+                                onClicked: addDeviceConfigDialog.openForCurrentConfig()
+                            }
+
+                            ToolTip.visible: addDeviceConfigHoverArea.containsMouse
+                                && LIFUConnector.firmwareUpdateRequired
+                            ToolTip.text: "Disabled: update transmitter firmware to "
+                                + LIFUConnector.minTransmitterFirmwareVersion
+                                + " or newer (Firmware Update section above)."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: addDeviceConfigHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !addDeviceConfigButton.canUse
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
