@@ -98,6 +98,13 @@ default; click **Read Config** to populate it.
 | **Load Test Report** | Open a file picker for an Excel test report (`.xlsx`/`.xls`). The matching configuration values are converted via [`test_reports/test_reports.py`](../test_reports/test_reports.py) and pasted into the editor. The report is matched to the selected TX module by hardware ID (see [Test reports](#test-reports)) |
 | **Write Config** | Validate the editor contents as JSON and push them to the selected target's persistent storage |
 
+Anything in the editor that is not on the device yet (an edit, a loaded
+test report, or a generated default) makes **Write Config** breathe, and
+the status line says what is pending. The breathing stops once the write
+succeeds, or when **Read Config** reloads what the device holds. Assign is
+refused while something is pending, because its result replaces the
+editor.
+
 A status line above the editor flashes green on success or red on
 failure for ~4 seconds, then hides itself.
 
