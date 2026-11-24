@@ -86,11 +86,24 @@ jobs:
           gh release download "${{ steps.sdk.outputs.tag }}" \
             --repo OpenwaterHealth/openlifu-sdk \
             --dir sdk-dist --pattern '*.whl'
-          # Replace the PyPI-pinned SDK with the released wheel (the wheel
-          # carries the firmware images bundled at SDK release time).
+          # Replace the PyPI-pinned SDK with the released wheel.
           pip uninstall -y openlifu-sdk
           pip install sdk-dist/*.whl
           python -c "from importlib.metadata import version; print('openlifu-sdk', version('openlifu-sdk'))"
+
+      # ── firmware the app installs ────────────────────────────────
+      # openlifu-sdk 2.1.0-rc.4+ carries no firmware; the app ships it in
+      # firmware/. Every build (rc and next included) takes the latest
+      # STABLE firmware and bootloader-updater releases, never a
+      # pre-release, then checks the minimum-version pins against them.
+      - name: Fetch latest firmware releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/fetch_firmware.py
+          python -c "from lifu.lifu_constants import validate_firmware_version_pins as v, packaged_console_fw_version as c, packaged_transmitter_fw_version as t; v(); print(f'::notice ::firmware included: console {c()}, transmitter {t()}')"
 
       # ── build ────────────────────────────────────────────────────
       - name: Stamp version from git tag
