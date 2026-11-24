@@ -1,7 +1,11 @@
 """The app ships the firmware images the SDK stopped carrying (openlifu-sdk
-2.1.0-rc.4, 87cd427) and passes them to every update path."""
+2.1.0-rc.4, 87cd427) and passes them to every update path. The images come
+from the latest firmware releases (scripts/fetch_firmware.py), recorded in
+firmware/manifest.json."""
 import hashlib
+import importlib.util
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -22,13 +26,26 @@ ALL_IMAGES = (
     fi.CONSOLE_BL_UPDATER, fi.TRANSMITTER_BL_UPDATER,
 )
 
-# SHA-256 from the open-lifu-{console,transmitter}-bl-updater 1.0.0 releases.
-BL_UPDATER_SHA256 = {
-    fi.CONSOLE_BL_UPDATER:
-        "b8fcf5a14c328507487779000f28b69b3e2141369c038a23be60b6afce27f793",
-    fi.TRANSMITTER_BL_UPDATER:
-        "e718a3b4bde7b9f99236558309e077740c22fa152a1d59f0489b40fc6491cdb8",
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = json.loads((ROOT / "firmware" / "manifest.json").read_text(encoding="utf-8"))["files"]
+
+# Refreshed from the latest stable release of these repositories.
+RELEASED = {
+    fi.CONSOLE_SIGNED_APP: "openlifu-console-fw",
+    fi.CONSOLE_PRODUCTION: "openlifu-console-fw",
+    fi.TRANSMITTER_SIGNED_APP: "openlifu-transmitter-fw",
+    fi.TRANSMITTER_PRODUCTION: "openlifu-transmitter-fw",
+    fi.CONSOLE_BL_UPDATER: "open-lifu-console-bl-updater",
+    fi.TRANSMITTER_BL_UPDATER: "open-lifu-transmitter-bl-updater",
 }
+
+
+def _load_fetch_script():
+    spec = importlib.util.spec_from_file_location(
+        "fetch_firmware", ROOT / "scripts" / "fetch_firmware.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.mark.parametrize("name", ALL_IMAGES)
@@ -38,12 +55,52 @@ def test_every_image_ships_with_the_app(name):
     assert path.stat().st_size > 0
 
 
-@pytest.mark.parametrize("name", sorted(BL_UPDATER_SHA256))
-def test_bl_updaters_are_the_released_images(name):
-    data = fi.image(name).read_bytes()
-    assert data[:4] == b"SFU1"
-    assert hashlib.sha256(data).hexdigest() == BL_UPDATER_SHA256[name]
+def test_manifest_lists_exactly_the_shipped_images():
+    on_disk = {p.name for p in fi.firmware_dir().iterdir()
+               if p.is_file() and p.name != "manifest.json"}
+    assert on_disk == set(MANIFEST) == set(ALL_IMAGES)
 
+
+@pytest.mark.parametrize("name", ALL_IMAGES)
+def test_every_image_matches_its_manifest_entry(name):
+    entry = MANIFEST[name]
+    assert hashlib.sha256(fi.image(name).read_bytes()).hexdigest() == entry["sha256"]
+    if name in RELEASED:
+        assert entry["repo"] == f"OpenwaterHealth/{RELEASED[name]}"
+        assert "-rc." not in entry["tag"]          # official releases only
+
+
+def test_fetch_script_covers_every_released_image():
+    mod = _load_fetch_script()
+    assert {(target, repo) for repo, target, _ in mod.SOURCES} == {
+        (name, repo) for name, repo in RELEASED.items()}
+
+
+def test_signed_app_version_matches_its_release_tag():
+    for name in (fi.CONSOLE_SIGNED_APP, fi.TRANSMITTER_SIGNED_APP):
+        assert parse_firmware_version(fi.shipped_version(name)) ==             parse_firmware_version(MANIFEST[name]["tag"])
+
+
+@pytest.mark.parametrize("name", [fi.CONSOLE_BL_UPDATER, fi.TRANSMITTER_BL_UPDATER])
+def test_bl_updaters_are_signed_images(name):
+    assert fi.image(name).read_bytes()[:4] == b"SFU1"
+
+
+def test_hex_to_bin_fills_gaps_from_flash_base():
+    mod = _load_fetch_script()
+
+    def rec(addr, kind, data):
+        body = bytes([len(data), addr >> 8, addr & 0xFF, kind]) + data
+        return ":" + (body + bytes([(-sum(body)) & 0xFF])).hex().upper()
+
+    text = "\n".join([rec(0, 4, b"\x08\x00"), rec(0x0000, 0, b"\x01\x02"),
+                      rec(0x0004, 0, b"\x05"), rec(0, 1, b"")])
+    assert mod.hex_to_bin(text) == b"\x01\x02\xff\xff\x05"
+    with pytest.raises(ValueError):                    # not at 0x08000000
+        mod.hex_to_bin(rec(0, 0, b"\x01"))
+    bad = rec(0x0000, 0, b"\x01\x02")
+    with pytest.raises(ValueError):                    # bad checksum
+        mod.hex_to_bin(text.replace(bad, bad[:-2] + "00"))
 
 def test_spec_bundles_the_firmware_folder():
     spec = (Path(__file__).resolve().parent.parent / "OpenLIFU-TestApp.spec").read_text()
@@ -117,10 +174,21 @@ def test_slave_stub_follows_the_route(sdk_bl_updater):
     secure = fi.transmitter_slave_images(legacy=False)
     assert legacy["stub_bin"] == str(fi.image(fi.TRANSMITTER_DFU_STUB))
     assert secure["stub_bin"] == str(fi.image(fi.TRANSMITTER_DFU_STUB_SIGNED))
+    # The route goes to the SDK with its stub, so it cannot pick the other.
+    assert legacy["legacy"] is True and secure["legacy"] is False
     for kw in (legacy, secure):
         assert kw["production_image"] == str(fi.image(fi.TRANSMITTER_PRODUCTION))
         assert kw["signed_app"] == str(fi.image(fi.TRANSMITTER_SIGNED_APP))
         assert kw["bl_updater"] == str(fi.image(fi.TRANSMITTER_BL_UPDATER))
+
+
+def test_unknown_slave_route_passes_no_stub_and_no_route(sdk_bl_updater):
+    # Version unreadable: the SDK detects the route, and both stub routes
+    # refuse a missing stub before writing (never the wrong stub).
+    sdk_bl_updater(True)
+    kw = fi.transmitter_slave_images(legacy=None)
+    assert "stub_bin" not in kw and "legacy" not in kw
+    assert kw["signed_app"] == str(fi.image(fi.TRANSMITTER_SIGNED_APP))
 
 
 def test_bl_updater_left_out_for_an_sdk_without_it(sdk_bl_updater):

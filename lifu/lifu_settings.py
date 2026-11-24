@@ -45,6 +45,7 @@ from openlifu_sdk.io.exceptions import LIFUError, LIFUProtocolError
 from openlifu_sdk.io.LIFUUserConfig import LifuUserConfig
 
 from lifu import dfu_driver, firmware_images, usb_hub_power
+from lifu.lifu_constants import parse_firmware_version
 from test_reports.test_reports import (
     check_config_against_device,
     read_test_report,
@@ -482,6 +483,46 @@ class SettingsMixin:
         self.fwUpdateStatus.emit("console", False, msg)
         return False
 
+    def _installed_console_version(self) -> str | None:
+        """The running console app's version (cached, else read), or None."""
+        if self._cached_hv_fw_version:
+            return self._cached_hv_fw_version
+        self._interface_mutex.lock()
+        try:
+            return str(self.interface.hvcontroller.get_version())
+        except Exception as e:
+            logger.warning("Could not read the console version: %s", e)
+            return None
+        finally:
+            self._interface_mutex.unlock()
+
+    @staticmethod
+    def _downgrade_refusal(device: str, image_path: str,
+                           installed: str | None) -> str | None:
+        """Why *image_path* must not go onto a unit running *installed*, or
+        None. Refuses an image whose version is below the installed one.
+
+        The SDK's own downgrade check is not enough: on a 1.0.x secure
+        bootloader it installs the bootloader updater first, which empties
+        the application slot and the anti-rollback floor, so its later
+        check finds nothing installed and lets any older app through.
+        Equal versions (a reinstall) and unreadable versions are allowed."""
+        have = parse_firmware_version(installed)
+        if have is None:
+            return None
+        try:
+            image_version = firmware_images.image_version(image_path)
+        except (OSError, ValueError) as e:
+            logger.warning("Could not read the version of %s: %s", image_path, e)
+            return None
+        want = parse_firmware_version(image_version)
+        # 0.0.0 is no real image (the SDK's placeholder for an invalid
+        # version): leave it to the SDK, as with an unreadable one.
+        if want is None or want == (0, 0, 0) or want >= have:
+            return None
+        return (f"Downgrade refused: the {device} runs {installed} and the "
+                f"selected firmware is {image_version}. Nothing was written.")
+
     def _start_console_update(self, firmware_path: str, force: bool,
                               recovery: bool) -> None:
         """Shared worker behind :meth:`updateConsoleFirmware` (app running)
@@ -493,6 +534,17 @@ class SettingsMixin:
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
                 return
+            # A unit in DFU (recovery) has no running app to compare with;
+            # Force is the operator's explicit downgrade.
+            if not recovery and not force:
+                refusal = self._downgrade_refusal(
+                    "console", firmware_path, self._installed_console_version())
+                if refusal:
+                    msg = (f"Console update failed: {refusal} Check \"Force\" "
+                           "to install it anyway.")
+                    logger.error(msg)
+                    self.fwUpdateStatus.emit("console", False, msg)
+                    return
             if not self._ensure_dfu_driver("console"):
                 return
             # Recovery: the unit is already in DFU, past the handoff.
@@ -745,12 +797,23 @@ class SettingsMixin:
                             "disconnect the slave modules (update each alone "
                             "as the USB master) and retry.")
 
+                # Downgrade guard (see _downgrade_refusal). A production
+                # reflash is the operator's explicit full rewrite.
+                if not force_production:
+                    image = firmware_path or str(firmware_images.image(
+                        firmware_images.TRANSMITTER_SIGNED_APP))
+                    refusal = self._downgrade_refusal(
+                        f"transmitter module {module}", image, ver or None)
+                    if refusal:
+                        raise RuntimeError(refusal)
+
                 if module >= 1:
                     # Slave (1+): SDK update_slave over the I2C passthrough.
                     # Empty path -> shipped images (secure slave: signed app;
                     # legacy slave: one-shot stub migration, BL + app). The
-                    # legacy route takes the raw DFU stub, the production
-                    # reflash of a migrated slave the signed one.
+                    # route read here is passed to the SDK with its stub
+                    # (firmware_images.transmitter_slave_images); unknown
+                    # (None) passes neither.
                     signed = firmware_path or None
                     label = (f"Starting transmitter slave module {module} "
                              + ("production reflash…" if force_production
@@ -761,7 +824,8 @@ class SettingsMixin:
                                 force_production)
                     fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
                     images = firmware_images.transmitter_slave_images(
-                        legacy=(cohort == COHORT_LEGACY), signed_app=signed)
+                        legacy=None if cohort is None else cohort == COHORT_LEGACY,
+                        signed_app=signed)
                     result = fw.update_slave(
                         module, **images,
                         force_production=force_production,

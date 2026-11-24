@@ -1,9 +1,15 @@
 """Firmware images the app ships and installs.
 
 openlifu-sdk 2.1.0-rc.4 and later carry no firmware (openlifu-sdk 87cd427):
-every update path takes its images from the caller. The app ships the images
-the SDK bundled up to 2.1.0-rc.3, unchanged, in ``firmware/`` and passes them
-in explicitly. Older SDKs accept the same arguments, so the app runs on either.
+every update path takes its images from the caller, so the app ships them in
+``firmware/`` and passes them in explicitly. Older SDKs accept the same
+arguments, so the app runs on either.
+
+The application images and the bootloader updaters are the latest official
+(non-pre-release) firmware releases, fetched by ``scripts/fetch_firmware.py``
+(CI runs it before every build). ``firmware/manifest.json`` records the
+release of every file. The legacy updaters and slave DFU stubs have no
+releases; they are the copies openlifu-sdk 2.1.0-rc.3 bundled.
 
 Images (the SDK's former ``bundled_*()`` helpers in brackets):
 
@@ -19,17 +25,19 @@ Images (the SDK's former ``bundled_*()`` helpers in brackets):
   slave production reflash
 
 Plus the bootloader updaters the SDK never bundled (``bl_updater``, from the
-open-lifu-{console,transmitter}-bl-updater 1.0.0 releases). openlifu-sdk
+open-lifu-{console,transmitter}-bl-updater releases). openlifu-sdk
 2.1.0-rc.18 and later install one first on a secure bootloader older than
 1.1.0 (console app 1.2.6 / 1.2.7, transmitter app 2.0.8 and the bootloaders
 the production images above carry) and refuse the update without it. The
-replacement is permanent and research (unlocked) units only; a locked unit
-refuses it and nothing is written. SDKs without the argument (up to
+replacement is permanent and research (unlocked) units only. On a locked
+unit the updater refuses to touch the bootloader, but the old bootloader
+has already written it over the application: the unit is left in DFU with
+no application. SDKs without the argument (up to
 2.1.0-rc.3) never replace the bootloader, so it is passed only when the
 installed SDK accepts it.
 
 Any new image must also be in ``firmware/`` (bundled by
-``OpenLIFU-TestApp.spec``).
+``OpenLIFU-TestApp.spec``) and ``firmware/manifest.json``.
 """
 from __future__ import annotations
 
@@ -177,15 +185,26 @@ def transmitter_update_images(signed_app: str | None = None,
                            "LIFUTransmitterFirmwareUpdate.update")
 
 
-def transmitter_slave_images(legacy: bool,
-                             signed_app: str | None = None) -> dict[str, str]:
-    """For ``LIFUTransmitterFirmwareUpdate.update_slave()``. The SDK used the
-    raw DFU stub on the legacy-migration route (slave app 2.0.4 - 2.0.7) and
-    the signed stub on the production reflash of a migrated slave; both now
-    come in through ``stub_bin``, so *legacy* picks which. A secure slave on
-    a 1.0.x bootloader gets the bootloader updater over I2C first."""
-    kw = _kwargs(production_image=TRANSMITTER_PRODUCTION,
-                 stub_bin=TRANSMITTER_DFU_STUB if legacy else TRANSMITTER_DFU_STUB_SIGNED)
+def transmitter_slave_images(legacy: bool | None,
+                             signed_app: str | None = None) -> dict:
+    """For ``LIFUTransmitterFirmwareUpdate.update_slave()``. The legacy
+    migration (slave app 2.0.4 - 2.0.7) takes the raw DFU stub and the
+    production reflash of a secure slave the signed one, both through
+    ``stub_bin``.
+
+    *legacy* is the route the app read from the slave's version, passed on
+    as ``legacy=`` so the SDK does not detect it again and pair the stub
+    with the other route. ``None`` (version unreadable) passes no stub and
+    no route: the SDK detects it, and the two stub routes refuse before
+    writing anything, while a secure update (or a slave already parked in
+    its bootloader) needs no stub. A secure slave on a 1.0.x bootloader
+    gets the bootloader updater over I2C first."""
+    kw: dict = _kwargs(production_image=TRANSMITTER_PRODUCTION)
+    if legacy is not None:
+        kw["legacy"] = legacy
+        stub = _optional(TRANSMITTER_DFU_STUB if legacy else TRANSMITTER_DFU_STUB_SIGNED)
+        if stub:
+            kw["stub_bin"] = stub
     app = signed_app or _optional(TRANSMITTER_SIGNED_APP)
     if app:
         kw["signed_app"] = app

@@ -356,7 +356,10 @@ def test_signed_file_goes_to_a_unit_with_a_bootloader_or_not_checked(images):
 
 
 def test_slave_update_ignores_what_is_known_about_the_master():
-    c = Connector(Tx(modules=2), bootloader="no-bootloader")
+    # The slave runs the included version: not a downgrade (that is refused).
+    from lifu import firmware_images as fi
+    included = fi.shipped_version(fi.TRANSMITTER_SIGNED_APP)
+    c = Connector(Tx(version=included, modules=2), bootloader="no-bootloader")
     c.updateTransmitterFirmware("", 1, False)
     (upd,) = FakeUpdater.instances
     assert upd.slave_calls[0][0] == 1 and upd.update_calls == []
