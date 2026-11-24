@@ -744,7 +744,7 @@ Rectangle {
     // Firmware-compliance overrides for the System State row. When any
     // connected device is below the app's hard minimum we surface
     // "Firmware Update Required" in orange and lock the Configure
-    // button; below the SDK-packaged version (but >= minimum) we show
+    // button; below the included firmware version (but >= minimum) we show
     // "Firmware Update Available" in yellow as advisory only.
     function getStatusText() {
         // The bypass outranks everything else here: the left panel is

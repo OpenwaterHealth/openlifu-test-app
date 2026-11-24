@@ -1,0 +1,69 @@
+{
+  "files": {
+    "open-lifu-console-bl-updater-signed.bin": {
+      "repo": "OpenwaterHealth/open-lifu-console-bl-updater",
+      "tag": "1.0.0",
+      "asset": "open-lifu-console-bl-updater-signed.bin",
+      "sha256": "b8fcf5a14c328507487779000f28b69b3e2141369c038a23be60b6afce27f793"
+    },
+    "open-lifu-transmitter-bl-updater-signed.bin": {
+      "repo": "OpenwaterHealth/open-lifu-transmitter-bl-updater",
+      "tag": "1.0.0",
+      "asset": "open-lifu-transmitter-bl-updater-signed.bin",
+      "sha256": "e718a3b4bde7b9f99236558309e077740c22fa152a1d59f0489b40fc6491cdb8"
+    },
+    "openlifu-console-fw-production.bin": {
+      "repo": "OpenwaterHealth/openlifu-console-fw",
+      "tag": "1.2.7",
+      "asset": "openlifu-console-fw-production.hex",
+      "sha256": "0132dfcc5e8cd75473c32a14ba4fec0c8f64de03555bd3dbc4be9d07b00d0884",
+      "converted": "Intel HEX -> bin from 0x08000000"
+    },
+    "openlifu-console-fw-signed.bin": {
+      "repo": "OpenwaterHealth/openlifu-console-fw",
+      "tag": "1.2.7",
+      "asset": "openlifu-console-fw-signed.bin",
+      "sha256": "67ba0278e368139544114f9100e5a54545fce75c23828a5c03767e43fbea8bd4"
+    },
+    "openlifu-console-legacy-updater.bin": {
+      "repo": "OpenwaterHealth/openlifu-sdk",
+      "tag": "2.1.0-rc.3",
+      "asset": "src/openlifu_sdk/firmware/openlifu-console-legacy-updater.bin",
+      "sha256": "dd9b5c96e1599c26fb91afb57cf93b8d9d44142e86c582f09c918a5f3c2159c3",
+      "note": "no firmware release; committed copy, not refreshed by scripts/fetch_firmware.py"
+    },
+    "openlifu-transmitter-dfu-stub-signed.bin": {
+      "repo": "OpenwaterHealth/openlifu-sdk",
+      "tag": "2.1.0-rc.3",
+      "asset": "src/openlifu_sdk/firmware/openlifu-transmitter-dfu-stub-signed.bin",
+      "sha256": "2aca17a820dcde2a8f54f87d33e9f39fdbcb8e8ace142fb49322924713bee704",
+      "note": "no firmware release; committed copy, not refreshed by scripts/fetch_firmware.py"
+    },
+    "openlifu-transmitter-dfu-stub.bin": {
+      "repo": "OpenwaterHealth/openlifu-sdk",
+      "tag": "2.1.0-rc.3",
+      "asset": "src/openlifu_sdk/firmware/openlifu-transmitter-dfu-stub.bin",
+      "sha256": "8ea62448d8ebb9d75b67744d84e82a4a216ce04c7c1dd2b2659e4c9d64694d92",
+      "note": "no firmware release; committed copy, not refreshed by scripts/fetch_firmware.py"
+    },
+    "openlifu-transmitter-fw-production.bin": {
+      "repo": "OpenwaterHealth/openlifu-transmitter-fw",
+      "tag": "2.0.8",
+      "asset": "openlifu-transmitter-fw-production.bin",
+      "sha256": "c3b84732fa66c18c13681121da6faec981b4f80ed9acae5acaf510c8d8204123"
+    },
+    "openlifu-transmitter-fw-signed.bin": {
+      "repo": "OpenwaterHealth/openlifu-transmitter-fw",
+      "tag": "2.0.8",
+      "asset": "openlifu-transmitter-fw-signed.bin",
+      "sha256": "c7542954982031d883f7e39439c14557c0e0baf490eb93ec8248cb8c17aa48dc"
+    },
+    "openlifu-transmitter-legacy-updater.bin": {
+      "repo": "OpenwaterHealth/openlifu-sdk",
+      "tag": "2.1.0-rc.3",
+      "asset": "src/openlifu_sdk/firmware/openlifu-transmitter-legacy-updater.bin",
+      "sha256": "6a916512bd9c5bb8910eb5fca56756a50099eff51c1021707527b109e4fb78f9",
+      "note": "no firmware release; committed copy, not refreshed by scripts/fetch_firmware.py"
+    }
+  }
+}

@@ -166,9 +166,9 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     consoleDfuStateChanged = pyqtSignal()
 
     # (The firmware "check for updates" signal was retired with the GitHub
-    # download flow — the SDK no longer polls or downloads firmware; both
-    # devices flash the image bundled with the SDK, or a file the operator
-    # selects manually.)
+    # download flow; both devices flash the image the app ships in
+    # firmware/ (lifu/firmware_images.py), or a file the operator selects
+    # manually.)
 
     # Test sequence signals
     testProgressUpdated = pyqtSignal(float, float, str, str, str, str)  # (total_frac, case_frac, total_label, case_label, status_color, log_file_path)
@@ -1782,7 +1782,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
     @pyqtProperty(str, notify=firmwareComplianceChanged)
     def firmwareStatusReport(self) -> str:
         """Multi-line summary of every connected device's live firmware
-        version vs the app's hard minimum and SDK-packaged versions.
+        version vs the app's hard minimum and included firmware versions.
 
         Surfaced as the System Status tooltip on the Controller page so
         an operator hovering the status text can see the actual values
@@ -1804,7 +1804,7 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
         )
         pcv = packaged_console_fw_version() or "?"
         ptv = packaged_transmitter_fw_version() or "?"
-        lines.append(f"SDK-packaged:  console v{pcv}, transmitter v{ptv}")
+        lines.append(f"Included:      console v{pcv}, transmitter v{ptv}")
         lines.append("")
         if self._hvConnected:
             cv = self._cached_hv_fw_version or "(reading…)"
@@ -1855,9 +1855,8 @@ class LIFUConnector(TestingMixin, SettingsMixin, ConsoleMixin, TransmitterMixin,
 
     @pyqtProperty(str, constant=True)
     def packagedConsoleFirmwareVersion(self) -> str:
-        # Stable for the life of the process; the SDK's bundled-or-
-        # downloaded firmware set is captured at startup, so QML can
-        # treat this as constant.
+        # Stable for the life of the process: the images in firmware/ ship
+        # with the app, so QML can treat this as constant.
         return packaged_console_fw_version() or ""
 
     @pyqtProperty(str, constant=True)

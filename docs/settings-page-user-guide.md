@@ -205,6 +205,47 @@ Clicking **Update Firmware** opens a modal progress dialog showing the
 written bytes and a percentage. The dialog locks the page until the
 flash finishes (or fails) and you click **Close**.
 
+<a id="bootloader-migration"></a>
+
+#### Bootloader replacement (console and transmitter)
+
+A console on app 1.2.6 / 1.2.7 or a transmitter on app 2.0.8 runs a
+1.0.x secure bootloader, and the current SDK installs firmware only on
+bootloader 1.1.0 or later. On such a unit, **Update Firmware** first
+installs the bootloader updater the app includes
+(`open-lifu-console-bl-updater` / `open-lifu-transmitter-bl-updater`),
+which replaces the bootloader with 1.1.0, and then installs the
+application. This happens on its own, with no extra prompt or message.
+It applies to transmitter slave modules too (over I2C).
+
+- The replacement is **permanent**: there is no way back to the 1.0.x
+  bootloader.
+- It adds up to about two minutes. Keep the unit powered.
+- Research (unlocked) units only. On a locked unit the old bootloader
+  still writes the updater over the installed application before the
+  updater refuses to touch the bootloader. The update fails after about
+  90 s and the unit stays in its bootloader with **no application**:
+  install one with **Recover Firmware**. The bootloader's anti-rollback
+  floor may then accept only console 1.3.0 / transmitter 2.1.0 or later.
+
+Older units (console app 1.1.0 - 1.2.5, transmitter app 2.0.2 - 2.0.7)
+get the bootloader inside the included production image. While that is
+still a 1.0.x bootloader (console 1.2.x, transmitter 2.0.x images),
+their next update goes through this replacement.
+
+**Downgrades.** Update Firmware refuses a file older than the firmware
+the unit runs, before anything is written. On the console, check
+**Force** to install it anyway; a transmitter cannot be downgraded from
+the app. (The SDK's own check is skipped when the bootloader is
+replaced, since that empties the application slot first, so the app
+checks before it starts.)
+
+**Included firmware.** The firmware the app installs by default is the
+latest official (non-pre-release) release of `openlifu-console-fw`,
+`openlifu-transmitter-fw` and the two bootloader updaters, fetched into
+`firmware/` when the app is built (`scripts/fetch_firmware.py`;
+`firmware/manifest.json` lists the releases).
+
 <a id="console-firmware-recovery"></a>
 
 ### Recovering a console stuck in its bootloader

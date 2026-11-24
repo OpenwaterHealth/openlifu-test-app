@@ -29,7 +29,6 @@ Instance attributes consumed (initialized in ``LIFUConnector.__init__``):
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
@@ -45,7 +44,8 @@ from openlifu_sdk.io import LIFUInterface
 from openlifu_sdk.io.exceptions import LIFUError, LIFUProtocolError
 from openlifu_sdk.io.LIFUUserConfig import LifuUserConfig
 
-from lifu import dfu_driver, usb_hub_power
+from lifu import dfu_driver, firmware_images, usb_hub_power
+from lifu.lifu_constants import parse_firmware_version
 from test_reports.test_reports import (
     check_config_against_device,
     read_test_report,
@@ -170,48 +170,24 @@ class SettingsMixin:
 
     @pyqtSlot(str, result=str)
     def getDefaultFirmwarePath(self, device_type: str) -> str:
-        """Return the firmware file INCLUDED with the SDK for ``device_type``.
+        """Return the signed firmware image the app ships for ``device_type``
+        (``"console"`` or ``"transmitter"``), or ``""``.
 
-        The console uses the signed image bundled with the SDK
-        (``LIFUFirmwareUpdate.bundled_signed_app()``) - deliberately NOT a
-        GitHub download: the update-to firmware and its version come from the
-        binary shipped with the app. The transmitter still uses the SDK's
-        firmware lookup. Falls back to the canonical bundled filename if the
-        SDK can't be queried.
+        The images live in the app's ``firmware/`` folder
+        (``lifu/firmware_images.py``): openlifu-sdk 2.1.0-rc.4 and later
+        carry no firmware.
         """
-        if device_type == "console":
-            try:
-                from openlifu_sdk.io.LIFUFirmwareUpdate import bundled_signed_app
-                p = bundled_signed_app()
-                if p.is_file():
-                    return str(p)
-                logger.warning("bundled console firmware not present: %s", p)
-            except Exception as e:
-                logger.warning("bundled console firmware lookup failed: %s", e)
-        else:
-            try:
-                from openlifu_sdk.util import firmware as sdk_fw
-                if device_type == "transmitter":
-                    return str(sdk_fw.get_transmitter_firmware_path())
-                return ""
-            except Exception as e:
-                logger.warning(
-                    "openlifu-sdk firmware path lookup failed for %s; "
-                    "falling back to the bundled filename: %s", device_type, e,
-                )
+        names = {
+            "console": firmware_images.CONSOLE_SIGNED_APP,
+            "transmitter": firmware_images.TRANSMITTER_SIGNED_APP,
+        }
+        name = names.get(device_type)
+        if not name:
+            return ""
         try:
-            spec = importlib.util.find_spec("openlifu_sdk")
-            if spec is None or spec.origin is None:
-                return ""
-            fw_dir = os.path.join(os.path.dirname(spec.origin), "firmware")
-            names = {
-                "console": "openlifu-console-fw-signed.bin",
-                "transmitter": "openlifu-transmitter-fw-signed.bin",
-            }
-            name = names.get(device_type, "")
-            return os.path.join(fw_dir, name) if name else ""
-        except Exception as e:
-            logger.error(f"Error locating default firmware for {device_type}: {e}")
+            return str(firmware_images.image(name))
+        except FileNotFoundError as e:
+            logger.error("%s", e)
             return ""
 
     @pyqtSlot(str, result=str)
@@ -308,12 +284,11 @@ class SettingsMixin:
         parsed = parse_firmware_version(ver)
         return (parsed is not None and parsed >= (1, 2, 6)), ver
 
-    # NOTE: firmware is no longer fetched from GitHub at runtime — the SDK's
-    # download flow was removed, and the transmitter "check GitHub" action was
-    # retired with it. Both devices update exclusively to the image bundled
-    # with the SDK's firmware directory; other versions must be downloaded
-    # from the firmware repo's GitHub releases (or built from source) and
-    # selected manually in the firmware file field.
+    # NOTE: firmware is not fetched from GitHub at runtime. Both devices
+    # update to the images the app ships in firmware/ (lifu/firmware_images.py;
+    # the SDK carries none since 2.1.0-rc.4); other versions must be
+    # downloaded from the firmware repo's GitHub releases (or built from
+    # source) and selected manually in the firmware file field.
 
     @pyqtSlot(str, result=bool)
     def isTransmitterProductionImage(self, path: str) -> bool:
@@ -409,12 +384,12 @@ class SettingsMixin:
         works for units older than the secure bootloader too:
 
           - no bootloader (app < 1.2.0)     -> migrate to the secure
-            bootloader via STM32 ROM DFU (bundled production image)
+            bootloader via STM32 ROM DFU (shipped production image)
           - legacy bootloader (1.2.0-1.2.5) -> migrate via the RAM updater
           - secure bootloader (>= 1.2.6)    -> normal signed-app update
 
         ``firmware_path`` is the signed app (used for the legacy and secure
-        paths); the no-bootloader path flashes the SDK's bundled combined
+        paths); the no-bootloader path flashes the shipped combined
         image. Precondition: the file must be a valid signed console image.
 
         ``force`` applies to the secure app-update path only: it flashes an
@@ -508,6 +483,46 @@ class SettingsMixin:
         self.fwUpdateStatus.emit("console", False, msg)
         return False
 
+    def _installed_console_version(self) -> str | None:
+        """The running console app's version (cached, else read), or None."""
+        if self._cached_hv_fw_version:
+            return self._cached_hv_fw_version
+        self._interface_mutex.lock()
+        try:
+            return str(self.interface.hvcontroller.get_version())
+        except Exception as e:
+            logger.warning("Could not read the console version: %s", e)
+            return None
+        finally:
+            self._interface_mutex.unlock()
+
+    @staticmethod
+    def _downgrade_refusal(device: str, image_path: str,
+                           installed: str | None) -> str | None:
+        """Why *image_path* must not go onto a unit running *installed*, or
+        None. Refuses an image whose version is below the installed one.
+
+        The SDK's own downgrade check is not enough: on a 1.0.x secure
+        bootloader it installs the bootloader updater first, which empties
+        the application slot and the anti-rollback floor, so its later
+        check finds nothing installed and lets any older app through.
+        Equal versions (a reinstall) and unreadable versions are allowed."""
+        have = parse_firmware_version(installed)
+        if have is None:
+            return None
+        try:
+            image_version = firmware_images.image_version(image_path)
+        except (OSError, ValueError) as e:
+            logger.warning("Could not read the version of %s: %s", image_path, e)
+            return None
+        want = parse_firmware_version(image_version)
+        # 0.0.0 is no real image (the SDK's placeholder for an invalid
+        # version): leave it to the SDK, as with an unreadable one.
+        if want is None or want == (0, 0, 0) or want >= have:
+            return None
+        return (f"Downgrade refused: the {device} runs {installed} and the "
+                f"selected firmware is {image_version}. Nothing was written.")
+
     def _start_console_update(self, firmware_path: str, force: bool,
                               recovery: bool) -> None:
         """Shared worker behind :meth:`updateConsoleFirmware` (app running)
@@ -519,6 +534,17 @@ class SettingsMixin:
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
                 return
+            # A unit in DFU (recovery) has no running app to compare with;
+            # Force is the operator's explicit downgrade.
+            if not recovery and not force:
+                refusal = self._downgrade_refusal(
+                    "console", firmware_path, self._installed_console_version())
+                if refusal:
+                    msg = (f"Console update failed: {refusal} Check \"Force\" "
+                           "to install it anyway.")
+                    logger.error(msg)
+                    self.fwUpdateStatus.emit("console", False, msg)
+                    return
             if not self._ensure_dfu_driver("console"):
                 return
             # Recovery: the unit is already in DFU, past the handoff.
@@ -559,8 +585,12 @@ class SettingsMixin:
                                 firmware_path, force)
                     # The SDK auto-detects the unit's state and route.
                     fw = LIFUFirmwareUpdate(hv=self.interface.hvcontroller)
-                result = fw.update(signed_app=firmware_path, force=force,
-                                   progress_callback=_progress)
+                # The SDK takes every image from the caller: the shipped
+                # production image and legacy updater cover the ROM and
+                # legacy-bootloader routes.
+                result = fw.update(
+                    **firmware_images.console_update_images(firmware_path),
+                    force=force, progress_callback=_progress)
                 done = result.summary
                 if result.reboot_required:
                     done += " Power-cycle the console to boot the new application."
@@ -685,10 +715,10 @@ class SettingsMixin:
         Master (module 0), ``force_production=False``: an EMPTY
         ``firmware_path`` means "use the firmware included with the SDK" — a
         pre-secure unit (app <= 2.0.7) auto-migrates to the secure bootloader
-        via the bundled production image (a NO-bootloader unit, <= 2.0.3,
+        via the shipped production image (a NO-bootloader unit, <= 2.0.3,
         enters the STM32 ROM DFU with a plain DFU command; a legacy unit uses
         the reserved=0x77 force switch), and a secure unit (>= 2.0.8)
-        installs the bundled signed app. A non-empty ``firmware_path`` is an
+        installs the shipped signed app. A non-empty ``firmware_path`` is an
         operator-browsed signed app, which the UI only permits once the unit
         is on the secure bootloader (>= 2.0.8).
 
@@ -703,8 +733,8 @@ class SettingsMixin:
         (``OW_CMD_DFU reserved=0x77``). Beta/unlocked units only.
 
         Slave modules (1+): ``update_slave`` over the master's I2C
-        passthrough. An EMPTY ``firmware_path`` uses the bundled images: a
-        secure slave (>= 2.0.8) gets the bundled signed app; a LEGACY slave
+        passthrough. An EMPTY ``firmware_path`` uses the shipped images: a
+        secure slave (>= 2.0.8) gets the shipped signed app; a LEGACY slave
         (2.0.4 - 2.0.7) is migrated in one shot (RAM-resident DFU stub +
         full production image — bootloader AND app). With
         ``force_production=True`` a secure slave is fully reflashed
@@ -740,6 +770,7 @@ class SettingsMixin:
             self._fw_update_active = True
             try:
                 from openlifu_sdk.io.LIFUFirmwareUpdate import (
+                    COHORT_LEGACY,
                     COHORT_NONE,
                     LIFUTransmitterFirmwareUpdate,
                 )
@@ -766,21 +797,37 @@ class SettingsMixin:
                             "disconnect the slave modules (update each alone "
                             "as the USB master) and retry.")
 
+                # Downgrade guard (see _downgrade_refusal). A production
+                # reflash is the operator's explicit full rewrite.
+                if not force_production:
+                    image = firmware_path or str(firmware_images.image(
+                        firmware_images.TRANSMITTER_SIGNED_APP))
+                    refusal = self._downgrade_refusal(
+                        f"transmitter module {module}", image, ver or None)
+                    if refusal:
+                        raise RuntimeError(refusal)
+
                 if module >= 1:
                     # Slave (1+): SDK update_slave over the I2C passthrough.
-                    # Empty path -> bundled images (secure slave: signed app;
-                    # legacy slave: one-shot stub migration, BL + app).
+                    # Empty path -> shipped images (secure slave: signed app;
+                    # legacy slave: one-shot stub migration, BL + app). The
+                    # route read here is passed to the SDK with its stub
+                    # (firmware_images.transmitter_slave_images); unknown
+                    # (None) passes neither.
                     signed = firmware_path or None
                     label = (f"Starting transmitter slave module {module} "
                              + ("production reflash…" if force_production
                                 else "update…"))
                     self.fwUpdateStatus.emit("transmitter", False, label)
                     logger.info("Transmitter slave %d update: %s (force=%s)",
-                                module, signed or "bundled SDK firmware",
+                                module, signed or "shipped firmware",
                                 force_production)
                     fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
+                    images = firmware_images.transmitter_slave_images(
+                        legacy=None if cohort is None else cohort == COHORT_LEGACY,
+                        signed_app=signed)
                     result = fw.update_slave(
-                        module, signed_app=signed,
+                        module, **images,
                         force_production=force_production,
                         progress_callback=_progress)
                     self.fwUpdateStatus.emit("transmitter", True, result.summary)
@@ -799,7 +846,7 @@ class SettingsMixin:
                     self._invalidate_device_caches("TX")
                     return
 
-                # Master: auto-detecting updater. Empty path -> bundled SDK
+                # Master: auto-detecting updater. Empty path -> shipped
                 # firmware (migrates a pre-2.0.8 unit — including a <= 2.0.3
                 # no-bootloader unit — or signed-app-updates a secure one). A
                 # browsed path is a signed app (UI-gated to secure units only).
@@ -810,10 +857,11 @@ class SettingsMixin:
                     + (" (included firmware)…" if signed is None
                        else "…"))
                 logger.info("Transmitter master update: %s",
-                            signed or "bundled SDK firmware")
+                            signed or "shipped firmware")
                 fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
-                result = fw.update(signed_app=signed,
-                                   progress_callback=_progress)
+                result = fw.update(
+                    **firmware_images.transmitter_update_images(signed),
+                    progress_callback=_progress)
                 self.fwUpdateStatus.emit("transmitter", True, result.summary)
                 logger.info("Transmitter master update complete: %s",
                             result.summary)
@@ -851,8 +899,8 @@ class SettingsMixin:
         )
 
         # Use the browsed file only when it is a real combined production
-        # image; otherwise fall back to the SDK's bundled production image
-        # (the firmware-file field defaults to the signed app, which is NOT a
+        # image; otherwise fall back to the shipped production image (the
+        # firmware-file field defaults to the signed app, which is NOT a
         # production image).
         prod_image = (firmware_path
                       if self.isTransmitterProductionImage(firmware_path)
@@ -862,10 +910,11 @@ class SettingsMixin:
             "Starting transmitter production reflash (bootloader + app) "
             "via STM32 DFU…")
         logger.info("Transmitter force-production reflash: %s",
-                    prod_image or "bundled production image")
+                    prod_image or "shipped production image")
         fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
-        fw.update(force_production=True, production_image=prod_image,
-                  progress_callback=progress_cb)
+        fw.update(**firmware_images.transmitter_update_images(
+                      production_image=prod_image),
+                  force_production=True, progress_callback=progress_cb)
 
     # ------------------------------------------------------------------
     # User config (read/write JSON to TX module EEPROM)
