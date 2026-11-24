@@ -1,8 +1,9 @@
-"""Refresh firmware/ from the latest official firmware releases.
+"""Refresh firmware/ from the pinned official firmware releases.
 
 The app installs the images in ``firmware/`` (lifu/firmware_images.py). The
-application and bootloader-updater images come from the latest STABLE
-release (pre-releases are ignored) of their repositories:
+application and bootloader-updater images come from the release tags pinned
+in ``PINS`` below, which must be stable releases (no ``-rc.N``). Moving to new
+firmware is a reviewed change to ``PINS``, not whatever was released last:
 
 - openlifu-console-fw: signed app and production image
 - openlifu-transmitter-fw: signed app and production image
@@ -24,8 +25,9 @@ Usage::
     python scripts/fetch_firmware.py           # refresh firmware/
     python scripts/fetch_firmware.py --check   # report only; exit 1 if stale
 
-CI runs it before PyInstaller, so release builds always ship the latest
-releases. ``GH_TOKEN`` / ``GITHUB_TOKEN`` is used if set (rate limits).
+CI runs it before PyInstaller, so a release build ships exactly the pinned
+releases. ``--check`` also reports a newer stable release of a pinned
+repository. ``GH_TOKEN`` / ``GITHUB_TOKEN`` is used if set (rate limits).
 """
 from __future__ import annotations
 
@@ -43,6 +45,14 @@ ROOT = Path(__file__).resolve().parent.parent
 FIRMWARE_DIR = ROOT / "firmware"
 MANIFEST = FIRMWARE_DIR / "manifest.json"
 FLASH_BASE = 0x08000000
+
+# The release each repository's images come from. Stable tags only.
+PINS = {
+    "openlifu-console-fw": "1.3.1",
+    "openlifu-transmitter-fw": "2.1.0",
+    "open-lifu-console-bl-updater": "1.0.0",
+    "open-lifu-transmitter-bl-updater": "1.0.0",
+}
 
 # (repository, file in firmware/, asset names to try in order)
 SOURCES = (
@@ -76,6 +86,19 @@ def latest_release(repo: str) -> dict:
     pre-releases and drafts)."""
     url = f"https://api.github.com/repos/{OWNER}/{repo}/releases/latest"
     return json.loads(_request(url, "application/vnd.github+json"))
+
+
+def pinned_release(repo: str) -> dict:
+    """The release ``PINS`` names for *repo*; it must be a published, stable
+    release."""
+    tag = PINS[repo]
+    if "-rc." in tag:
+        raise RuntimeError(f"{repo}: pin {tag} is a release candidate")
+    url = f"https://api.github.com/repos/{OWNER}/{repo}/releases/tags/{tag}"
+    rel = json.loads(_request(url, "application/vnd.github+json"))
+    if rel.get("draft") or rel.get("prerelease"):
+        raise RuntimeError(f"{repo} {tag}: not a published stable release")
+    return rel
 
 
 def hex_to_bin(text: str) -> bytes:
@@ -141,7 +164,8 @@ def load_manifest() -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--check", action="store_true",
-                    help="report what would change; exit 1 if firmware/ is stale")
+                    help="report what would change and any newer stable release; "
+                         "exit 1 if firmware/ does not match the pins")
     args = ap.parse_args(argv)
 
     manifest = load_manifest()
@@ -149,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     releases: dict[str, dict] = {}
     updates: dict[str, tuple[dict, bytes]] = {}
     for repo, target, asset_names in SOURCES:
-        rel = releases.get(repo) or releases.setdefault(repo, latest_release(repo))
+        rel = releases.get(repo) or releases.setdefault(repo, pinned_release(repo))
         asset, data = fetch(repo, rel, asset_names)
         entry = {"repo": f"{OWNER}/{repo}", "tag": rel["tag_name"],
                  "asset": asset, "sha256": hashlib.sha256(data).hexdigest()}
@@ -163,6 +187,10 @@ def main(argv: list[str] | None = None) -> int:
             updates[target] = (entry, data)
 
     if args.check:
+        for repo in PINS:
+            newest = latest_release(repo)["tag_name"]
+            if newest != PINS[repo]:
+                print(f"note: {repo} has a newer stable release {newest} (pinned {PINS[repo]})")
         return 1 if updates else 0
     for target, (entry, data) in updates.items():
         fd, tmp = tempfile.mkstemp(dir=FIRMWARE_DIR, prefix=".fetch-")

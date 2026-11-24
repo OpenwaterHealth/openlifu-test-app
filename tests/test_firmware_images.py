@@ -1,7 +1,7 @@
 """The app ships the firmware images the SDK stopped carrying (openlifu-sdk
 2.1.0-rc.4, 87cd427) and passes them to every update path. The images come
-from the latest firmware releases (scripts/fetch_firmware.py), recorded in
-firmware/manifest.json."""
+from the firmware releases pinned in scripts/fetch_firmware.py (PINS),
+recorded in firmware/manifest.json."""
 import hashlib
 import importlib.util
 import inspect
@@ -29,7 +29,7 @@ ALL_IMAGES = (
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = json.loads((ROOT / "firmware" / "manifest.json").read_text(encoding="utf-8"))["files"]
 
-# Refreshed from the latest stable release of these repositories.
+# Refreshed from the pinned stable release of these repositories.
 RELEASED = {
     fi.CONSOLE_SIGNED_APP: "openlifu-console-fw",
     fi.CONSOLE_PRODUCTION: "openlifu-console-fw",
@@ -68,6 +68,15 @@ def test_every_image_matches_its_manifest_entry(name):
     if name in RELEASED:
         assert entry["repo"] == f"OpenwaterHealth/{RELEASED[name]}"
         assert "-rc." not in entry["tag"]          # official releases only
+
+
+def test_the_shipped_images_come_from_the_pinned_releases():
+    """firmware/ holds exactly the releases PINS names: moving to new
+    firmware is a change to PINS plus a refetch, reviewed together."""
+    pins = _load_fetch_script().PINS
+    for name, repo in RELEASED.items():
+        assert MANIFEST[name]["tag"] == pins[repo], name
+    assert all("-rc." not in tag for tag in pins.values())
 
 
 def test_fetch_script_covers_every_released_image():
