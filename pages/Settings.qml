@@ -2942,10 +2942,10 @@ Rectangle {
                             Layout.preferredHeight: 40
                             radius: 6
                             // Any module can update with an empty file field
-                            // (uses the included SDK firmware): the master
+                            // (uses the included firmware): the master
                             // migrates pre-2.0.8 units, a legacy slave takes
                             // the one-shot stub migration (BL + app), a secure
-                            // slave gets the bundled signed app. Blocked for
+                            // slave gets the included signed app. Blocked for
                             // the <= 2.0.3 cases (txUpdateBlocked) — the
                             // button label shows why.
                             enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0
