@@ -205,6 +205,30 @@ Clicking **Update Firmware** opens a modal progress dialog showing the
 written bytes and a percentage. The dialog locks the page until the
 flash finishes (or fails) and you click **Close**.
 
+<a id="bootloader-migration"></a>
+
+#### Bootloader replacement (console and transmitter)
+
+A console on app 1.2.6 / 1.2.7 or a transmitter on app 2.0.8 runs a
+1.0.x secure bootloader, and the current SDK installs firmware only on
+bootloader 1.1.0 or later. On such a unit, **Update Firmware** first
+installs the bootloader updater the app ships
+(`open-lifu-console-bl-updater` / `open-lifu-transmitter-bl-updater`
+1.0.0), which replaces the bootloader with 1.1.0, and then installs the
+application. This happens on its own, with no extra prompt or message. It applies to transmitter slave modules too (over
+I2C).
+
+- The replacement is **permanent**: there is no way back to the 1.0.x
+  bootloader.
+- It adds up to about two minutes. Keep the unit powered.
+- Research (unlocked) units only. A locked unit refuses the updater and
+  nothing is written; the update then fails after about 90 s with a
+  message that says so.
+
+Older units (console app 1.1.0 - 1.2.5, transmitter app 2.0.2 - 2.0.7)
+are first moved onto a 1.0.x secure bootloader by the included images,
+so their next update goes through this replacement.
+
 <a id="console-firmware-recovery"></a>
 
 ### Recovering a console stuck in its bootloader
