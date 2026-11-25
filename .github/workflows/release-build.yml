@@ -92,17 +92,18 @@ jobs:
           python -c "from importlib.metadata import version; print('openlifu-sdk', version('openlifu-sdk'))"
 
       # ── firmware the app installs ────────────────────────────────
-      # openlifu-sdk 2.1.0-rc.4+ carries no firmware; the app ships it in
-      # firmware/. Every build (rc and next included) takes the latest
-      # STABLE firmware and bootloader-updater releases, never a
-      # pre-release, then checks the minimum-version pins against them.
-      - name: Fetch latest firmware releases
+      # openlifu-sdk 2.1.0-rc.4+ carries no firmware; the app ships the
+      # images committed in firmware/, which come from the stable releases
+      # pinned in scripts/fetch_firmware.py (PINS). The build fails if they
+      # don't match those releases byte for byte, then checks the
+      # minimum-version pins against them.
+      - name: Check the firmware against the pinned releases
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          python scripts/fetch_firmware.py
+          python scripts/fetch_firmware.py --check
           python -c "from lifu.lifu_constants import validate_firmware_version_pins as v, packaged_console_fw_version as c, packaged_transmitter_fw_version as t; v(); print(f'::notice ::firmware included: console {c()}, transmitter {t()}')"
 
       # ── build ────────────────────────────────────────────────────

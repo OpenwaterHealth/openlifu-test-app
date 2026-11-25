@@ -14,16 +14,15 @@
     },
     "openlifu-console-fw-production.bin": {
       "repo": "OpenwaterHealth/openlifu-console-fw",
-      "tag": "1.2.7",
-      "asset": "openlifu-console-fw-production.hex",
-      "sha256": "0132dfcc5e8cd75473c32a14ba4fec0c8f64de03555bd3dbc4be9d07b00d0884",
-      "converted": "Intel HEX -> bin from 0x08000000"
+      "tag": "1.3.1",
+      "asset": "openlifu-console-fw-production.bin",
+      "sha256": "ed84677d5c89f89b19a71af950325e9dfdf430a31f02ca7bd7212482119a5c7d"
     },
     "openlifu-console-fw-signed.bin": {
       "repo": "OpenwaterHealth/openlifu-console-fw",
-      "tag": "1.2.7",
+      "tag": "1.3.1",
       "asset": "openlifu-console-fw-signed.bin",
-      "sha256": "67ba0278e368139544114f9100e5a54545fce75c23828a5c03767e43fbea8bd4"
+      "sha256": "d6575659bae4703bbd9580ff743a257df446250bcd02b684231b9561f5b4c64d"
     },
     "openlifu-console-legacy-updater.bin": {
       "repo": "OpenwaterHealth/openlifu-sdk",
@@ -48,15 +47,15 @@
     },
     "openlifu-transmitter-fw-production.bin": {
       "repo": "OpenwaterHealth/openlifu-transmitter-fw",
-      "tag": "2.0.8",
+      "tag": "2.1.0",
       "asset": "openlifu-transmitter-fw-production.bin",
-      "sha256": "c3b84732fa66c18c13681121da6faec981b4f80ed9acae5acaf510c8d8204123"
+      "sha256": "a6b4e2b0d2bc9508fdab34914ae752361f8c324246d85531f6cf7419c79f054e"
     },
     "openlifu-transmitter-fw-signed.bin": {
       "repo": "OpenwaterHealth/openlifu-transmitter-fw",
-      "tag": "2.0.8",
+      "tag": "2.1.0",
       "asset": "openlifu-transmitter-fw-signed.bin",
-      "sha256": "c7542954982031d883f7e39439c14557c0e0baf490eb93ec8248cb8c17aa48dc"
+      "sha256": "8b7ddc9cd4256d7b78b87d769119dbbb8911f034c50332aaa3c9779bc4d8cd02"
     },
     "openlifu-transmitter-legacy-updater.bin": {
       "repo": "OpenwaterHealth/openlifu-sdk",
