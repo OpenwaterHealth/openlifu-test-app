@@ -54,7 +54,7 @@ left sidebar.
 | Pulse Interval | ms | Time between pulse starts |
 | Pulse Count | — | Pulses per train (disabled in Single mode) |
 | Pulse Train Interval | s | Time between train starts (disabled in Single mode) |
-| Pulse Train Count | — | Number of trains (Sequence mode only) |
+| Pulse Train Count | — | Number of trains (Sequence mode only). With a loaded JSON file that has `pulse_train_count_selections`, a list of those counts |
 
 When using Trigger Mode "Single", the Pulse Train Interval and Pulse Train Count fields are disabled, and the device will emit a single train of pulses when Start is pressed. In "Continuous" mode, the device will emit trains of pulses indefinitely until Stop is pressed; the Pulse Train Interval field is enabled but ignored, and the Pulse Train Count field is disabled. In "Sequence" mode, the device will emit a fixed number of pulse trains as specified by the Pulse Train Count field; both the Pulse Train Interval and Pulse Train Count fields are enabled.
 
@@ -102,6 +102,51 @@ Selecting **Load** will pull up the Load Solution Dialog:
 
 Loading a solution from disk locks the input fields (read-only grey)
 because the JSON is treated as authoritative.
+
+Both preset and file loading accept two kinds of file: solution files
+(saved by this app, or exported from openlifu-python) and JSON files,
+which hold flat fields such as `frequency_khz`, `pulse_length_us` and
+`pulse_interval_ms`. A JSON file is converted when it loads:
+- Frequency, pulse length, pulse interval, pulse count, delays,
+  apodizations and execution order come from the file. (`order` in a
+  solution file is read as the execution order.)
+- If the file has a `sensitivity`, the voltage is rescaled to the
+  connected transmitter: file voltage × file sensitivity ÷ module
+  sensitivity. The module sensitivity is read from each module's user
+  config at the file's frequency and averaged across modules. Malformed
+  table rows are skipped, and a module with no usable table, or a
+  sensitivity of zero or below at that frequency, is left out of the
+  average. If every module is left out, the file's voltage is used
+  unchanged.
+- A **Scale voltage based on transmitter sensitivity** checkbox under
+  **Voltage per Rail** turns the scaling on (the default) or off. Clear
+  it to use the file's voltage as is. Hover over it to see the file
+  voltage, the file sensitivity and the module sensitivity. It can't be
+  changed once the transmitter is configured, and it is greyed out and
+  cleared when no module has a usable sensitivity.
+- A JSON file loaded with no transmitter connected keeps its unscaled
+  voltage, and the checkbox label turns orange. Configure refuses it
+  while the box is checked: load it again with the transmitter
+  connected, or clear the box to use the file's voltage.
+- Saving it as a solution file keeps the checkbox setting.
+- Pulse train count is the largest value in the file's
+  `pulse_train_count_selections`. That is usually longer than the app's
+  safety limits allow (10 minutes on the standard voltage tables), so
+  Configure refuses it unless the safety bypass is armed on the Settings
+  page. A file without selections gets a pulse train count of 1. While
+  the file is loaded, **Pulse Train Count** is a list of the file's
+  counts and stays selectable although the rest of Sequence Settings is
+  locked. Picking another count keeps the file's delays and
+  apodizations, which **Edit Solution** does not.
+- The scaled voltage belongs to the modules connected at load. If
+  different modules are connected later (a swapped transmitter, or a
+  different module count), Configure refuses the file until it is loaded
+  again. An advanced run's own power cycles bring back the same modules,
+  so they pass.
+- `start_C` and `shutoff_C` become the Advanced dialog's default start
+  and shutoff temperatures.
+- Each focus position is worked out from that focus's delays, because
+  the file stores only a nominal depth.
 
 ![Loaded Solution](controller_loaded_solution.png)
 
@@ -183,6 +228,61 @@ A progress bar at the bottom of the right column tracks the current run.
 
 Progress updates are driven by unsolicited `STATUS` frames from the
 firmware, so the bar advances even when the app is not actively polling.
+During an [advanced run](#advanced-runs) the text starts with the
+run number, e.g. `RUN 2/8 RUNNING 40/375`, and keeps it after the
+advanced run ends.
+
+**Save temp/voltage log** writes TX, ambient and HV temperatures and the
+HV rails to `logs/controller_telemetry_<date>_<time>.csv`, one file per
+Start. **Include idle readings in log** keeps one file open and sampling
+between runs, with runs marked in it. While logging is on, the line
+below the checkboxes shows the file being written, else the last file
+written, else the folder the next file will go in.
+
+<a id="advanced-runs"></a>
+
+### Advanced runs
+
+**Advanced** (next to **Edit Solution**) opens a dialog for repeated,
+temperature-gated runs. These settings are only set there. While
+**Use these settings when Start is pressed** is checked, the button reads
+**Advanced ●** and the status line ends with a summary such as
+`Advanced 8 runs, 35–75 °C, 10 min off`.
+
+| Setting | Behaviour |
+|---------|-----------|
+| **Start temperature** | A run starts only when the hottest module is at or below this. Defaults to the file's `start_C`, else 50 °C. |
+| **Shutoff temperature** | A run is stopped early when the hottest module reaches this. Defaults to the file's `shutoff_C`, else 75 °C. The TX firmware still stops at 75 °C whatever is set here. |
+| **Runs** | How many times the configured solution runs. The pulse train count per run is **Pulse Train Count** in Sequence Settings. |
+| **Time between runs** | Minutes or seconds to rest after each run before the next one may start. After it, the next run starts once the transmitter is at or below the start temperature. 0 starts it as soon as it is cool enough. |
+| **Turn off transmitter between runs** | Checked: HV and 12 V are off during that time; the transmitter then powers back up, is reconfigured, and starts if it is cool enough, or turns off for the same time again. Needs more than 0 minutes. Unchecked: the transmitter stays powered and is watched until it is cool enough. |
+
+With the settings on, **Start** runs all of them in turn; **Stop** ends it
+at any point, including while the transmitter is off (12 V is turned back
+on). Every setting on the page is locked until the run ends, rests
+included: the solution and sequence fields, Trigger Mode, the focus
+selector, HV enable mode, voltage scaling, Configure, Load, Edit Solution,
+Reset and the Settings tab. Every run after the first reprograms the
+transmitter from the settings captured at Start, with a selected single
+focus pinned again. After a rest with the transmitter off, HV is turned
+back on and allowed to settle before the run starts, whatever the HV
+enable mode.
+
+A run starts only when every module has a temperature reading less than
+15 s old. While a run is going, it is stopped if any module goes without a
+fresh reading for 30 s, or twice the longest gap between the firmware's
+end-of-train status frames plus 10 s if that is longer, because the
+shutoff temperature can't be checked without them. If a stop fails, HV is
+turned off at once and the stop is retried 3 more times, 5 s apart; the
+run reports its outcome only after that, and says whether HV was
+confirmed off. Advanced runs need the Sequence or Single trigger
+mode. If the safety bypass is armed, it stays armed across the run's own
+power cycles. The run aborts with an error if the transmitter disconnects
+on its own, does not come back within 90 s of 12 V turning on, comes back
+with a different module count, or fails to configure.
+
+Each advanced run writes `logs/<date>_<time>_advanced_run.log` in the format of the
+openlifu-test-scripts thermal tests, so `thermal_log_plot.py` can plot it.
 
 ---
 
@@ -201,6 +301,8 @@ firmware, so the bar advances even when the app is not actively polling.
 4. Click **Start**. The progress bar begins to fill and the system state
    flips to `Running`.
 5. Wait for **FINISHED** (if using Single or Sequence mode), or click **Stop** to abort.
+   For repeated or temperature-gated runs, set up [Advanced](#advanced-runs)
+   before clicking **Start**.
 6. Edit any field and press Enter — the new value is pushed live without
    a full re-Configure (assuming you have not loaded a solution from
    file).

@@ -31,7 +31,9 @@ dependencies = [
     "pyserial>=3.5",
     "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
-    "openlifu-sdk>=2.0.16",
+    # openlifu-sdk 2.2.0: bl_updater= on every update path (bootloader
+    # 1.0.x -> 1.1.0); keep MIN_SDK_VERSION in lifu/lifu_connector.py in sync.
+    "openlifu-sdk>=2.2.0",
     "openlifu-verification>=1.1.0",
     "openpyxl"
 ]

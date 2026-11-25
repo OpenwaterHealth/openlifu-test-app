@@ -13,29 +13,39 @@ Signals consumed (defined on ``LIFUConnector``):
     - ``fwUpdateProgress`` (str, int, int)
     - ``fwUpdateStatus`` (str, bool, str)
     - ``fwVersionRead`` (str, str)
+    - ``consoleDfuStateChanged`` ()
     - ``userConfigRead`` (str, str)
     - ``userConfigStatus`` (str, bool, str)
+    - ``serialNumberConflict`` (str, str, str)
     - ``testReportLoaded`` (bool, str)
 
 Instance attributes consumed (initialized in ``LIFUConnector.__init__``):
     - ``interface``, ``_interface_mutex``
-    - ``_txConnected``
+    - ``_txConnected``, ``_hvConnected``
+    - ``_monitoring_paused``, ``_fw_update_active``
+    - ``_console_dfu_kind``, ``_console_dfu_version``,
+      ``_console_dfu_probe_busy`` (console-in-DFU detection)
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSlot
 
-from openlifu_sdk.io.exceptions import LIFUError
+from openlifu_sdk.io import LIFUInterface
+from openlifu_sdk.io.exceptions import LIFUError, LIFUProtocolError
+from openlifu_sdk.io.LIFUUserConfig import LifuUserConfig
+
+from lifu import dfu_driver, firmware_images, usb_hub_power
+from lifu.lifu_constants import parse_firmware_version
 from test_reports.test_reports import (
     check_config_against_device,
     read_test_report,
@@ -43,6 +53,10 @@ from test_reports.test_reports import (
 )
 
 logger = logging.getLogger(__name__)
+
+# consoleDfuKind when a DFU device is enumerated but Windows has no driver
+# for it, so the SDK can't read its product string. Recover installs it.
+DFU_KIND_NO_DRIVER = "no-usb-driver"
 
 
 def _parse_tx_module(target: str):
@@ -55,6 +69,98 @@ def _parse_tx_module(target: str):
     return None
 
 
+def _is_console(target: str) -> bool:
+    """True for the console (HV controller) target."""
+    return target.strip().lower() == "console"
+
+
+# User-config key holding the unit's serial number (same key the TX test
+# report import and the default console config use).
+SERIAL_NUMBER_KEY = "sn"
+_SERIAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+
+
+def normalize_serial_number(raw: str) -> str | None:
+    """Serial from typed or scanned text, or None if it isn't one.
+
+    Barcode/QR scanners type like a keyboard and may add a trailing
+    Enter/Tab or stray whitespace, so all whitespace and control characters
+    are dropped. What's left must be 1-32 of ``A-Z a-z 0-9 . _ -``."""
+    sn = "".join(ch for ch in (raw or "") if ch.isprintable() and not ch.isspace())
+    return sn if _SERIAL_RE.match(sn) else None
+
+
+# Order of the identity keys in a user config (the default config's and
+# a test report's).
+IDENTITY_KEYS = ("sn", "hwid", "hw_ver", "fw_ver", "sdk_ver", "updated")
+
+
+def _set_in_place(data: dict, values: dict, order=IDENTITY_KEYS) -> dict:
+    """``data`` with ``values`` set and nothing else touched.
+
+    Each key's first match (any case) is replaced in place under the given
+    name, and duplicates are dropped. A missing key goes next to its
+    neighbours in *order*: right after the nearest earlier one present,
+    else right before the nearest later one, else first. So adding
+    ``hwid`` to ``{"sn", "updated", "module"}`` gives ``sn, hwid, updated,
+    module``, never ``hwid`` above ``sn``. Keys outside *order* keep their
+    places; missing ones of those go first.
+    """
+    items, placed = [], set()
+    for k, v in data.items():
+        key = next((n for n in values if n == k.lower()), None)
+        if key is None:
+            items.append((k, v))
+        elif key not in placed:
+            items.append((key, values[key]))
+            placed.add(key)
+    rank = {key: i for i, key in enumerate(order)}
+    missing = [k for k in values if k not in placed]
+    missing.sort(key=lambda k: rank.get(k, -1))
+    for key in missing:
+        names = [k for k, _ in items]
+        if key in rank:
+            # Any case counts: a kept "HW_VER" still marks hw_ver's place.
+            before = [i for i, n in enumerate(names) if rank.get(n.lower(), len(order)) < rank[key]]
+            after = [i for i, n in enumerate(names) if rank[key] < rank.get(n.lower(), -1)]
+            at = before[-1] + 1 if before else (after[0] if after else 0)
+        else:
+            at = 0
+        items.insert(at, (key, values[key]))
+    return dict(items)
+
+
+def _first(data: dict, key: str):
+    """The value of *key* in *data*, matched in any case, or None."""
+    return next((v for k, v in data.items() if k.lower() == key), None)
+
+
+def _calibration_owner_problem(data: dict, hwid: str, legacy_hwid: str) -> str | None:
+    """Why Assign must not stamp *hwid* on this TX config, or None if it may.
+
+    The stored ``hwid`` is what ties a config's calibration
+    (``module.sensitivity``) to its module: the operator interface refuses
+    a calibration whose ``hwid`` isn't the module's. Assign writes the
+    module's own ``hwid``, so on a config that carries calibration it must
+    first confirm that calibration is this module's. Its full form or the
+    legacy 6-byte one (which Assign upgrades) both are. A config without
+    calibration can take any ``hwid``.
+    """
+    module = _first(data, "module")
+    if not (isinstance(module, dict) and _first(module, "sensitivity")):
+        return None
+    stored = _first(data, "hwid")
+    if stored in (hwid, legacy_hwid):
+        return None
+    if stored in (None, ""):
+        owner = "has no hardware ID, so it can't be confirmed to be this module's"
+    else:
+        owner = f"is for hardware ID {stored}, not this module's {hwid}"
+    return (f"The calibration stored on this module {owner}. Assign would relabel it "
+            "as this module's, so nothing was written. Load this module's own test "
+            "report and write it first.")
+
+
 class SettingsMixin:
     """Mixin providing the Settings-page slots/helpers for ``LIFUConnector``."""
 
@@ -64,48 +170,24 @@ class SettingsMixin:
 
     @pyqtSlot(str, result=str)
     def getDefaultFirmwarePath(self, device_type: str) -> str:
-        """Return the firmware file INCLUDED with the SDK for ``device_type``.
+        """Return the signed firmware image the app ships for ``device_type``
+        (``"console"`` or ``"transmitter"``), or ``""``.
 
-        The console uses the signed image bundled with the SDK
-        (``LIFUFirmwareUpdate.bundled_signed_app()``) - deliberately NOT a
-        GitHub download: the update-to firmware and its version come from the
-        binary shipped with the app. The transmitter still uses the SDK's
-        firmware lookup. Falls back to the canonical bundled filename if the
-        SDK can't be queried.
+        The images live in the app's ``firmware/`` folder
+        (``lifu/firmware_images.py``): openlifu-sdk 2.1.0-rc.4 and later
+        carry no firmware.
         """
-        if device_type == "console":
-            try:
-                from openlifu_sdk.io.LIFUFirmwareUpdate import bundled_signed_app
-                p = bundled_signed_app()
-                if p.is_file():
-                    return str(p)
-                logger.warning("bundled console firmware not present: %s", p)
-            except Exception as e:
-                logger.warning("bundled console firmware lookup failed: %s", e)
-        else:
-            try:
-                from openlifu_sdk.util import firmware as sdk_fw
-                if device_type == "transmitter":
-                    return str(sdk_fw.get_transmitter_firmware_path())
-                return ""
-            except Exception as e:
-                logger.warning(
-                    "openlifu-sdk firmware path lookup failed for %s; "
-                    "falling back to the bundled filename: %s", device_type, e,
-                )
+        names = {
+            "console": firmware_images.CONSOLE_SIGNED_APP,
+            "transmitter": firmware_images.TRANSMITTER_SIGNED_APP,
+        }
+        name = names.get(device_type)
+        if not name:
+            return ""
         try:
-            spec = importlib.util.find_spec("openlifu_sdk")
-            if spec is None or spec.origin is None:
-                return ""
-            fw_dir = os.path.join(os.path.dirname(spec.origin), "firmware")
-            names = {
-                "console": "openlifu-console-fw-signed.bin",
-                "transmitter": "openlifu-transmitter-fw-signed.bin",
-            }
-            name = names.get(device_type, "")
-            return os.path.join(fw_dir, name) if name else ""
-        except Exception as e:
-            logger.error(f"Error locating default firmware for {device_type}: {e}")
+            return str(firmware_images.image(name))
+        except FileNotFoundError as e:
+            logger.error("%s", e)
             return ""
 
     @pyqtSlot(str, result=str)
@@ -202,12 +284,11 @@ class SettingsMixin:
         parsed = parse_firmware_version(ver)
         return (parsed is not None and parsed >= (1, 2, 6)), ver
 
-    # NOTE: firmware is no longer fetched from GitHub at runtime — the SDK's
-    # download flow was removed, and the transmitter "check GitHub" action was
-    # retired with it. Both devices update exclusively to the image bundled
-    # with the SDK's firmware directory; other versions must be downloaded
-    # from the firmware repo's GitHub releases (or built from source) and
-    # selected manually in the firmware file field.
+    # NOTE: firmware is not fetched from GitHub at runtime. Both devices
+    # update to the images the app ships in firmware/ (lifu/firmware_images.py;
+    # the SDK carries none since 2.1.0-rc.4); other versions must be
+    # downloaded from the firmware repo's GitHub releases (or built from
+    # source) and selected manually in the firmware file field.
 
     @pyqtSlot(str, result=bool)
     def isTransmitterProductionImage(self, path: str) -> bool:
@@ -303,12 +384,12 @@ class SettingsMixin:
         works for units older than the secure bootloader too:
 
           - no bootloader (app < 1.2.0)     -> migrate to the secure
-            bootloader via STM32 ROM DFU (bundled production image)
+            bootloader via STM32 ROM DFU (shipped production image)
           - legacy bootloader (1.2.0-1.2.5) -> migrate via the RAM updater
           - secure bootloader (>= 1.2.6)    -> normal signed-app update
 
         ``firmware_path`` is the signed app (used for the legacy and secure
-        paths); the no-bootloader path flashes the SDK's bundled combined
+        paths); the no-bootloader path flashes the shipped combined
         image. Precondition: the file must be a valid signed console image.
 
         ``force`` applies to the secure app-update path only: it flashes an
@@ -316,64 +397,290 @@ class SettingsMixin:
         otherwise refuses. The bootloader's persistent anti-rollback floor is
         still the final authority at boot and may reject the image, leaving
         the slot empty - so this is a bench/recovery option.
+
+        Requires the console application to be running (``hvConnected``):
+        the updater reads the app version and asks the app to reboot into
+        DFU. For a unit already parked in a bootloader (no serial port) use
+        :meth:`recoverConsoleFirmware`.
         """
+        self._start_console_update(firmware_path, force, recovery=False)
+
+    @pyqtSlot(str)
+    @pyqtSlot(str, bool)
+    def recoverConsoleFirmware(self, firmware_path: str,
+                               force: bool = False) -> None:
+        """Reflash a console parked in a bootloader's USB DFU (no serial port).
+
+        Built without an HV handle, ``LIFUFirmwareUpdate(hv=None)`` classifies
+        the unit from its USB product string and runs the matching route:
+        ``STM32 BOOTLOADER`` -> production image, ``LIFU BL DFU`` -> RAM-updater
+        migration then signed app, ``OW DFU`` -> signed app. The legacy route
+        rewrites the bootloader in place, so the status text asks the operator
+        to keep the console powered and close other flashing tools. Same
+        thread/signal contract as :meth:`updateConsoleFirmware`.
+        """
+        self._start_console_update(firmware_path, force, recovery=True)
+
+    def _ensure_dfu_driver(self, device_type: str) -> bool:
+        """Make sure Windows has a USB driver for the DFU device before an
+        update reboots the unit into it (one UAC prompt per PC). False, with
+        the reason emitted, means don't start: without the driver the unit
+        would be left parked in its bootloader. Call from a worker thread."""
+        if sys.platform != "win32" or dfu_driver.is_driver_installed():
+            return True
+        self.fwUpdateStatus.emit(
+            device_type, False,
+            "Installing the USB driver for firmware updates. Approve the "
+            "Windows permission prompt…")
+        result = dfu_driver.install_driver()
+        if result.ok:
+            logger.info("DFU USB driver installed")
+            return True
+        msg = ("Firmware update not started: the USB driver for the device's "
+               f"update mode could not be installed ({result.message}). "
+               "Try again and approve the Windows prompt.")
+        logger.error(msg)
+        self.fwUpdateStatus.emit(device_type, False, msg)
+        return False
+
+    def _keep_console_hub_awake_for_update(self) -> bool:
+        """Before a normal console update, stop Windows from suspending the
+        console's USB hub during the app -> bootloader handoff
+        (open-lifu-console-bl#2); one UAC prompt per USB port. No released
+        console firmware fixes this yet, so it runs for every console.
+
+        False, with a failure emitted, means don't start: the update would
+        likely time out with the console stuck in its bootloader. A declined
+        prompt is tolerated when a transmitter is attached, since the TX keeps
+        the hub busy. Call from a worker thread."""
+        found = usb_hub_power.console_hub_instances()
+        hubs = [h for h in found if usb_hub_power.hub_may_sleep(h)]
+        if not hubs:
+            logger.info("Console hub check: %s, no prompt",
+                        f"hub(s) already kept awake: {found}" if found
+                        else "no console USB2514 hub found")
+            return True
+        self.fwUpdateStatus.emit(
+            "console", False,
+            "Starting console firmware update: Windows will ask for permission "
+            "to keep the console's USB hub awake during the update…")
+        result = usb_hub_power.keep_hubs_awake(hubs)
+        if result.ok:
+            logger.info("Console USB hub kept awake for update: %s", hubs)
+            return True
+        if self._txConnected:
+            logger.warning("Console hub power unchanged (%s); TX attached, continuing",
+                           result.message)
+            self.fwUpdateStatus.emit(
+                "console", False,
+                f"Starting console firmware update anyway ({result.message}); the "
+                "attached transmitter keeps the USB hub awake…")
+            return True
+        msg = ("Console update failed: the console's USB hub could not be kept "
+               f"awake ({result.message}). Approve the Windows prompt, or attach a "
+               "transmitter, and try again.")
+        logger.error(msg)
+        self.fwUpdateStatus.emit("console", False, msg)
+        return False
+
+    def _installed_console_version(self) -> str | None:
+        """The running console app's version (cached, else read), or None."""
+        if self._cached_hv_fw_version:
+            return self._cached_hv_fw_version
+        self._interface_mutex.lock()
+        try:
+            return str(self.interface.hvcontroller.get_version())
+        except Exception as e:
+            logger.warning("Could not read the console version: %s", e)
+            return None
+        finally:
+            self._interface_mutex.unlock()
+
+    @staticmethod
+    def _downgrade_refusal(device: str, image_path: str,
+                           installed: str | None) -> str | None:
+        """Why *image_path* must not go onto a unit running *installed*, or
+        None. Refuses an image whose version is below the installed one.
+
+        The SDK's own downgrade check is not enough: on a 1.0.x secure
+        bootloader it installs the bootloader updater first, which empties
+        the application slot and the anti-rollback floor, so its later
+        check finds nothing installed and lets any older app through.
+        Equal versions (a reinstall) and unreadable versions are allowed."""
+        have = parse_firmware_version(installed)
+        if have is None:
+            return None
+        try:
+            image_version = firmware_images.image_version(image_path)
+        except (OSError, ValueError) as e:
+            logger.warning("Could not read the version of %s: %s", image_path, e)
+            return None
+        want = parse_firmware_version(image_version)
+        # 0.0.0 is no real image (the SDK's placeholder for an invalid
+        # version): leave it to the SDK, as with an unreadable one.
+        if want is None or want == (0, 0, 0) or want >= have:
+            return None
+        return (f"Downgrade refused: the {device} runs {installed} and the "
+                f"selected firmware is {image_version}. Nothing was written.")
+
+    def _start_console_update(self, firmware_path: str, force: bool,
+                              recovery: bool) -> None:
+        """Shared worker behind :meth:`updateConsoleFirmware` (app running)
+        and :meth:`recoverConsoleFirmware` (unit parked in DFU)."""
         def _run():
-            # The provided file must be a signed image (the bundled default
-            # is). This is a sanity check on a user-browsed file; the actual
-            # cohort/path is chosen by LIFUFirmwareUpdate at run time.
+            # Sanity check on a browsed file; the SDK picks the route itself.
             if not self.isConsoleFirmwareSigned(firmware_path):
                 msg = "Firmware file is not a valid signed console image."
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
                 return
+            # A unit in DFU (recovery) has no running app to compare with;
+            # Force is the operator's explicit downgrade.
+            if not recovery and not force:
+                refusal = self._downgrade_refusal(
+                    "console", firmware_path, self._installed_console_version())
+                if refusal:
+                    msg = (f"Console update failed: {refusal} Check \"Force\" "
+                           "to install it anyway.")
+                    logger.error(msg)
+                    self.fwUpdateStatus.emit("console", False, msg)
+                    return
+            if not self._ensure_dfu_driver("console"):
+                return
+            # Recovery: the unit is already in DFU, past the handoff.
+            if not recovery and not self._keep_console_hub_awake_for_update():
+                return
 
-            # The DFU sequence reboots the device into the bootloader; any
-            # polling round-trip in flight against the soon-to-disappear
-            # CDC interface causes spurious comm timeouts. Pause polling
-            # for the duration of the update.
+            # The device reboots into DFU: pause polling so in-flight reads
+            # don't surface as comm timeouts.
             prev_paused = self._monitoring_paused
             self._monitoring_paused = True
-            # Updating the console also drops 12V, so the TX modules power
-            # off and re-enumerate. Any TX query that races that window
-            # fails ("get_device_count timed out"). Those errors are
-            # EXPECTED here, so suppress the popups for the duration.
+            # 12V drops during the update, so TX modules re-enumerate; their
+            # query failures are expected and must not raise popups.
             prev_fw_active = self._fw_update_active
             self._fw_update_active = True
+            operation_label = "recovery" if recovery else "update"
             try:
                 from openlifu_sdk.io.LIFUFirmwareUpdate import LIFUFirmwareUpdate
 
                 def _progress(written: int, total: int, label: str) -> None:
                     self.fwUpdateProgress.emit(label, written, total)
 
-                self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
-                logger.info("Console firmware update: %s (force=%s)",
-                            firmware_path, force)
-                # Auto-detect the unit's state and run the right path
-                # (ROM-DFU migration / RAM-updater migration / signed-app
-                # update). Keyless: the bootloader verifies at boot.
-                fw = LIFUFirmwareUpdate(hv=self.interface.hvcontroller)
-                result = fw.update(signed_app=firmware_path, force=force,
-                                   progress_callback=_progress)
+                if recovery:
+                    dfu_bootloader = (f"{self._console_dfu_kind} "
+                                      f"{self._console_dfu_version}").strip()
+                    if not dfu_bootloader or self._console_dfu_kind == DFU_KIND_NO_DRIVER:
+                        dfu_bootloader = "unknown"
+                    self.fwUpdateStatus.emit(
+                        "console", False,
+                        f"Starting console recovery (bootloader: {dfu_bootloader}). Keep the "
+                        "console powered on")
+                    logger.info("Console firmware recovery from DFU (%s): %s (force=%s)",
+                                dfu_bootloader, firmware_path, force)
+                    # No serial port: the SDK classifies the unit over USB DFU.
+                    fw = LIFUFirmwareUpdate(hv=None)
+                else:
+                    self.fwUpdateStatus.emit("console", False, "Starting console firmware update…")
+                    logger.info("Console firmware update: %s (force=%s)",
+                                firmware_path, force)
+                    # The SDK auto-detects the unit's state and route.
+                    fw = LIFUFirmwareUpdate(hv=self.interface.hvcontroller)
+                # The SDK takes every image from the caller: the shipped
+                # production image and legacy updater cover the ROM and
+                # legacy-bootloader routes.
+                result = fw.update(
+                    **firmware_images.console_update_images(firmware_path),
+                    force=force, progress_callback=_progress)
                 done = result.summary
                 if result.reboot_required:
                     done += " Power-cycle the console to boot the new application."
                 self.fwUpdateStatus.emit("console", True, done)
-                logger.info("Console firmware update complete: %s", result.summary)
+                logger.info("Console firmware %s complete: %s", operation_label, result.summary)
                 # New firmware -> cached version/HWID is stale.
                 self._invalidate_device_caches("HV")
+                if recovery:
+                    # Leaving the bootloader; the next probe refreshes the state.
+                    self._set_console_dfu_state("", "")
             except Exception as e:
-                msg = f"Console update failed: {e}"
+                msg = f"Console {operation_label} failed: {e}"
+                if recovery and "secure bootloader DFU did not appear" in str(e):
+                    # After the legacy -> secure swap the new bootloader's DFU
+                    # often needs a power cycle to enumerate; the swap is done.
+                    msg += (" The bootloader swap itself has very likely completed: "
+                            "power-cycle the console, wait for the status here to "
+                            "show it in its secure bootloader (\"secure-bl\"), then "
+                            "click Recover again to install the application.")
                 logger.error(msg)
                 self.fwUpdateStatus.emit("console", False, msg)
             finally:
                 self._monitoring_paused = prev_paused
-                # TX modules re-enumerate after the console comes back; drop
-                # the stale cache so the next query re-reads them, and stop
-                # suppressing real errors.
+                # TX modules re-enumerate; drop their cache and stop suppressing.
                 self._invalidate_device_caches("TX")
                 self._fw_update_active = prev_fw_active
 
         threading.Thread(target=_run, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Console-in-DFU detection (drives the Settings "Recover Firmware" state)
+    # ------------------------------------------------------------------
+    @pyqtSlot()
+    def probeConsoleDfu(self) -> None:
+        """Look for a console parked in a bootloader's USB DFU.
+
+        Polled by Settings (~2 s) only while the console serial port is
+        absent. Reads the USB product string of a 0483:DF11 device via the SDK
+        (a descriptor read, not a DFU transaction); blocking USB I/O, so it
+        runs on a daemon thread and publishes via ``consoleDfuStateChanged``.
+        Skipped while connected, mid-update, or while a probe is running; an
+        unclassifiable device counts as "none". Transmitter bootloaders use
+        the same strings, so a transmitter in DFU looks identical here.
+        """
+        if (self._hvConnected or self._fw_update_active
+                or self._console_dfu_probe_busy):
+            return
+        self._console_dfu_probe_busy = True
+
+        def _run():
+            kind = version = ""
+            try:
+                from openlifu_sdk.io.LIFUDFU import DFU_KIND_UNKNOWN, LIFUDFUManager
+                kind, version = LIFUDFUManager().detect_console_dfu_kind()
+                if kind == DFU_KIND_UNKNOWN:
+                    kind = version = ""
+            except RuntimeError as e:
+                # Normal: nothing enumerated (or no USB backend).
+                logger.debug("Console DFU probe: %s", e)
+                kind = version = ""
+            except Exception as e:
+                if sys.platform == "win32" and not dfu_driver.is_driver_installed():
+                    # Enumerated but unopenable: no driver yet. Show Recover,
+                    # which installs the driver before flashing.
+                    logger.info("Console DFU probe: device present, no USB driver (%s)", e)
+                    kind, version = DFU_KIND_NO_DRIVER, ""
+                else:
+                    logger.warning("Console DFU probe failed: %s", e)
+                    kind = version = ""
+            finally:
+                # A console that came up on its serial port meanwhile wins.
+                if self._hvConnected:
+                    kind = version = ""
+                self._set_console_dfu_state(kind, version)
+                self._console_dfu_probe_busy = False
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _set_console_dfu_state(self, kind: str, version: str) -> None:
+        """Publish the console's DFU state ("" = none) if it changed; backs the
+        ``consoleDfuState`` / ``consoleDfuKind`` / ``consoleDfuVersion`` properties."""
+        kind, version = (kind or ""), (version or "")
+        if (kind, version) == (self._console_dfu_kind, self._console_dfu_version):
+            return
+        self._console_dfu_kind, self._console_dfu_version = kind, version
+        if kind:
+            logger.info("Console DFU device present: %s %s", kind, version)
+        else:
+            logger.debug("Console DFU device gone")
+        self.consoleDfuStateChanged.emit()
 
     def _tx_module_cohort(self, module: int) -> tuple[str | None, str]:
         """(cohort, version) of a transmitter module from its running app
@@ -408,10 +715,10 @@ class SettingsMixin:
         Master (module 0), ``force_production=False``: an EMPTY
         ``firmware_path`` means "use the firmware included with the SDK" — a
         pre-secure unit (app <= 2.0.7) auto-migrates to the secure bootloader
-        via the bundled production image (a NO-bootloader unit, <= 2.0.3,
+        via the shipped production image (a NO-bootloader unit, <= 2.0.3,
         enters the STM32 ROM DFU with a plain DFU command; a legacy unit uses
         the reserved=0x77 force switch), and a secure unit (>= 2.0.8)
-        installs the bundled signed app. A non-empty ``firmware_path`` is an
+        installs the shipped signed app. A non-empty ``firmware_path`` is an
         operator-browsed signed app, which the UI only permits once the unit
         is on the secure bootloader (>= 2.0.8).
 
@@ -426,8 +733,8 @@ class SettingsMixin:
         (``OW_CMD_DFU reserved=0x77``). Beta/unlocked units only.
 
         Slave modules (1+): ``update_slave`` over the master's I2C
-        passthrough. An EMPTY ``firmware_path`` uses the bundled images: a
-        secure slave (>= 2.0.8) gets the bundled signed app; a LEGACY slave
+        passthrough. An EMPTY ``firmware_path`` uses the shipped images: a
+        secure slave (>= 2.0.8) gets the shipped signed app; a LEGACY slave
         (2.0.4 - 2.0.7) is migrated in one shot (RAM-resident DFU stub +
         full production image — bootloader AND app). With
         ``force_production=True`` a secure slave is fully reflashed
@@ -453,12 +760,17 @@ class SettingsMixin:
             # signals -- the progress bar freezes and only jumps to 100% when
             # the lock is finally released. The console path (which works)
             # deliberately relies on _monitoring_paused alone; mirror it here.
+            #
+            # Only the master reboots into USB DFU; slaves update over I2C.
+            if module == 0 and not self._ensure_dfu_driver("transmitter"):
+                return
             prev_paused = self._monitoring_paused
             self._monitoring_paused = True
             prev_fw_active = self._fw_update_active
             self._fw_update_active = True
             try:
                 from openlifu_sdk.io.LIFUFirmwareUpdate import (
+                    COHORT_LEGACY,
                     COHORT_NONE,
                     LIFUTransmitterFirmwareUpdate,
                 )
@@ -485,21 +797,37 @@ class SettingsMixin:
                             "disconnect the slave modules (update each alone "
                             "as the USB master) and retry.")
 
+                # Downgrade guard (see _downgrade_refusal). A production
+                # reflash is the operator's explicit full rewrite.
+                if not force_production:
+                    image = firmware_path or str(firmware_images.image(
+                        firmware_images.TRANSMITTER_SIGNED_APP))
+                    refusal = self._downgrade_refusal(
+                        f"transmitter module {module}", image, ver or None)
+                    if refusal:
+                        raise RuntimeError(refusal)
+
                 if module >= 1:
                     # Slave (1+): SDK update_slave over the I2C passthrough.
-                    # Empty path -> bundled images (secure slave: signed app;
-                    # legacy slave: one-shot stub migration, BL + app).
+                    # Empty path -> shipped images (secure slave: signed app;
+                    # legacy slave: one-shot stub migration, BL + app). The
+                    # route read here is passed to the SDK with its stub
+                    # (firmware_images.transmitter_slave_images); unknown
+                    # (None) passes neither.
                     signed = firmware_path or None
                     label = (f"Starting transmitter slave module {module} "
                              + ("production reflash…" if force_production
                                 else "update…"))
                     self.fwUpdateStatus.emit("transmitter", False, label)
                     logger.info("Transmitter slave %d update: %s (force=%s)",
-                                module, signed or "bundled SDK firmware",
+                                module, signed or "shipped firmware",
                                 force_production)
                     fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
+                    images = firmware_images.transmitter_slave_images(
+                        legacy=None if cohort is None else cohort == COHORT_LEGACY,
+                        signed_app=signed)
                     result = fw.update_slave(
-                        module, signed_app=signed,
+                        module, **images,
                         force_production=force_production,
                         progress_callback=_progress)
                     self.fwUpdateStatus.emit("transmitter", True, result.summary)
@@ -518,7 +846,7 @@ class SettingsMixin:
                     self._invalidate_device_caches("TX")
                     return
 
-                # Master: auto-detecting updater. Empty path -> bundled SDK
+                # Master: auto-detecting updater. Empty path -> shipped
                 # firmware (migrates a pre-2.0.8 unit — including a <= 2.0.3
                 # no-bootloader unit — or signed-app-updates a secure one). A
                 # browsed path is a signed app (UI-gated to secure units only).
@@ -529,10 +857,11 @@ class SettingsMixin:
                     + (" (included firmware)…" if signed is None
                        else "…"))
                 logger.info("Transmitter master update: %s",
-                            signed or "bundled SDK firmware")
+                            signed or "shipped firmware")
                 fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
-                result = fw.update(signed_app=signed,
-                                   progress_callback=_progress)
+                result = fw.update(
+                    **firmware_images.transmitter_update_images(signed),
+                    progress_callback=_progress)
                 self.fwUpdateStatus.emit("transmitter", True, result.summary)
                 logger.info("Transmitter master update complete: %s",
                             result.summary)
@@ -570,8 +899,8 @@ class SettingsMixin:
         )
 
         # Use the browsed file only when it is a real combined production
-        # image; otherwise fall back to the SDK's bundled production image
-        # (the firmware-file field defaults to the signed app, which is NOT a
+        # image; otherwise fall back to the shipped production image (the
+        # firmware-file field defaults to the signed app, which is NOT a
         # production image).
         prod_image = (firmware_path
                       if self.isTransmitterProductionImage(firmware_path)
@@ -581,31 +910,65 @@ class SettingsMixin:
             "Starting transmitter production reflash (bootloader + app) "
             "via STM32 DFU…")
         logger.info("Transmitter force-production reflash: %s",
-                    prod_image or "bundled production image")
+                    prod_image or "shipped production image")
         fw = LIFUTransmitterFirmwareUpdate(tx=self.interface.txdevice)
-        fw.update(force_production=True, production_image=prod_image,
-                  progress_callback=progress_cb)
+        fw.update(**firmware_images.transmitter_update_images(
+                      production_image=prod_image),
+                  force_production=True, progress_callback=progress_cb)
 
     # ------------------------------------------------------------------
     # User config (read/write JSON to TX module EEPROM)
     # ------------------------------------------------------------------
 
+    def _user_config_unsupported_msg(self, target: str) -> str | None:
+        """Why ``target`` can't do user config, or ``None`` if it can.
+
+        The console only gained OW_CMD_USR_CFG after 1.2.6; older units
+        NAK the command, which used to surface as a raw device error.
+        Catch it here so the operator gets the required version instead.
+        TX modules are never gated - they have supported user config
+        since the 2.0.x line.
+        """
+        if not _is_console(target):
+            return None
+        from lifu.lifu_constants import (
+            MIN_CONSOLE_USER_CONFIG_FW_VERSION,
+            console_supports_user_config,
+        )
+        version = self._cached_hv_fw_version
+        if console_supports_user_config(version):
+            return None
+        return (
+            f"User config is not supported by this console's firmware "
+            f"({version}). Requires {MIN_CONSOLE_USER_CONFIG_FW_VERSION} or "
+            f"newer - update the console in the Firmware Update section above."
+        )
+
     @pyqtSlot(str)
     def readUserConfig(self, target: str) -> None:
         """Read user configuration from the target device. Emits userConfigRead on success.
 
-        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        target: "console" (the HV controller) or "tx_N" / "tx N" (module N).
         """
+        unsupported = self._user_config_unsupported_msg(target)
+        if unsupported:
+            logger.warning("Read config blocked for %s: %s", target, unsupported)
+            self.userConfigStatus.emit(target, False, unsupported)
+            return
+
         def _run():
             self._interface_mutex.lock()
             try:
                 module = _parse_tx_module(target)
-                if module is None:
-                    # Console not yet supported
+                if module is not None:
+                    config = self.interface.txdevice.read_config(module=module)
+                elif _is_console(target):
+                    # The console is a single node -- no module chain to address.
+                    config = self.interface.hvcontroller.read_config()
+                else:
                     self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
                     return
 
-                config = self.interface.txdevice.read_config(module=module)
                 json_str = config.get_json_str()
                 logger.info(f"User config read from {target}: {json_str}")
                 self.userConfigRead.emit(target, json_str)
@@ -623,20 +986,183 @@ class SettingsMixin:
         threading.Thread(target=_run, daemon=True).start()
 
     @pyqtSlot(str, str)
-    def writeUserConfig(self, target: str, json_str: str) -> None:
-        """Write user configuration JSON to the target device.
+    @pyqtSlot(str, str, str)
+    @pyqtSlot(str, str, str, bool)
+    def writeSerialNumber(self, target: str, serial: str, hw_ver: str = "",
+                          overwrite: bool = False) -> None:
+        """Write the target's serial number into its user config.
 
-        target: "console" (reserved, not yet supported) or "tx_N" / "tx N" (module N).
+        Both targets get the default-config identity block. ``sn`` (and
+        ``hw_ver`` when given; blank keeps the device's) come from the
+        operator; ``hwid`` and ``fw_ver`` are read live from the device,
+        ``sdk_ver`` is this app's SDK, ``updated`` is now.
+        Console: the identity block is written first.
+        TX module: each identity key is replaced where it already is (any
+        case; duplicates dropped) and new ones go first, so a config loaded
+        from a test report keeps its layout, and its ``freq``, ``module``
+        (calibration) and ``device`` blocks are never touched. A blank
+        ``hw_ver`` leaves the module's own value, the test report's
+        hardware rev included, exactly as it is.
+        Either way every other key is kept, and a blank (never written)
+        config starts fresh. A config the device reports but the SDK can't
+        parse is never overwritten.
+
+        A different serial already on the device is replaced only with
+        ``overwrite``; otherwise ``serialNumberConflict`` asks QML to
+        confirm. The result is read back and checked, then published through
+        ``userConfigRead`` so the editor shows what the device holds.
+
+        target: "console" or "tx_N" / "tx N" (module N).
         """
+        sn = normalize_serial_number(serial)
+        if sn is None:
+            self.userConfigStatus.emit(
+                target, False,
+                f"Not a valid serial number: {serial.strip()!r}. Use 1-32 letters, "
+                "digits, '.', '_' or '-'.")
+            return
+        hw = normalize_serial_number(hw_ver) if (hw_ver or "").strip() else ""
+        if hw is None:
+            self.userConfigStatus.emit(
+                target, False,
+                f"Not a valid hardware version: {hw_ver.strip()!r}. Use 1-32 letters, "
+                "digits, '.', '_' or '-'.")
+            return
+        unsupported = self._user_config_unsupported_msg(target)
+        if unsupported:
+            self.userConfigStatus.emit(target, False, unsupported)
+            return
+
         def _run():
             self._interface_mutex.lock()
             try:
                 module = _parse_tx_module(target)
-                if module is None:
+                if module is not None:
+                    dev, addr, label = self.interface.txdevice, {"module": module}, f"TX {module}"
+                elif _is_console(target):
+                    dev, addr, label = self.interface.hvcontroller, {}, "the console"
+                else:
                     self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
                     return
 
-                updated = self.interface.txdevice.write_config_json(json_str, module=module)
+                try:
+                    existing = dev.read_config(**addr)
+                except LIFUProtocolError as e:
+                    # Unparseable header = never written (consoles ship blank).
+                    logger.info("No readable user config on %s (%s); starting fresh", label, e)
+                    existing = None
+                if existing is not None and existing.header.json_len and not existing.json_data:
+                    # The SDK turns truncated/invalid JSON into {} with only a
+                    # warning; writing on top of that would wipe the device.
+                    raise RuntimeError(
+                        f"the config on {label} ({existing.header.json_len} bytes) could "
+                        "not be parsed, so it was left untouched. Check it with Read Config.")
+                data = existing.to_dict() if existing is not None else {}
+
+                if module is not None:
+                    # Checked before asking about a serial conflict, so a
+                    # confirmation is never followed by a refusal.
+                    problem = _calibration_owner_problem(
+                        data, dev.get_hardware_id(base58=True, **addr),
+                        dev.get_hardware_id(base58=True, legacy_6byte=True, **addr))
+                    if problem:
+                        logger.warning("Assign refused on %s: %s", label, problem)
+                        self.userConfigStatus.emit(target, False, problem)
+                        return
+
+                # Keys match in any case: the factory stub uses "SN".
+                sn_keys = [k for k in data if k.lower() == SERIAL_NUMBER_KEY]
+                current = str(data[sn_keys[0]]).strip() if sn_keys else ""
+                if current and current != sn and not overwrite:
+                    self.serialNumberConflict.emit(target, current, sn)
+                    return
+
+                if module is not None:
+                    # TX: the identity keys are set in place; every other key
+                    # (freq, module, device, test-report data...) is kept.
+                    identity = {
+                        SERIAL_NUMBER_KEY: sn,
+                        "hwid": dev.get_hardware_id(base58=True, **addr),
+                        "hw_ver": hw,
+                        "fw_ver": dev.get_version(**addr),
+                        "sdk_ver": LIFUInterface.get_sdk_version(),
+                        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    if not hw:
+                        # Blank keeps the module's hw_ver, whatever its case;
+                        # a module without one gets an empty one, as the
+                        # console does.
+                        if any(k.lower() == "hw_ver" for k in data):
+                            del identity["hw_ver"]
+                        else:
+                            identity["hw_ver"] = ""
+                    data = _set_in_place(data, identity)
+                else:
+                    identity = {
+                        SERIAL_NUMBER_KEY: sn,
+                        "hwid": dev.get_hardware_id(base58=True, **addr),
+                        "hw_ver": hw,
+                        "fw_ver": dev.get_version(**addr),
+                        "sdk_ver": LIFUInterface.get_sdk_version(),
+                        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    for key in identity:
+                        found = [k for k in data if k.lower() == key]
+                        if key == "hw_ver" and not hw:
+                            identity[key] = data[found[0]] if found else ""
+                        for k in found:
+                            del data[k]
+                    data = {**identity, **data}
+
+                dev.write_config(LifuUserConfig(json_data=data), **addr)
+                written = dev.read_config(**addr)
+                if written.to_dict() != data:
+                    raise RuntimeError(
+                        f"the config read back from {label} does not match what was "
+                        f"written (sn {written.get(SERIAL_NUMBER_KEY)!r}). Check it with "
+                        "Read Config.")
+
+                logger.info("Identity written to %s: %s (serial was %r)",
+                            label, identity, current)
+                self.userConfigRead.emit(target, written.get_json_str())
+                verb = "replaced " + current + " on" if current and current != sn else "written to"
+                self.userConfigStatus.emit(target, True, f"Serial number {sn} {verb} {label}.")
+            except LIFUError as e:
+                logger.error("Error writing serial number to %s: %s", target, e)
+                self.userConfigStatus.emit(target, False, str(e))
+            except Exception as e:
+                msg = f"Error writing serial number to {target}: {e}"
+                logger.error(msg)
+                self.userConfigStatus.emit(target, False, msg)
+            finally:
+                self._interface_mutex.unlock()
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @pyqtSlot(str, str)
+    def writeUserConfig(self, target: str, json_str: str) -> None:
+        """Write user configuration JSON to the target device.
+
+        target: "console" (the HV controller) or "tx_N" / "tx N" (module N).
+        """
+        unsupported = self._user_config_unsupported_msg(target)
+        if unsupported:
+            logger.warning("Write config blocked for %s: %s", target, unsupported)
+            self.userConfigStatus.emit(target, False, unsupported)
+            return
+
+        def _run():
+            self._interface_mutex.lock()
+            try:
+                module = _parse_tx_module(target)
+                if module is not None:
+                    updated = self.interface.txdevice.write_config_json(json_str, module=module)
+                elif _is_console(target):
+                    updated = self.interface.hvcontroller.write_config_json(json_str)
+                else:
+                    self.userConfigStatus.emit(target, False, f"Unsupported target: {target}")
+                    return
+
                 msg = f"Config written to {target}. Seq: {updated.header.seq}, CRC: 0x{updated.header.crc:04X}"
                 logger.info(msg)
                 self.userConfigStatus.emit(target, True, msg)
@@ -701,6 +1227,9 @@ class SettingsMixin:
                         # Check against specified module
                         check_result = check_config_against_device(self.interface, config, module=module)
                         if check_result is not False:  # None means warnings but valid, False means mismatch
+                            # The report may carry the legacy 6-byte hwid; the
+                            # config written from it carries the full form.
+                            config['hwid'] = self.interface.txdevice.get_hardware_id(module, base58=True)
                             # Convert config to JSON string and populate User Config editor
                             json_str = json.dumps(config, indent=2)
                             self.userConfigRead.emit(target, json_str)

@@ -51,12 +51,12 @@
       "type": "library",
       "group": "cc.openwater",
       "name": "openlifu-sdk",
-      "version": "2.0.15rc1",
+      "version": "2.2.0",
       "supplier": {
         "name": "Openwater"
       },
       "publisher": "Openwater",
-      "description": "Openwater LIFU hardware I/O SDK (declared openlifu-sdk>=2.0.13). Bundles signed firmware images and libusb DLLs; see its own sbom.cdx.json for full composition.",
+      "description": "Openwater LIFU hardware I/O SDK (declared openlifu-sdk>=2.2.0). Bundles libusb DLLs; the firmware images ship with the app in firmware/ (openlifu-sdk 2.1.0-rc.4+ carries none); see its own sbom.cdx.json for full composition.",
       "licenses": [
         {
           "license": {
@@ -64,11 +64,11 @@
           }
         }
       ],
-      "purl": "pkg:pypi/openlifu-sdk@2.0.15rc1",
+      "purl": "pkg:pypi/openlifu-sdk@2.2.0",
       "properties": [
         {
           "name": "openwater:version-basis",
-          "value": "installed in .venv (wheel from GitHub release tag 2.0.15-rc.1, commit 911ff12)"
+          "value": "declared minimum; release tag 2.2.0, commit db58c2e (PyPI)"
         }
       ]
     },

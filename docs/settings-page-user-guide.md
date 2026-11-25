@@ -33,9 +33,12 @@ The **Settings** page covers two distinct engineering workflows:
    either the Console or a selected TX module.
 
 > **Warning:** Both workflows write directly to device persistent
-> storage. A bad config or interrupted firmware update can require a
-> bench recovery. Stop any sonication first; the app blocks navigation
-> to Settings while `state == RUNNING`.
+> storage. A bad config can require a bench recovery. An interrupted
+> console firmware update leaves the console in its bootloader; the
+> Console Firmware card recovers that state in-app (see
+> [Recovering a console stuck in its bootloader](#console-firmware-recovery)).
+> Stop any sonication first; the app blocks navigation to Settings while
+> `state == RUNNING`.
 
 Navigate to the Settings page by clicking the gear icon in the left
 sidebar. The page is hidden in `--simulate` mode.
@@ -71,10 +74,11 @@ transmitter modules…"*.
 ### Target component
 
 The **Target Component** dropdown lists every device whose user config
-can currently be edited. Today this is `TX 0`, `TX 1`, … one entry per
-detected TX module. (Console user config is supported by the SDK but
-gated off in the UI until firmware support lands — the relevant code is
-present and commented in [pages/Settings.qml](../pages/Settings.qml).)
+can currently be edited: `TX 0`, `TX 1`, … one entry per detected TX
+module, followed by `Console` when the console is connected. The first
+TX module is selected by default; the Console is the default only when
+no transmitter is connected. (Console user config also needs console
+firmware 1.2.7 or newer; older consoles show the card but block writes.)
 
 ### Selected device info
 
@@ -91,11 +95,64 @@ default; click **Read Config** to populate it.
 | Button | Behaviour |
 |--------|-----------|
 | **Read Config** | Read the user config from the selected target into the editor |
-| **Load Test Report** | Open a file picker for an Excel test report (`.xlsx`/`.xls`). The matching configuration values are converted via [`test_reports/test_reports.py`](../test_reports/test_reports.py) and pasted into the editor. The report's device serial is checked against the selected target |
+| **Load Test Report** | Open a file picker for an Excel test report (`.xlsx`/`.xls`). The matching configuration values are converted via [`test_reports/test_reports.py`](../test_reports/test_reports.py) and pasted into the editor. The report is matched to the selected TX module by hardware ID (see [Test reports](#test-reports)) |
 | **Write Config** | Validate the editor contents as JSON and push them to the selected target's persistent storage |
+
+Anything in the editor that is not on the device yet (an edit, a loaded
+test report, or a generated default) makes **Write Config** breathe, and
+the status line says what is pending. The breathing stops once the write
+succeeds, or when **Read Config** reloads what the device holds. Assign is
+refused while something is pending, because its result replaces the
+editor.
 
 A status line above the editor flashes green on success or red on
 failure for ~4 seconds, then hides itself.
+
+### Serial number and identity
+
+Type or scan a serial number and press **Enter** or **Assign**. The
+optional **Hardware Version** box is there for the console and for TX
+modules; it is kept between scans, and left blank it keeps the value
+already on the device. Assign writes the identity keys to the selected
+target:
+
+| Key | Value |
+|-----|-------|
+| `sn` | The serial number entered |
+| `hwid` | The device's hardware ID (full 12-byte form), read live |
+| `hw_ver` | The hardware version entered; blank keeps the device's |
+| `fw_ver` | The device's firmware version, read live |
+| `sdk_ver` | This app's SDK version |
+| `updated` | Now |
+
+On the console the identity keys are written first. On a TX module each
+key is replaced where it already is, and a missing one is added next to
+the identity keys around it, keeping the order above (`sn` before
+`hwid`, and so on). A config loaded from a test report keeps its layout, and its
+`freq`, `module` (calibration) and `device` blocks are never changed.
+Every other key is kept on both. A different serial already on the
+device is only replaced after you confirm.
+
+On a TX module that holds calibration (`module.sensitivity`), Assign
+first checks that the stored `hwid` is this module's, in its full form or
+the legacy 6-byte one (which it upgrades). If the calibration is for
+another module, or has no `hwid`, Assign is refused and nothing is
+written: stamping this module's `hwid` on it would let another module's
+calibration pass as this one's. Load the module's own test report first.
+
+### Test reports
+
+**Load Test Report** finds each value by its row label (Serial Number,
+Frequency, Hardware Rev, Hardware ID, Firmware Version, and SDK Version
+under Test Information), not by its row number, so a report with a row
+added or removed still loads. Serial Number and Frequency are required.
+Hardware Rev, Hardware ID, Firmware Version and SDK Version are left out
+of the config when the report has no such row or leaves it empty. Values
+are trimmed, so a serial typed with a trailing space loads without it.
+
+The report is matched to the module by hardware ID. A different firmware
+version stops the load; a missing one is only logged. Versions compare
+with or without a leading `v` (`v2.0.8` matches `2.0.8`).
 
 ### JSON shape
 
@@ -139,14 +196,92 @@ calibration pressure.
 
 | Element | Behaviour |
 |---------|-----------|
-| **Status indicator** | Green = HV controller connected, Red = not connected |
+| **Status indicator** | Green = HV controller connected; Amber = console found in its bootloader (USB DFU), with the bootloader kind and version; Red = not connected |
 | **Firmware Version** | The version currently reported by the connected Console |
 | **Firmware File** | Path to the signed `.bin` image to flash. Pre-populated with the bundled default; click **Browse…** to override |
-| **Update Firmware** | Push the file at the configured path. Disabled until the path is non-empty and the Console is connected |
+| **Update Firmware** | Push the file at the configured path. Disabled until the path is non-empty and the Console is connected. Reads **Recover Firmware** when the console is in its bootloader instead (below) |
 
 Clicking **Update Firmware** opens a modal progress dialog showing the
 written bytes and a percentage. The dialog locks the page until the
 flash finishes (or fails) and you click **Close**.
+
+<a id="bootloader-migration"></a>
+
+#### Bootloader replacement (console and transmitter)
+
+A console on app 1.2.6 / 1.2.7 or a transmitter on app 2.0.8 runs a
+1.0.x secure bootloader, and the current SDK installs firmware only on
+bootloader 1.1.0 or later. On such a unit, **Update Firmware** first
+installs the bootloader updater the app includes
+(`open-lifu-console-bl-updater` / `open-lifu-transmitter-bl-updater`),
+which replaces the bootloader with 1.1.0, and then installs the
+application. This happens on its own, with no extra prompt or message.
+It applies to transmitter slave modules too (over I2C).
+
+- The replacement is **permanent**: there is no way back to the 1.0.x
+  bootloader.
+- It adds up to about two minutes. Keep the unit powered.
+- Research (unlocked) units only. On a locked unit the old bootloader
+  still writes the updater over the installed application before the
+  updater refuses to touch the bootloader. The update fails after about
+  90 s and the unit stays in its bootloader with **no application**:
+  install one with **Recover Firmware**. The bootloader's anti-rollback
+  floor may then accept only console 1.3.0 / transmitter 2.1.0 or later.
+
+Older units (console app 1.1.0 - 1.2.5, transmitter app 2.0.2 - 2.0.7)
+get the bootloader inside the included production image. While that is
+still a 1.0.x bootloader (console 1.2.x, transmitter 2.0.x images),
+their next update goes through this replacement.
+
+**Downgrades.** Update Firmware refuses a file older than the firmware
+the unit runs, before anything is written. On the console, check
+**Force** to install it anyway; a transmitter cannot be downgraded from
+the app. (The SDK's own check is skipped when the bootloader is
+replaced, since that empties the application slot first, so the app
+checks before it starts.)
+
+**Included firmware.** The firmware the app installs by default is the
+latest official (non-pre-release) release of `openlifu-console-fw`,
+`openlifu-transmitter-fw` and the two bootloader updaters, fetched into
+`firmware/` when the app is built (`scripts/fetch_firmware.py`;
+`firmware/manifest.json` lists the releases).
+
+<a id="console-firmware-recovery"></a>
+
+### Recovering a console stuck in its bootloader
+
+If a console update is interrupted, or the bootloader rejects the
+installed app, the console stays in its bootloader's USB DFU mode and
+never opens a serial port, so the rest of the app shows it as **Not
+Connected**. While Settings is open and no console is connected, the
+card checks USB every two seconds. When it finds the console in DFU the
+status indicator turns amber and names the bootloader (`legacy-bl
+0.0.2`, `secure-bl 1.0.3-rc.1` or `stm32-rom`), and the button becomes
+**Recover Firmware**.
+
+Recover installs the firmware file above by the route that matches the
+bootloader it found: the ROM loader receives the combined bootloader +
+app image, the legacy bootloader is first migrated to the secure
+bootloader and then given the signed app, and the secure bootloader
+receives the signed app directly. The legacy migration rewrites the
+bootloader in place and cannot be interrupted safely: **keep the console
+powered**, and close STM32CubeProgrammer or any SDK script that may be
+talking to the unit before clicking. Power-cycle the console when the
+dialog says so.
+
+**Legacy migration needs a power cycle in the middle.** After the updater
+swaps in the secure bootloader and resets, the new bootloader's DFU does
+not appear on USB until the console is power-cycled, so the recovery
+stops with "the secure bootloader DFU did not appear". The bootloader
+swap itself has completed at that point. Power-cycle the console, wait
+for the amber status to read `secure-bl`, and click **Recover Firmware**
+again; that second pass only installs the application.
+
+The transmitter bootloaders report the same USB names, so a transmitter
+module sitting in DFU while the console is merely unplugged shows up
+here too. If the amber label appears when you did not expect the
+console to be in its bootloader, check what is actually plugged in
+before clicking Recover.
 
 ---
 

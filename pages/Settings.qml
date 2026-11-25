@@ -20,6 +20,13 @@ Rectangle {
     property bool txLoading: false
     property var configTargetModel: []
     property var modules: []  // Device info for all modules
+    // Console HWID, from hvDeviceInfoReceived. The TX equivalents live in
+    // `modules`; the console is a single node so it gets a plain property.
+    property string consoleDeviceId: ""
+    // Console firmware version, kept alongside the HWID for the sample
+    // console config below. consoleCurrentVersion.text can't be used for
+    // that -- it also carries "Reading…" / "—" / "Error" placeholders.
+    property string consoleFwVersion: ""
 
     // Console firmware to install: the operator-browsed file if one is
     // selected, otherwise the signed image included with the SDK. The path
@@ -40,6 +47,203 @@ Rectangle {
         transmitterFwPath.text.length > 0
             ? transmitterFwPath.text
             : LIFUConnector.getDefaultFirmwarePath("transmitter")
+
+    // True when the User Config card targets the Console and that console's
+    // firmware predates the user-config command (added after 1.2.6). Gates
+    // Read/Write Config and shows the inline warning in the card. TX targets
+    // are never blocked — they have supported user config since 2.0.x.
+    readonly property bool consoleUserConfigBlocked:
+        configTargetIsConsole
+        && !LIFUConnector.consoleSupportsUserConfig
+
+    readonly property bool configTargetIsConsole:
+        configTargetSelector.currentText === "Console"
+
+    // ----------------------------------------------------------------
+    // Unwritten-changes state
+    //
+    // The editor is a scratchpad: generating a default or editing the JSON
+    // changes nothing on the device until Write Config is pressed. These
+    // track that gap -- ``userConfigBaseline`` is the text as it last came
+    // from (or went to) the device, so anything else in the editor is an
+    // unwritten change. The status line names it and the Write Config
+    // button breathes until it is resolved.
+    // ----------------------------------------------------------------
+    property string userConfigBaseline: ""
+    property bool userConfigGenerated: false
+    // Load Test Report fills the editor through userConfigRead, the same
+    // signal as a Read Config, so the baseline matches the report rather
+    // than the device. This flag keeps it pending until it is written.
+    property bool userConfigFromReport: false
+
+    // Held while the editor and its baseline are being set together. They
+    // are two assignments and bindings re-evaluate between them, so the gap
+    // reads as "modified" -- long enough to kick off a breath of the Write
+    // Config pulse on something as innocent as a Read Config, which
+    // alwaysRunToEnd then plays out in full.
+    property bool userConfigUpdating: false
+
+    readonly property bool userConfigDirty:
+        !userConfigUpdating && userConfigEditor.text !== userConfigBaseline
+
+    // The only way programmatic code should fill the editor: content and
+    // baseline land together, so nothing in between looks like an edit.
+    function setUserConfigText(text) {
+        userConfigUpdating = true
+        userConfigEditor.text = text
+        userConfigBaseline = text
+        userConfigGenerated = false
+        userConfigFromReport = false
+        userConfigUpdating = false
+    }
+
+    readonly property string pendingWriteMessage:
+        userConfigDirty
+            ? "Config modified, click 'Write Config' to save the changes."
+            : userConfigGenerated
+              ? "Default config generated. Click 'Write Config' to program the device."
+              : userConfigFromReport
+                ? "Test report loaded. Click 'Write Config' to program the device."
+                : ""
+
+    // Clears the pending state: the editor now matches the device.
+    function markUserConfigSaved(text) {
+        userConfigBaseline = text
+        userConfigGenerated = false
+        userConfigFromReport = false
+    }
+
+    // The target the editor's contents belong to. Tracked by name rather
+    // than by index: rebuildConfigTargets() replaces the whole model, so a
+    // module count change (or the TX dropping out) can slide the selection
+    // to a different target while currentIndex stays the same --
+    // onCurrentIndexChanged never fires, and the old target's config, its
+    // baseline and its pending state would carry over to the new one.
+    property string userConfigTarget: ""
+
+    // Start the new target with an empty editor and nothing pending.
+    // Ignores a blank currentText: reassigning the model can blip through
+    // "no selection" on its way to the same target, and that must not wipe
+    // what the operator is editing.
+    function syncUserConfigTarget() {
+        var target = configTargetSelector.currentText
+        if (target === "" || target === userConfigTarget)
+            return
+        userConfigTarget = target
+        setUserConfigText("")
+        userConfigTouched = false
+        serialNumberField.text = ""
+        hwVersionField.text = ""   // console and TX hw versions differ
+        // The Generate button fills hwid/fw_ver from the live console.
+        // Cached after the first call, so this is just a re-emit.
+        if (target === "Console" && LIFUConnector.hvConnected)
+            LIFUConnector.queryHvInfo()
+    }
+
+    // A writeSerialNumber call is in flight; cleared by its status/conflict.
+    property bool serialWriteBusy: false
+
+    // A top-level value in a config's JSON text ("" if none / not JSON).
+    // Case-insensitive so the factory stub's "SN" counts as "sn".
+    function configValue(text, key) {
+        var parsed
+        try {
+            parsed = JSON.parse(text)
+        } catch (e) {
+            return ""
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return ""
+        var keys = Object.keys(parsed)
+        for (var i = 0; i < keys.length; ++i) {
+            if (keys[i].toLowerCase() === key)
+                return String(parsed[keys[i]])
+        }
+        return ""
+    }
+
+    // True once this target's editor holds something the operator has seen:
+    // a config read back from the device, or text they typed themselves.
+    // Gates the "missing config parameters" notice so a freshly opened app
+    // -- empty editor, nothing read yet -- says nothing. Reset whenever the
+    // editor is cleared (target switch, Clear Config).
+    property bool userConfigTouched: false
+
+    // ----------------------------------------------------------------
+    // Sample console config
+    //
+    // Consoles ship with no user config at all, so a Read Config on a
+    // fresh unit leaves the editor empty and there is nothing to write
+    // back. When that happens the Write Config button turns into "Generate
+    // Default Config" and loads the skeleton below into the editor, giving
+    // the console a valid JSON structure to grow from -- writing it is a
+    // separate, deliberate second press. Only the identity fields are
+    // placeholders -- hwid, fw_ver and sdk_ver are the live values, so the
+    // written config still identifies the unit it landed on.
+    // ----------------------------------------------------------------
+    readonly property bool consoleSampleConfigReady:
+        LIFUConnector.hvConnected
+        && consoleDeviceId !== "" && consoleDeviceId !== "N/A"
+        && consoleFwVersion !== ""
+
+    function buildDefaultConsoleConfig() {
+        return JSON.stringify({
+            "sn": "sample-sn-123",
+            "hwid": settingsPage.consoleDeviceId,
+            "hw_ver": "sample-hw-ver-123",
+            "fw_ver": settingsPage.consoleFwVersion,
+            "sdk_ver": LIFUConnector.sdkVersion,
+            "updated": settingsPage.nowStamp()
+        }, null, 2)
+    }
+
+    function nowStamp() {
+        return Qt.formatDateTime(new Date(), "yyyy-MM-dd hh:mm:ss")
+    }
+
+    // The keys a complete console config carries. A config missing any of
+    // them -- including the factory stub, which is just a serial number --
+    // is treated as not yet set up, and the button offers to generate one.
+    // Presence is all that is checked: the values are the operator's.
+    readonly property var consoleConfigKeys:
+        ["sn", "hwid", "hw_ver", "fw_ver", "sdk_ver", "updated"]
+
+    function isIncompleteConfig(text) {
+        if (text.trim().length === 0)
+            return true
+        var parsed
+        try {
+            parsed = JSON.parse(text)
+        } catch (e) {
+            return false   // mid-edit or malformed: not ours to second-guess
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return false
+        // Case-insensitive so the factory stub's "SN" counts as "sn".
+        var present = Object.keys(parsed).map(function (k) { return k.toLowerCase() })
+        for (var i = 0; i < settingsPage.consoleConfigKeys.length; ++i) {
+            if (present.indexOf(settingsPage.consoleConfigKeys[i]) === -1)
+                return true
+        }
+        return false
+    }
+
+    // Stamp "updated" with the time of this write, creating the field if the
+    // config does not have one. Text that is not a JSON object passes through
+    // untouched -- writeUserConfig reports the parse error rather than this
+    // silently swallowing it.
+    function stampUpdated(text) {
+        var parsed
+        try {
+            parsed = JSON.parse(text)
+        } catch (e) {
+            return text
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            return text
+        parsed["updated"] = settingsPage.nowStamp()
+        return JSON.stringify(parsed, null, 2)
+    }
 
     // Font for the small "Check for Updates" icon buttons. Other widgets
     // that need icons (e.g. IconButton.qml) load their own copy.
@@ -170,37 +374,42 @@ Rectangle {
         return "#4A90E2"                                            // blue (reinstall / compliant)
     }
 
-    // "Upgrade Firmware 1.2.5 -> 1.2.6-rc.5" / "Downgrade Firmware ..."
-    // / "Reinstall Firmware v1.2.6-rc.5" / fallback "Update Firmware".
-    // Labels show the FULL version (pre-release suffix included) so an rc
-    // build reads as an rc; the upgrade/downgrade/reinstall decision still
-    // comes from the M.m.p triple the bootloader actually enforces.
+    // "Install Firmware 1.2.7" / "Downgrade to Firmware 1.2.5" /
+    // "Reinstall Firmware 1.2.7" / fallback "Update Firmware". Only the
+    // version being installed is shown, in FULL (pre-release suffix
+    // included) so an rc build reads as an rc; the install/downgrade/
+    // reinstall decision still comes from the M.m.p triple the bootloader
+    // enforces, and a different build string at the same M.m.p (e.g.
+    // rc -> release) counts as an install.
     function updateButtonText(deviceVersion, fileVersion) {
-        var d = _parseFwVersion(deviceVersion)
         var f = _parseFwVersion(fileVersion)
         if (f === null) return "Update Firmware"
-        if (d === null) return "Install Firmware v" + _fullFwVersion(fileVersion)
-        var diff = _cmpFwVersion(f, d)
-        if (diff > 0) return "Upgrade Firmware " + _fullFwVersion(deviceVersion)
-            + " → " + _fullFwVersion(fileVersion)
-        if (diff < 0) return "Downgrade Firmware " + _fullFwVersion(deviceVersion)
-            + " → " + _fullFwVersion(fileVersion)
-        // Same M.m.p but a different build string (e.g. rc -> release) is
-        // still a meaningful change, so show both sides rather than "v X".
-        var dFull = _fullFwVersion(deviceVersion)
         var fFull = _fullFwVersion(fileVersion)
-        if (dFull !== fFull) return "Install Firmware " + dFull + " → " + fFull
-        return "Reinstall Firmware v" + fFull
+        var d = _parseFwVersion(deviceVersion)
+        if (d === null) return "Install Firmware " + fFull
+        var diff = _cmpFwVersion(f, d)
+        if (diff < 0) return "Downgrade to Firmware " + fFull
+        if (diff > 0 || _fullFwVersion(deviceVersion) !== fFull)
+            return "Install Firmware " + fFull
+        return "Reinstall Firmware " + fFull
     }
 
+    // TX modules first so a connected transmitter is the initial target; the
+    // Console is listed last and is the default only when no TX is connected.
     function rebuildConfigTargets() {
         var items = []
-        // Console user config not yet supported in firmware – enable when ready:
-        // if (LIFUConnector.hvConnected) items.push("Console")
         if (LIFUConnector.txConnected) {
             for (var i = 0; i < txModuleCount; i++) items.push("TX " + i)
         }
+        if (LIFUConnector.hvConnected) items.push("Console")
         configTargetModel = items
+    }
+
+    // Module index for a "TX n" target, or -1 for the Console / no target.
+    function configTargetModuleIndex(text) {
+        if (!text || !text.startsWith("TX")) return -1
+        var parts = text.split(" ")
+        return parts.length >= 2 ? parseInt(parts[1]) : -1
     }
 
     function queryTxModules() {
@@ -217,6 +426,7 @@ Rectangle {
         if (LIFUConnector.hvConnected) {
             consoleCurrentVersion.text = "Reading…"
             LIFUConnector.readHvFirmwareVersion()
+            LIFUConnector.queryHvInfo()   // HWID for the Device ID field (cached)
         }
         if (LIFUConnector.txConnected) {
             queryTxModules()
@@ -248,6 +458,22 @@ Rectangle {
         onTriggered: LIFUConnector.queryNumModules()
     }
 
+    // While the console serial port is absent, look for the console in a
+    // bootloader's USB DFU (interrupted update, or app rejected at boot).
+    // The connector does the USB probe on a background thread; this only
+    // schedules it. Paused during a console update, when the unit is in DFU
+    // on purpose.
+    Timer {
+        id: consoleDfuProbeTimer
+        interval: 2000
+        repeat: true
+        triggeredOnStart: true
+        running: settingsPage.visible
+                 && !LIFUConnector.hvConnected
+                 && !settingsPage.consoleUpdating
+        onTriggered: LIFUConnector.probeConsoleDfu()
+    }
+
     // Delay on fresh TX connection to let the device stabilise
     Timer {
         id: txConnectTimer
@@ -264,7 +490,23 @@ Rectangle {
         onTriggered: {
             consoleCurrentVersion.text = "Reading…"
             LIFUConnector.readHvFirmwareVersion()
+            LIFUConnector.queryHvInfo()   // HWID for the Device ID field (cached)
         }
+    }
+
+    // Keeps HWID/firmware populated while the Generate Default Config
+    // button is showing -- those two fields come off the live console, so the
+    // button stays disabled until they arrive. queryHvInfo re-emits from
+    // its cache once populated, so this only costs a UART round-trip while
+    // the values are genuinely missing, and stops as soon as they land.
+    Timer {
+        id: consoleSampleInfoPoll
+        interval: 2000
+        repeat: true
+        running: writeConfigButton.defaultConfigMode
+                 && LIFUConnector.hvConnected
+                 && !settingsPage.consoleSampleConfigReady
+        onTriggered: LIFUConnector.queryHvInfo()
     }
 
     // ----------------------------------------------------------------
@@ -276,6 +518,7 @@ Rectangle {
         function onFwVersionRead(deviceType, version) {
             if (deviceType === "console") {
                 consoleCurrentVersion.text = version
+                settingsPage.consoleFwVersion = version
             } else if (deviceType.startsWith("transmitter")) {
                 txCurrentVersion.text = version
             }
@@ -287,6 +530,8 @@ Rectangle {
             } else {
                 hvConnectTimer.stop()
                 consoleCurrentVersion.text = "—"
+                settingsPage.consoleDeviceId = ""
+                settingsPage.consoleFwVersion = ""
             }
             rebuildConfigTargets()
         }
@@ -341,23 +586,46 @@ Rectangle {
         }
 
         function onUserConfigRead(target, jsonStr) {
-            userConfigEditor.text = jsonStr
+            // Atomic: this is what the device holds, so edits from here on
+            // are the unwritten ones. A plain read must not look like one.
+            settingsPage.setUserConfigText(jsonStr)
+            // Set after the assignment: a read that comes back empty still
+            // counts as "we looked", and that is exactly the case the
+            // missing-parameters notice exists for.
+            settingsPage.userConfigTouched = true
+        }
+
+        function onSerialNumberConflict(target, existing, proposed) {
+            settingsPage.serialWriteBusy = false
+            serialConflictDialog.target = target
+            serialConflictDialog.existing = existing
+            serialConflictDialog.proposed = proposed
+            serialConflictDialog.open()
         }
 
         function onUserConfigStatus(target, success, message) {
-            // Flash the status text briefly; reuse the editor placeholder area
-            userConfigStatusText.text = message
-            userConfigStatusText.color = success ? "#2ECC71" : "#E74C3C"
-            userConfigStatusText.visible = true
-            userConfigStatusHideTimer.restart()
+            if (settingsPage.serialWriteBusy) {
+                settingsPage.serialWriteBusy = false
+                // Ready for the next scan.
+                if (success) {
+                    serialNumberField.text = ""
+                    serialNumberField.forceActiveFocus()
+                }
+            }
+            userConfigStatusText.flash(message, success ? "#2ECC71" : "#E74C3C")
+            // Only a write that landed clears the pending state -- a failed
+            // one leaves the button breathing, because the device still does
+            // not have what is in the editor.
+            if (success)
+                settingsPage.markUserConfigSaved(userConfigEditor.text)
         }
 
         function onTestReportLoaded(success, message) {
-            // Flash the status text briefly; reuse the editor placeholder area
-            userConfigStatusText.text = message
-            userConfigStatusText.color = success ? "#2ECC71" : "#E74C3C"
-            userConfigStatusText.visible = true
-            userConfigStatusHideTimer.restart()
+            userConfigStatusText.flash(message, success ? "#2ECC71" : "#E74C3C")
+            // The report is in the editor (userConfigRead came first) but
+            // not on the device yet.
+            if (success)
+                settingsPage.userConfigFromReport = true
         }
 
         function onTxDeviceInfoReceived(modulesList) {
@@ -368,6 +636,12 @@ Rectangle {
                     deviceId: m.deviceId
                 }
             })
+        }
+
+        function onHvDeviceInfoReceived(firmwareVersion, deviceId) {
+            settingsPage.consoleDeviceId = deviceId
+            if (firmwareVersion)
+                settingsPage.consoleFwVersion = firmwareVersion
         }
     }
 
@@ -395,6 +669,73 @@ Rectangle {
         onAccepted: {
             var target = configTargetSelector.currentText.toLowerCase()
             LIFUConnector.loadTestReport(selectedFile, target)
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Serial number overwrite confirmation (from serialNumberConflict)
+    // ----------------------------------------------------------------
+    Popup {
+        id: serialConflictDialog
+        anchors.centerIn: Overlay.overlay
+        width: 440
+        padding: 20
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+
+        property string target: ""
+        property string existing: ""
+        property string proposed: ""
+        readonly property string targetLabel:
+            target === "console" ? "The console" : target.toUpperCase()
+
+        background: Rectangle {
+            color: "#1E1E20"
+            radius: 12
+            border.color: "#3E4E6F"
+            border.width: 2
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 14
+
+            Text {
+                text: "Replace serial number?"
+                color: "white"
+                font.pixelSize: 16
+                font.weight: Font.Bold
+            }
+
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#BDC3C7"
+                font.pixelSize: 13
+                text: serialConflictDialog.targetLabel + " already has serial number "
+                      + serialConflictDialog.existing + ". Replace it with "
+                      + serialConflictDialog.proposed + "?"
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: 10
+
+                Button {
+                    text: "Cancel"
+                    onClicked: serialConflictDialog.close()
+                }
+                Button {
+                    text: "Replace"
+                    onClicked: {
+                        serialConflictDialog.close()
+                        settingsPage.serialWriteBusy = true
+                        LIFUConnector.writeSerialNumber(serialConflictDialog.target,
+                                                        serialConflictDialog.proposed,
+                                                        hwVersionField.text.trim(), true)
+                    }
+                }
+            }
         }
     }
 
@@ -656,8 +997,8 @@ Rectangle {
     // (TX 0) user_config under the ``device`` key.
     //
     // ``template`` is derived from (txModuleCount, freq) where ``freq`` is
-    // pulled from the user_config currently in the editor. The mapping
-    // matches openlifu.xdc.transducerarray._DEFAULT_TEMPLATE_IDS:
+    // pulled from the user_config currently in the editor. Supported
+    // transducer template IDs:
     //   (1, 155) -> openlifu_1x155
     //   (1, 400) -> openlifu_1x400
     //   (2, 155) -> openlifu_2x155
@@ -683,9 +1024,8 @@ Rectangle {
         property string errorText: ""
 
         function _resolveTemplateId(parsed) {
-            // Pull freq from the user_config. The python pipeline keys on the
-            // top-level "freq" field of the user_config (see
-            // openlifu.xdc.transducerarray._DEFAULT_TEMPLATE_IDS).
+            // The template is keyed on the top-level "freq" field (kHz) of
+            // the user_config and the connected TX module count.
             var freq = parsed && parsed.freq
             if (freq === undefined || freq === null) return ""
             var nMod = settingsPage.txModuleCount
@@ -911,13 +1251,10 @@ Rectangle {
                             : (parent.hovered ? "#FFFFFF" : "#BDC3C7")
                     }
                     onClicked: {
-                        // Build the device blob. We mirror the schema produced
-                        // by openlifu.xdc.TransducerArray.to_device_config():
-                        //   { id, name, modules: [{hwid: ...}, ...], attrs: {} }
-                        // The "transform" per module is left to the consumer
-                        // (transducerarray.from_module_user_configs falls back
-                        // to the template's per-module transform when no
-                        // explicit transform is given here).
+                        // Build the device blob stored under user_config "device":
+                        //   { id, name, template, modules: [{hwid: ...}, ...], attrs: {} }
+                        // No per-module "transform" is written; readers of this
+                        // block use the template's per-module transform.
                         var modulesBlob = []
                         for (var i = 0; i < addDeviceConfigDialog.moduleHwids.length; ++i) {
                             modulesBlob.push({ "hwid": addDeviceConfigDialog.moduleHwids[i] })
@@ -979,6 +1316,7 @@ Rectangle {
                 clip: true
 
                 RowLayout {
+                    id: userConfigRow
                     anchors.fill: parent
                     anchors.margins: 16
                     spacing: 16
@@ -987,7 +1325,10 @@ Rectangle {
                     ColumnLayout {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.horizontalStretchFactor: 7
+                        // Explicit 7:3 widths. Layout.horizontalStretchFactor
+                        // needs Layouts 6.5 and this file imports 6.0, so it
+                        // is inert here.
+                        Layout.preferredWidth: (userConfigRow.width - userConfigRow.spacing) * 0.7
                         spacing: 8
 
                         Text {
@@ -998,25 +1339,44 @@ Rectangle {
                             Layout.alignment: Qt.AlignHCenter
                         }
 
-                        // Status message (hidden until a read/write completes)
+                        // Status line. Two layers: a transient result from a
+                        // read/write/report load, which auto-hides after
+                        // four seconds, and underneath it the standing
+                        // "you have unwritten changes" message, which stays
+                        // up until the config is written or reverted.
                         Timer {
                             id: userConfigStatusHideTimer
                             interval: 4000
-                            onTriggered: userConfigStatusText.visible = false
+                            onTriggered: userConfigStatusText.transientText = ""
                         }
 
                         Text {
                             id: userConfigStatusText
+                            property string transientText: ""
+                            property color transientColor: "#BDC3C7"
+
+                            function flash(message, color) {
+                                transientText = message
+                                transientColor = color
+                                userConfigStatusHideTimer.restart()
+                            }
+
                             Layout.fillWidth: true
                             horizontalAlignment: Text.AlignHCenter
                             font.pixelSize: 12
                             wrapMode: Text.WordWrap
-                            visible: false
+                            text: transientText !== "" ? transientText
+                                                       : settingsPage.pendingWriteMessage
+                            color: transientText !== "" ? transientColor : "#F39C12"
+                            visible: text !== ""
                         }
 
                         Item {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            // Floor so a short window shrinks the editor
+                            // rather than collapsing it.
+                            Layout.minimumHeight: 140
 
                             ScrollView {
                                 anchors.fill: parent
@@ -1039,6 +1399,14 @@ Rectangle {
 
                                     wrapMode: TextArea.Wrap
 
+                                    // Any non-empty content -- typed, pasted,
+                                    // read back or generated -- is something
+                                    // the operator can see and act on.
+                                    onTextChanged: {
+                                        if (text.trim().length > 0)
+                                            settingsPage.userConfigTouched = true
+                                    }
+
                                     background: Rectangle {
                                         color: "#2A2F3B"
                                         radius: 4
@@ -1050,7 +1418,9 @@ Rectangle {
                             Text {
                                 anchors.centerIn: parent
                                 visible: userConfigEditor.text.length === 0
-                                text: "No config loaded\nPress Read Config to load from device."
+                                text: writeConfigButton.defaultConfigMode
+                                      ? "No config loaded\nPress Read Config to load from device,\nor Generate Default Config to build a sample one."
+                                      : "No config loaded\nPress Read Config to load from device."
                                 color: "#7F8C8D"
                                 font.pixelSize: 14
                                 horizontalAlignment: Text.AlignHCenter
@@ -1060,13 +1430,22 @@ Rectangle {
                         }
                     }
 
-                    // Action buttons
-                    ColumnLayout {
+                    // Action buttons. Scrollable because they need ~350 px
+                    // against the card's 300 px minimum, so the last button
+                    // would otherwise be unreachable.
+                    ScrollView {
+                        id: actionsScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.horizontalStretchFactor: 3
+                        Layout.preferredWidth: (userConfigRow.width - userConfigRow.spacing) * 0.3   // see the note opposite
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                    ColumnLayout {
+                        width: actionsScroll.availableWidth
                         spacing: 12
-                        Layout.alignment: Qt.AlignTop
 
                         Text {
                             text: "Actions"
@@ -1077,72 +1456,128 @@ Rectangle {
                             topPadding: 4
                         }
 
-                        // Component selector
-                        Text {
-                            text: "Target Component"
-                            color: "#BDC3C7"
-                            font.pixelSize: 12
-                            Layout.alignment: Qt.AlignHCenter
-                        }
 
-                        ComboBox {
-                            id: configTargetSelector
-                            Layout.fillWidth: true
-                            model: settingsPage.configTargetModel
-                            enabled: settingsPage.configTargetModel.length > 0
-
-                            onCurrentIndexChanged: userConfigEditor.text = ""
-
-                            contentItem: Text {
-                                leftPadding: 8
-                                text: configTargetSelector.enabled ? configTargetSelector.displayText : "No devices"
-                                color: configTargetSelector.enabled ? "white" : "#7F8C8D"
-                                verticalAlignment: Text.AlignVCenter
-                                font.pixelSize: 13
-                            }
-                            background: Rectangle {
-                                color: "#2A2F3B"
-                                radius: 4
-                                border.color: configTargetSelector.enabled ? "#3E4E6F" : "#2A2F3B"
-                            }
-                        }
-
-                        // Device Info for selected target
+                        // Row stays visible even when the Device ID texts do
+                        // not: the selector is how a module gets selected.
                         RowLayout {
+                            id: deviceIdRow
                             Layout.fillWidth: true
                             spacing: 8
-                            visible: configTargetSelector.enabled && configTargetSelector.currentText.startsWith("TX")
-                            
-                            Text { 
+
+                            // True for any real target -- Console or a TX module.
+                            readonly property bool hasTarget:
+                                configTargetSelector.enabled
+                                && configTargetSelector.currentText.length > 0
+
+                            Text {
                                 text: "Device ID:"
                                 color: "#BDC3C7"
                                 font.pixelSize: 12
+                                visible: deviceIdRow.hasTarget
                             }
-                            Text { 
+                            Text {
                                 Layout.fillWidth: true
+                                visible: deviceIdRow.hasTarget
+                                elide: Text.ElideRight
                                 text: {
-                                    if (!configTargetSelector.enabled || !configTargetSelector.currentText.startsWith("TX")) {
-                                        return "N/A"
+                                    if (!deviceIdRow.hasTarget) return "N/A"
+                                    if (configTargetSelector.currentText === "Console") {
+                                        return settingsPage.consoleDeviceId !== ""
+                                               ? settingsPage.consoleDeviceId : "Reading…"
                                     }
-                                    // Extract module index from "TX 0", "TX 1", etc.
-                                    var parts = configTargetSelector.currentText.split(" ")
-                                    if (parts.length >= 2) {
-                                        var moduleIndex = parseInt(parts[1])
-                                        return modules[moduleIndex] ? modules[moduleIndex].deviceId : "N/A"
-                                    }
-                                    return "N/A"
+                                    var mi = settingsPage.configTargetModuleIndex(
+                                                 configTargetSelector.currentText)
+                                    if (mi < 0) return "N/A"
+                                    return modules[mi] ? modules[mi].deviceId : "N/A"
                                 }
                                 color: "#3498DB"
                                 font.pixelSize: 12
                             }
+
+                            // Takes over the stretch when the Device ID texts
+                            // are hidden, so the selector stays right-aligned.
+                            Item {
+                                Layout.fillWidth: true
+                                visible: !deviceIdRow.hasTarget
+                            }
+
+                            Text {
+                                // "Target:" not "Module:" -- the list now holds
+                                // the Console as well as the TX modules.
+                                text: "Target:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                                Layout.alignment: Qt.AlignVCenter
+                            }
+
+                            ComboBox {
+                                id: configTargetSelector
+                                // Wide enough for "Console"; the old 70 only
+                                // had to fit a single-digit module index.
+                                Layout.preferredWidth: 110
+                                Layout.preferredHeight: 28
+                                font.pixelSize: 12
+                                model: settingsPage.configTargetModel
+                                enabled: settingsPage.configTargetModel.length > 0
+
+                                // By text, not by index: the model is rebuilt
+                                // wholesale, so the selected target can change
+                                // without the index moving. See
+                                // syncUserConfigTarget().
+                                onCurrentTextChanged: settingsPage.syncUserConfigTarget()
+
+                                // Show the entry text as-is ("TX 0", "Console").
+                                // Never the index: "Console" is not a module
+                                // number, and with no TX connected it sits at 0.
+                                displayText: (enabled && currentIndex >= 0) ? currentText : "—"
+
+                                contentItem: Text {
+                                    leftPadding: 8
+                                    text: configTargetSelector.displayText
+                                    color: configTargetSelector.enabled ? "white" : "#7F8C8D"
+                                    verticalAlignment: Text.AlignVCenter
+                                    font.pixelSize: 12
+                                }
+
+                                delegate: ItemDelegate {
+                                    id: configTargetEntry
+                                    required property int index
+                                    required property var modelData
+                                    width: configTargetSelector.width
+                                    height: 26
+                                    highlighted: configTargetSelector.highlightedIndex === configTargetEntry.index
+                                    contentItem: Text {
+                                        text: configTargetEntry.modelData
+                                        color: "white"
+                                        font.pixelSize: 12
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    background: Rectangle {
+                                        color: configTargetEntry.highlighted ? "#333" : "#2A2F3B"
+                                    }
+                                }
+
+                                background: Rectangle {
+                                    color: "#2A2F3B"
+                                    radius: 4
+                                    border.color: configTargetSelector.enabled ? "#3E4E6F" : "#2A2F3B"
+                                }
+
+                                ToolTip.visible: configTargetHover.hovered
+                                ToolTip.delay: 400
+                                ToolTip.text: configTargetSelector.enabled
+                                              ? "Device the config actions read from and write to."
+                                              : "No console or transmitter modules connected."
+                                HoverHandler { id: configTargetHover }
+                            }
                         }
 
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
-                            visible: configTargetSelector.enabled && configTargetSelector.currentText.startsWith("TX")
-                            
-                            Text { 
+                            visible: deviceIdRow.hasTarget
+
+                            Text {
                                 text: "Firmware Version:"
                                 color: "#BDC3C7"
                                 font.pixelSize: 12
@@ -1150,29 +1585,268 @@ Rectangle {
                             Text {
                                 Layout.fillWidth: true
                                 text: {
-                                    if (!configTargetSelector.enabled || !configTargetSelector.currentText.startsWith("TX")) {
-                                        return "N/A"
+                                    if (!deviceIdRow.hasTarget) return "N/A"
+                                    // The console version is already read into
+                                    // consoleCurrentVersion by onFwVersionRead.
+                                    if (configTargetSelector.currentText === "Console") {
+                                        return consoleCurrentVersion.text
                                     }
-                                    // Extract module index from "TX 0", "TX 1", etc.
-                                    var parts = configTargetSelector.currentText.split(" ")
-                                    if (parts.length >= 2) {
-                                        var moduleIndex = parseInt(parts[1])
-                                        return modules[moduleIndex] ? modules[moduleIndex].firmwareVersion : "N/A"
-                                    }
-                                    return "N/A"
+                                    var mi = settingsPage.configTargetModuleIndex(
+                                                 configTargetSelector.currentText)
+                                    if (mi < 0) return "N/A"
+                                    return modules[mi] ? modules[mi].firmwareVersion : "N/A"
                                 }
                                 color: "#2ECC71"
                                 font.pixelSize: 12
                             }
                         }
 
-                        // Read Config
+                        // Serial number + hw_ver. Barcode/QR scanners type
+                        // the code and press Enter, so a scan assigns it
+                        // straight away; typing + Enter or Assign works the
+                        // same. Writes the default-config identity keys to
+                        // the selected target (console -> console, TX n ->
+                        // that module): sn and hw_ver from here, hwid,
+                        // fw_ver, sdk_ver and updated filled automatically.
+                        // Every other key on the device is kept.
+                        ColumnLayout {
+                            id: serialNumberBlock
+                            Layout.fillWidth: true
+                            spacing: 4
+                            visible: deviceIdRow.hasTarget
+
+                            readonly property bool canUse:
+                                !settingsPage.consoleUserConfigBlocked
+                                && !settingsPage.serialWriteBusy
+                            function assign() {
+                                var sn = serialNumberField.text.trim()
+                                if (sn === "" || !canUse) return
+                                // The result replaces the editor, so don't
+                                // silently drop unwritten edits, a loaded
+                                // test report or a generated default.
+                                if (settingsPage.pendingWriteMessage !== "") {
+                                    userConfigStatusText.flash(
+                                        "Write or revert the editor changes before assigning a serial number.",
+                                        "#E74C3C")
+                                    return
+                                }
+                                settingsPage.serialWriteBusy = true
+                                LIFUConnector.writeSerialNumber(
+                                    configTargetSelector.currentText.toLowerCase(), sn,
+                                    hwVersionField.text.trim(), false)
+                            }
+
+                            Text {
+                                text: settingsPage.configTargetIsConsole
+                                      ? "Console Serial Number:" : "Transmitter Serial Number:"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+
+                                TextField {
+                                    id: serialNumberField
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 32
+                                    font.pixelSize: 13
+                                    color: "white"
+                                    enabled: serialNumberBlock.canUse
+                                    // Ignores anything else a scanner sends
+                                    // (e.g. a trailing Tab).
+                                    validator: RegularExpressionValidator {
+                                        regularExpression: /[A-Za-z0-9._-]{0,32}/
+                                    }
+                                    onAccepted: serialNumberBlock.assign()
+                                    background: Rectangle {
+                                        color: "#2A2F3B"
+                                        radius: 4
+                                        border.color: serialNumberField.activeFocus ? "#4A90E2" : "#3E4E6F"
+                                    }
+
+                                    // Hint, not placeholderText: some styles
+                                    // keep that visible as a floating label.
+                                    // Gone as soon as there is any text.
+                                    Text {
+                                        anchors.fill: parent
+                                        leftPadding: serialNumberField.leftPadding
+                                        verticalAlignment: Text.AlignVCenter
+                                        visible: serialNumberField.length === 0
+                                        text: settingsPage.serialWriteBusy
+                                              ? "Writing…" : "Scan or type, then Enter"
+                                        color: "#7F8C8D"
+                                        font.pixelSize: 13
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: assignSerialButton
+                                    Layout.preferredWidth: 72
+                                    Layout.preferredHeight: 32
+                                    radius: 6
+                                    property bool canUse: serialNumberBlock.canUse
+                                                          && serialNumberField.text.trim().length > 0
+                                    color: !canUse ? "#2A2F3B"
+                                         : (assignSerialArea.containsMouse ? "#4A90E2" : "#3A3F4B")
+                                    border.color: !canUse ? "#3E4E6F"
+                                                : (assignSerialArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                                    opacity: canUse ? 1.0 : 0.55
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "Assign"
+                                        color: "white"
+                                        font.pixelSize: 13
+                                        font.weight: Font.Medium
+                                    }
+
+                                    MouseArea {
+                                        id: assignSerialArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        enabled: assignSerialButton.canUse
+                                        onClicked: serialNumberBlock.assign()
+                                    }
+
+                                    Behavior on color { ColorAnimation { duration: 150 } }
+
+                                    // What Assign writes besides the serial. A
+                                    // HoverHandler, not the MouseArea, so it
+                                    // shows while the button is disabled too.
+                                    HoverHandler { id: assignHover }
+                                    ToolTip.visible: assignHover.hovered
+                                    ToolTip.delay: 2000
+                                    ToolTip.text: "Assign also fills hwid, fw_ver, sdk_ver and updated fields."
+                                }
+                            }
+
+                            // Hardware version: optional, kept between scans
+                            // (a batch usually shares one). Blank keeps the
+                            // device's current hw_ver (for a TX, the test
+                            // report's hardware rev). Cleared on a target
+                            // change: console and TX versions differ.
+                            Text {
+                                text: "Hardware Version (Optional):"
+                                color: "#BDC3C7"
+                                font.pixelSize: 12
+                            }
+
+                            TextField {
+                                id: hwVersionField
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 32
+                                font.pixelSize: 13
+                                color: "white"
+                                enabled: serialNumberBlock.canUse
+                                validator: RegularExpressionValidator {
+                                    regularExpression: /[A-Za-z0-9._-]{0,32}/
+                                }
+                                // Assign if the serial is in; else go fill it.
+                                onAccepted: {
+                                    if (serialNumberField.text.trim().length > 0)
+                                        serialNumberBlock.assign()
+                                    else
+                                        serialNumberField.forceActiveFocus()
+                                }
+                                background: Rectangle {
+                                    color: "#2A2F3B"
+                                    radius: 4
+                                    border.color: hwVersionField.activeFocus ? "#4A90E2" : "#3E4E6F"
+                                }
+
+                                Text {
+                                    anchors.fill: parent
+                                    leftPadding: hwVersionField.leftPadding
+                                    verticalAlignment: Text.AlignVCenter
+                                    visible: hwVersionField.length === 0
+                                    text: "e.g. rev-B"
+                                    color: "#7F8C8D"
+                                    font.pixelSize: 13
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+
+                        // Firmware too old for user config on this target.
+                        // Persistent (unlike userConfigStatusText, which
+                        // auto-hides) because it describes a standing
+                        // condition, not the result of an action.
                         Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: userConfigUnsupportedText.implicitHeight + 16
+                            visible: settingsPage.consoleUserConfigBlocked
+                            radius: 6
+                            color: "#FFF3CD"
+                            border.color: "#FFE69C"
+
+                            Text {
+                                id: userConfigUnsupportedText
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                text: "User config is not supported with this console firmware version. If required, update to "
+                                      + LIFUConnector.minConsoleUserConfigFirmwareVersion
+                                      + " or newer."
+                                color: "#664D03"
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+
+                        // Incomplete console config. Same placement and
+                        // persistence as the firmware warning above, but
+                        // advisory amber: nothing is broken, the console
+                        // just has no complete config yet.
+                        //
+                        // Only after the operator has read a config or typed
+                        // one (userConfigTouched) -- an untouched editor on a
+                        // freshly opened app has nothing to be missing.
+                        // Suppressed when the firmware warning is showing,
+                        // since Generate is disabled in that case and telling
+                        // the operator to click it would be a dead end.
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: userConfigIncompleteText.implicitHeight + 16
+                            visible: writeConfigButton.defaultConfigMode
+                                     && settingsPage.userConfigTouched
+                                     && !settingsPage.consoleUserConfigBlocked
+                            radius: 6
+                            color: "#3B3320"
+                            border.color: "#F39C12"
+
+                            Text {
+                                id: userConfigIncompleteText
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                text: "Missing config parameters — click \"Generate Default Config\" to populate."
+                                color: "#F39C12"
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+
+                        // Read Config
+                        //
+                        // Blocked when the target is a console whose firmware
+                        // predates the user-config command — the device would
+                        // just NAK it.
+                        Rectangle {
+                            id: readConfigButton
                             Layout.fillWidth: true
                             height: 40
                             radius: 6
-                            color: readConfigArea.containsMouse ? "#4A90E2" : "#3A3F4B"
-                            border.color: readConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
+                            property bool canUse: !settingsPage.consoleUserConfigBlocked
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : (readConfigArea.containsMouse ? "#4A90E2" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (readConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
 
                             Text {
                                 anchors.centerIn: parent
@@ -1186,10 +1860,230 @@ Rectangle {
                                 id: readConfigArea
                                 anchors.fill: parent
                                 hoverEnabled: true
+                                enabled: readConfigButton.canUse
                                 onClicked: {
                                     var target = configTargetSelector.currentText.toLowerCase()
                                     LIFUConnector.readUserConfig(target)
                                 }
+                            }
+
+                            ToolTip.visible: readConfigHoverArea.containsMouse
+                                && settingsPage.consoleUserConfigBlocked
+                            ToolTip.text: "Disabled: console user config requires firmware "
+                                + LIFUConnector.minConsoleUserConfigFirmwareVersion
+                                + " or newer (Firmware Update section above)."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: readConfigHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !readConfigButton.canUse
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Load Test Report
+                        //
+                        // TX-only: a test report describes a transmitter
+                        // module (its SN, frequency and per-frequency
+                        // sensitivity), and loadTestReport resolves the
+                        // target through _parse_tx_module, which has no
+                        // console case. Grayed out rather than left to fail
+                        // with "Unsupported target: console".
+                        Rectangle {
+                            id: loadTestReportButton
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            property bool canUse: !settingsPage.configTargetIsConsole
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : (testReportArea.containsMouse ? "#F39C12" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (testReportArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Load Test Report"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: testReportArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: loadTestReportButton.canUse
+                                onClicked: {
+                                    testReportDialog.open()
+                                }
+                            }
+
+                            ToolTip.visible: testReportHoverArea.containsMouse
+                                && !loadTestReportButton.canUse
+                            ToolTip.text: "Disabled: test reports describe a transmitter module. "
+                                + "Select a TX target to load one."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: testReportHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !loadTestReportButton.canUse
+                            }
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                        // Write Config
+                        //
+                        // Disabled when any connected device is below the
+                        // app's hard minimum firmware version -- the operator
+                        // must use the Firmware Update section above to bring
+                        // it back into compliance first -- or when the target
+                        // console predates the user-config command.
+                        //
+                        // With the Console targeted and the editor holding no
+                        // complete config -- empty, or missing any of
+                        // consoleConfigKeys -- the button becomes
+                        // "Generate Default Config" and fills the editor from
+                        // buildDefaultConsoleConfig(). That press writes
+                        // nothing: it leaves the editor non-empty, so the
+                        // button reverts to "Write Config" and the operator
+                        // presses again to actually send it.
+                        Rectangle {
+                            id: writeConfigButton
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            readonly property bool defaultConfigMode:
+                                settingsPage.configTargetIsConsole
+                                && settingsPage.isIncompleteConfig(userConfigEditor.text)
+                            property bool canUse: !LIFUConnector.firmwareUpdateRequired
+                                && !settingsPage.consoleUserConfigBlocked
+                                && (!defaultConfigMode || settingsPage.consoleSampleConfigReady)
+                            // Pulse only when this button is the one to press:
+                            // there are unwritten changes, it currently writes
+                            // (rather than generates), and it is enabled.
+                            readonly property bool breathing:
+                                canUse && !defaultConfigMode
+                                && settingsPage.pendingWriteMessage !== ""
+                            // Generate wears a light green at rest -- a shade
+                            // off the Write Config hover green, enough to read
+                            // as a different action without leaving the family.
+                            color: !canUse
+                                ? "#2A2F3B"
+                                : defaultConfigMode
+                                  ? (writeConfigArea.containsMouse ? "#58D68D" : "#2ECC71")
+                                  : (writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B")
+                            border.color: !canUse
+                                ? "#3E4E6F"
+                                : (writeConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
+                            opacity: canUse ? 1.0 : 0.55
+
+                            // Breathing highlight while the editor holds
+                            // something the device does not. Declared before
+                            // the label so it washes the fill, not the text,
+                            // and it takes no input -- the MouseArea below
+                            // still gets every click.
+                            //
+                            // alwaysRunToEnd lets the sequence finish on the
+                            // way out instead of freezing mid-glow; it ends
+                            // at 0, so the button settles back to its own
+                            // color once the config is written.
+                            Rectangle {
+                                id: writeConfigPulse
+                                anchors.fill: parent
+                                radius: parent.radius
+                                color: "#27AE60"
+                                opacity: 0
+                                visible: opacity > 0
+
+                                SequentialAnimation on opacity {
+                                    running: writeConfigButton.breathing
+                                    loops: Animation.Infinite
+                                    alwaysRunToEnd: true
+                                    NumberAnimation {
+                                        from: 0; to: 0.7; duration: 1200
+                                        easing.type: Easing.InOutSine
+                                    }
+                                    NumberAnimation {
+                                        from: 0.7; to: 0; duration: 1200
+                                        easing.type: Easing.InOutSine
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: writeConfigLabel
+                                anchors.centerIn: parent
+                                text: writeConfigButton.defaultConfigMode
+                                      ? "Generate Default Config" : "Write Config"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: writeConfigArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: writeConfigButton.canUse
+                                onClicked: {
+                                    if (writeConfigButton.defaultConfigMode) {
+                                        // Generate only. Nothing reaches the
+                                        // device until the operator has seen
+                                        // the blob in the editor and pressed
+                                        // the button again -- by then it reads
+                                        // "Write Config", since the editor is
+                                        // no longer empty.
+                                        settingsPage.setUserConfigText(
+                                            settingsPage.buildDefaultConsoleConfig())
+                                        // Set last, so the pulse and the
+                                        // standing message start from here
+                                        // and not from the assignment above.
+                                        // The message comes from
+                                        // pendingWriteMessage and stays up
+                                        // until the config is written or
+                                        // edited -- no flash, no timer.
+                                        settingsPage.userConfigGenerated = true
+                                        return
+                                    }
+                                    // "updated" records when the config landed
+                                    // on the device, so it is re-stamped on
+                                    // every write (and added if missing). The
+                                    // editor shows the stamped text -- what
+                                    // you see is what went out.
+                                    var target = configTargetSelector.currentText.toLowerCase()
+                                    var payload = settingsPage.stampUpdated(userConfigEditor.text)
+                                    userConfigEditor.text = payload
+                                    LIFUConnector.writeUserConfig(target, payload)
+                                }
+                            }
+
+                            ToolTip.visible: writeConfigHoverArea.containsMouse
+                                && !writeConfigButton.canUse
+                            ToolTip.text: settingsPage.consoleUserConfigBlocked
+                                ? "Disabled: console user config requires firmware "
+                                  + LIFUConnector.minConsoleUserConfigFirmwareVersion
+                                  + " or newer (Firmware Update section above)."
+                                : writeConfigButton.defaultConfigMode
+                                ? (LIFUConnector.hvConnected
+                                   ? "Reading console HWID and firmware version…"
+                                   : "Disabled: connect the console to generate a default config.")
+                                : "Disabled: update firmware to the minimum required version (Firmware Update section above)."
+                            ToolTip.delay: 400
+                            MouseArea {
+                                id: writeConfigHoverArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                visible: !writeConfigButton.canUse
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
@@ -1262,88 +2156,6 @@ Rectangle {
                             Behavior on color { ColorAnimation { duration: 150 } }
                         }
 
-                        // Load Test Report
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: 40
-                            radius: 6
-                            color: testReportArea.containsMouse ? "#F39C12" : "#3A3F4B"
-                            border.color: testReportArea.containsMouse ? "#FFFFFF" : "#BDC3C7"
-
-                            Text {
-                                anchors.centerIn: parent
-                                text: "Load Test Report"
-                                color: "white"
-                                font.pixelSize: 13
-                                font.weight: Font.Medium
-                            }
-
-                            MouseArea {
-                                id: testReportArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                onClicked: {
-                                    testReportDialog.open()
-                                }
-                            }
-
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                        }
-
-                        // Write Config
-                        //
-                        // Disabled when any connected device is below the
-                        // app's hard minimum firmware version -- the operator
-                        // must use the Firmware Update section above to bring
-                        // it back into compliance first.
-                        Rectangle {
-                            id: writeConfigButton
-                            Layout.fillWidth: true
-                            height: 40
-                            radius: 6
-                            property bool canUse: !LIFUConnector.firmwareUpdateRequired
-                            color: !canUse
-                                ? "#2A2F3B"
-                                : (writeConfigArea.containsMouse ? "#27AE60" : "#3A3F4B")
-                            border.color: !canUse
-                                ? "#3E4E6F"
-                                : (writeConfigArea.containsMouse ? "#FFFFFF" : "#BDC3C7")
-                            opacity: canUse ? 1.0 : 0.55
-
-                            Text {
-                                anchors.centerIn: parent
-                                text: "Write Config"
-                                color: "white"
-                                font.pixelSize: 13
-                                font.weight: Font.Medium
-                            }
-
-                            MouseArea {
-                                id: writeConfigArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                enabled: writeConfigButton.canUse
-                                onClicked: {
-                                    var target = configTargetSelector.currentText.toLowerCase()
-                                    LIFUConnector.writeUserConfig(target, userConfigEditor.text)
-                                }
-                            }
-
-                            ToolTip.visible: writeConfigHoverArea.containsMouse
-                                && LIFUConnector.firmwareUpdateRequired
-                            ToolTip.text: "Disabled: update firmware to the minimum required version (Firmware Update section above)."
-                            ToolTip.delay: 400
-                            MouseArea {
-                                id: writeConfigHoverArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                acceptedButtons: Qt.NoButton
-                                visible: !writeConfigButton.canUse
-                            }
-
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                        }
-
                         // Clear Config
                         Rectangle {
                             Layout.fillWidth: true
@@ -1365,14 +2177,82 @@ Rectangle {
                                 id: clearConfigArea
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                onClicked: userConfigEditor.text = ""
+                                onClicked: {
+                                    settingsPage.setUserConfigText("")
+                                    settingsPage.userConfigTouched = false
+                                }
                             }
 
                             Behavior on color { ColorAnimation { duration: 150 } }
                         }
 
-                        // Spacer
-                        Item { Layout.fillHeight: true }
+                        // Safety-limit bypass. On Settings because the sidebar
+                        // blocks entry while running and forces a Reset on
+                        // arrival, matching what setSafetyBypass enforces.
+                        // Arming only opens the confirmation dialog.
+                        Rectangle {
+                            id: safetyBypassButton
+                            Layout.fillWidth: true
+                            height: 40
+                            radius: 6
+                            readonly property bool armed: LIFUConnector.safetyBypassEnabled
+                            readonly property bool canUse: LIFUConnector.state !== 3
+                            // Hover goes red like Clear Config beside it --
+                            // this is the destructive action in this column.
+                            color: !canUse ? "#2A2F3B"
+                                   : safetyBypassArea.containsMouse ? "#C0392B"
+                                   : armed ? "#7A2E1A" : "#3A3F4B"
+                            border.color: !canUse ? "#3E4E6F"
+                                          : safetyBypassArea.containsMouse ? "#FFFFFF"
+                                          : armed ? "#E67E22" : "#BDC3C7"
+                            opacity: canUse ? 1.0 : 0.55
+
+                            // Separate Texts: one Text, one colour.
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 6
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "⚠"
+                                    color: "#F1C40F"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: safetyBypassButton.armed
+                                          ? "Limits Bypassed — Restore"
+                                          : "Bypass Safety Limits"
+                                    color: "white"
+                                    font.pixelSize: 13
+                                    font.weight: Font.Medium
+                                }
+                            }
+
+                            // One MouseArea only: a second, always-visible
+                            // one on top would swallow the hover and freeze
+                            // the button at its resting colour.
+                            MouseArea {
+                                id: safetyBypassArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: safetyBypassButton.canUse
+                                onClicked: {
+                                    if (LIFUConnector.safetyBypassEnabled) {
+                                        LIFUConnector.setSafetyBypass(false)
+                                    } else {
+                                        safetyBypassDialog.open()
+                                    }
+                                }
+                            }
+
+
+                            Behavior on color { ColorAnimation { duration: 150 } }
+                        }
+
+                    }
                     }
                 }
             }
@@ -1429,13 +2309,17 @@ Rectangle {
                                 width: 16
                                 height: 16
                                 radius: 8
-                                color: LIFUConnector.hvConnected ? "#2ECC71" : "#E74C3C"
+                                color: LIFUConnector.hvConnected ? "#2ECC71"
+                                    : (LIFUConnector.consoleDfuState.length > 0 ? "#E67E22" : "#E74C3C")
                                 border.color: "black"
                                 border.width: 1
                             }
 
                             Text {
-                                text: LIFUConnector.hvConnected ? "Console Connected" : "Console Not Connected"
+                                text: LIFUConnector.hvConnected ? "Console Connected"
+                                    : (LIFUConnector.consoleDfuState.length > 0
+                                        ? "Console in bootloader (DFU): " + LIFUConnector.consoleDfuState
+                                        : "Console Not Connected")
                                 font.pixelSize: 14
                                 color: "#BDC3C7"
                                 Layout.fillWidth: true
@@ -1445,7 +2329,7 @@ Rectangle {
                         // Firmware version row (auto-populated)
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "Firmware Version:"
@@ -1471,7 +2355,7 @@ Rectangle {
                         // empty — the image included with the SDK).
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "File Version:"
@@ -1632,21 +2516,32 @@ Rectangle {
                             property bool consoleFileSigned:
                                 LIFUConnector.isConsoleFirmwareSigned(
                                     settingsPage.consoleEffectivePath)
-                            enabled: LIFUConnector.hvConnected && !consoleUpdating
-                                && consoleFileSigned
-                            property color baseColor: settingsPage.updateButtonColor(
-                                consoleCurrentVersion.text,
-                                (consoleFileVersion.text === "—" ? "" : consoleFileVersion.text),
-                                LIFUConnector.minConsoleFirmwareVersion)
+                            // Console seen in a bootloader's USB DFU with no
+                            // serial port (see consoleDfuProbeTimer): the
+                            // button turns into "Recover Firmware".
+                            property bool consoleInDfu:
+                                !LIFUConnector.hvConnected
+                                && LIFUConnector.consoleDfuState.length > 0
+                            enabled: (LIFUConnector.hvConnected || consoleInDfu)
+                                && !consoleUpdating && consoleFileSigned
+                            property color baseColor: consoleInDfu
+                                ? "#E67E22"
+                                : settingsPage.updateButtonColor(
+                                    consoleCurrentVersion.text,
+                                    (consoleFileVersion.text === "—" ? "" : consoleFileVersion.text),
+                                    LIFUConnector.minConsoleFirmwareVersion)
                             color: !enabled ? "#3A3F4B"
                                 : (consoleUpdateArea.containsMouse ? Qt.darker(baseColor, 1.25) : baseColor)
 
                             Text {
                                 text: consoleUpdating
-                                    ? "Updating…"
-                                    : settingsPage.updateButtonText(
-                                        consoleCurrentVersion.text,
-                                        LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
+                                    ? (consoleUpdateButton.consoleInDfu ? "Recovering…" : "Updating…")
+                                    : consoleUpdateButton.consoleInDfu
+                                        ? "Recover Firmware v" + settingsPage._fullFwVersion(
+                                            LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
+                                        : settingsPage.updateButtonText(
+                                            consoleCurrentVersion.text,
+                                            LIFUConnector.getFirmwareFileVersion(settingsPage.consoleEffectivePath))
                                 anchors.fill: parent
                                 anchors.margins: 8
                                 horizontalAlignment: Text.AlignHCenter
@@ -1663,7 +2558,10 @@ Rectangle {
                                 hoverEnabled: true
                                 enabled: parent.enabled
                                 onClicked: {
-                                    fwUpdateDialog.updateTitle = "Updating Console Firmware…"
+                                    var recovering = consoleUpdateButton.consoleInDfu
+                                    fwUpdateDialog.updateTitle = recovering
+                                        ? "Recovering Console Firmware…"
+                                        : "Updating Console Firmware…"
                                     fwUpdateDialog.progressValue = 0.0
                                     fwUpdateDialog.progressLabel = ""
                                     fwUpdateDialog.statusMessage = ""
@@ -1672,9 +2570,17 @@ Rectangle {
                                     fwUpdateDialog.updateDone = false
                                     fwUpdateDialog.open()
                                     settingsPage.consoleUpdating = true
-                                    LIFUConnector.updateConsoleFirmware(
-                                        settingsPage.consoleEffectivePath,
-                                        consoleForceDowngrade.checked)
+                                    if (recovering) {
+                                        // No serial port: the SDK classifies the
+                                        // unit from its USB DFU product string.
+                                        LIFUConnector.recoverConsoleFirmware(
+                                            settingsPage.consoleEffectivePath,
+                                            consoleForceDowngrade.checked)
+                                    } else {
+                                        LIFUConnector.updateConsoleFirmware(
+                                            settingsPage.consoleEffectivePath,
+                                            consoleForceDowngrade.checked)
+                                    }
                                 }
                             }
 
@@ -1693,12 +2599,26 @@ Rectangle {
                             font.pixelSize: 11
                             visible: text.length > 0
                             text: {
-                                if (!LIFUConnector.hvConnected || consoleUpdating) return ""
+                                if (consoleUpdating) return ""
+                                if (!LIFUConnector.hvConnected
+                                    && !consoleUpdateButton.consoleInDfu) return ""
                                 // Empty field uses the included (signed) image;
                                 // only a browsed, unsigned file trips this.
                                 if (consoleFwPath.text.length > 0
                                     && !consoleUpdateButton.consoleFileSigned)
                                     return "This file is not a signed console image."
+                                if (consoleUpdateButton.consoleInDfu
+                                    && LIFUConnector.consoleDfuKind === "no-usb-driver")
+                                    return "A device is in its bootloader (DFU), but this PC "
+                                        + "has no USB driver for it yet. Recover installs the "
+                                        + "driver first (approve the Windows prompt), then the "
+                                        + "file above. Keep the console powered."
+                                if (consoleUpdateButton.consoleInDfu)
+                                    return "Console is in its bootloader ("
+                                        + LIFUConnector.consoleDfuState + "), not running "
+                                        + "an app. Recover installs the file above. Keep the "
+                                        + "console powered and close STM32CubeProgrammer or "
+                                        + "any SDK script first."
                                 return ""
                             }
                         }
@@ -1749,7 +2669,10 @@ Rectangle {
                             right: parent.right
                             margins: 16
                         }
-                        spacing: 12
+                        // 11, not the Console card's 12: with the selector at
+                        // 24 px this matches the Console column height, so both
+                        // update buttons clear the border equally.
+                        spacing: 11
 
                         // Section header
                         Text {
@@ -1800,6 +2723,9 @@ Rectangle {
                             ComboBox {
                                 id: txModuleSelector
                                 visible: LIFUConnector.txConnected && txModuleCount > 0
+                                // At 28 px this row ran 9 px taller than the
+                                // Console card, pushing the update button onto
+                                // the card border.
                                 model: {
                                     let count = txModuleCount > 0 ? txModuleCount : 1
                                     let items = []
@@ -1807,7 +2733,7 @@ Rectangle {
                                     return items
                                 }
                                 Layout.preferredWidth: 70
-                                Layout.preferredHeight: 28
+                                Layout.preferredHeight: 24
                                 font.pixelSize: 12
                                 enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0
 
@@ -1825,7 +2751,7 @@ Rectangle {
                         // Firmware version row (selected module)
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "Firmware Version:"
@@ -1849,7 +2775,7 @@ Rectangle {
                         // File version row (extracted from the chosen .bin)
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 10
+                            spacing: 12
 
                             Text {
                                 text: "File Version:"
@@ -2010,13 +2936,16 @@ Rectangle {
                             id: txUpdateButton
                             Layout.fillWidth: true
                             Layout.minimumWidth: 200
-                            height: 40
+                            // Layout.preferredHeight, not a raw `height`: the
+                            // ColumnLayout ignores a direct height and laid this
+                            // out as 0 px tall, spilling past the card.
+                            Layout.preferredHeight: 40
                             radius: 6
                             // Any module can update with an empty file field
-                            // (uses the included SDK firmware): the master
+                            // (uses the included firmware): the master
                             // migrates pre-2.0.8 units, a legacy slave takes
                             // the one-shot stub migration (BL + app), a secure
-                            // slave gets the bundled signed app. Blocked for
+                            // slave gets the included signed app. Blocked for
                             // the <= 2.0.3 cases (txUpdateBlocked) — the
                             // button label shows why.
                             enabled: LIFUConnector.txConnected && !transmitterUpdating && txModuleCount > 0
@@ -2085,6 +3014,116 @@ Rectangle {
                     }
                 }
             }
+
+        }
+    }
+
+    // Confirmation gate for the safety-limit bypass. The checkbox never
+    // arms the override itself -- only this dialog calls setSafetyBypass(true).
+    Dialog {
+        id: safetyBypassDialog
+        title: "Bypass safety limits?"
+        modal: true
+        focus: true
+        width: 560
+        height: 340
+        x: (settingsPage.width - width) / 2
+        y: (settingsPage.height - height) / 2
+        closePolicy: Popup.NoAutoClose   // require an explicit choice
+
+        background: Rectangle {
+            color: "#1E1E20"
+            border.color: "#E67E22"
+            border.width: 2
+            radius: 8
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                Text {
+                    text: "⚠"
+                    color: "#E67E22"
+                    font.pixelSize: 30
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "Configure will skip the SDK's check_solution() safety pass."
+                    color: "#E67E22"
+                    font.pixelSize: 14
+                    font.bold: true
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "The duty-cycle, voltage and sequence-duration limits will not be enforced, "
+                      + "so the array can be driven at up to 100% duty cycle."
+                color: "#DDD"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "Sustained operation outside the rated envelope can permanently damage the "
+                      + "transducer and the transmit electronics, and surfaces may become hot enough "
+                      + "to burn. Only continue for instrumented bench testing where you are "
+                      + "monitoring module temperature and drive level yourself."
+                color: "#DDD"
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: "The bypass clears automatically when the transmitter disconnects or the "
+                      + "application restarts. The HV controller's 5–100 V rail limit still applies."
+                color: "#9FB3C8"
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+
+            Item { Layout.fillHeight: true }
+        }
+
+        footer: RowLayout {
+            spacing: 8
+            Item { Layout.fillWidth: true }
+
+            Button {
+                text: "Cancel"
+                onClicked: safetyBypassDialog.close()
+            }
+
+            Button {
+                id: confirmBypassButton
+                text: "Bypass safety limits"
+                background: Rectangle {
+                    color: confirmBypassButton.down ? "#A85B18" : "#E67E22"
+                    radius: 4
+                    border.color: "#F0A050"
+                }
+                contentItem: Text {
+                    text: confirmBypassButton.text
+                    color: "white"
+                    font: confirmBypassButton.font
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                onClicked: {
+                    // Drops the configured flag. Controller clears its own
+                    // everConfigured from safetyBypassChanged.
+                    LIFUConnector.setSafetyBypass(true)
+                    safetyBypassDialog.close()
+                }
+            }
+
+            Item { Layout.preferredWidth: 6 }
         }
     }
 }

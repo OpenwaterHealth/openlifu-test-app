@@ -6,8 +6,6 @@ import pandas as pd
 import xarray as xa
 import datetime
 import logging
-import base58
-from openlifu_sdk.io.LIFUConfig import HW_ID_DATA_LENGTH
 
 FOCAL_GAIN_LUT = xa.DataArray.from_dict(
     {'dims': ('f0', 'crosstalk'),
@@ -246,7 +244,57 @@ ROW_HWID = 'B.4'
 ROW_FW_VER = 'B.5'
 ROW_VOLTAGE = 'E.1'
 
+# Config key -> (report section, accepted row labels). Rows are found by
+# their label, not their position, so a report that adds or drops a row
+# still reads the right values. The ROW_* codes above are the positions in
+# the current template, kept for reference.
+REPORT_FIELDS = {
+    'sdk_ver': ('info', ('sdk version',)),
+    'sn': ('txm', ('serial number',)),
+    'freq': ('txm', ('frequency',)),
+    'hw_ver': ('txm', ('hardware rev', 'hardware revision', 'hardware version')),
+    'hwid': ('txm', ('hardware id',)),
+    'fw_ver': ('txm', ('firmware version',)),
+}
+
 logger = logging.getLogger(__name__)
+
+
+def _clean_value(value):
+    """A report cell as a plain JSON value: None for an empty cell, strings
+    stripped (serials often end in a space), whole floats as ints."""
+    if value is None:
+        return None
+    if hasattr(value, 'item'):  # numpy scalar
+        value = value.item()
+    if isinstance(value, float):
+        if value != value:  # NaN: empty cell
+            return None
+        return int(value) if value.is_integer() else value
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+def report_value(report_df, key):
+    """The value of config field *key* from the report, or None if the
+    report has no such row or leaves it empty."""
+    section, labels = REPORT_FIELDS[key]
+    rows = report_df[report_df["Section"] == section]
+    for _, row in rows.iterrows():
+        if str(row.get("Item", "")).strip().lower() in labels:
+            return _clean_value(row["Value"])
+    return None
+
+
+def _required_value(report_df, key):
+    value = report_value(report_df, key)
+    if value is None:
+        section, labels = REPORT_FIELDS[key]
+        raise ValueError(f"The test report has no '{labels[0].title()}' row "
+                         f"in its {section} section, or it is empty.")
+    return value
 
 def read_test_report(filename: str) -> pd.DataFrame:
     sections = [{"name": "info", "start_row": "A"},
@@ -271,9 +319,9 @@ def report_to_matrix_dict(report_df: pd.DataFrame, focal_gain_lut=FOCAL_GAIN_LUT
     LIFU_400 = {'id': r'txm_400_{sn}', 'name': r'TXM 400kHz (S/N {sn})', 'nx': 8, 'ny': 8, 'pitch': 5, 'frequency': 400e3, 'kerf': 0.3, 'crosstalk_frac': 0.12, 'crosstalk_dist': 5.05e-3}
     LIFU_155 = {'id': r'txm_155_{sn}', 'name': r'TXM 155kHz (S/N {sn})', 'nx': 8, 'ny': 8, 'pitch': 5, 'frequency': 155e3, 'kerf': 0.3, 'crosstalk_frac': 0.12, 'crosstalk_dist': 5.05e-3}
     LIFU_MODULES = {400: LIFU_400, 155: LIFU_155}
-    freq_kHz = report_df.loc[ROW_FREQ]["Value"]
+    freq_kHz = _required_value(report_df, 'freq')
     voltage = report_df.loc[ROW_VOLTAGE]["Value"]
-    sn = report_df.loc[ROW_SN]["Value"]
+    sn = str(_required_value(report_df, 'sn'))
     pattern = r'[^a-zA-Z0-9\-\_]'
     replacement = ''
     sn = re.sub(pattern, replacement, sn)
@@ -290,36 +338,68 @@ def report_to_matrix_dict(report_df: pd.DataFrame, focal_gain_lut=FOCAL_GAIN_LUT
     return matrix_dict
 
 def test_report_to_config(report_df):
+    """The module user config for a test report.
+
+    ``sn`` and ``freq`` are required. ``hwid``, ``hw_ver``, ``fw_ver`` and
+    ``sdk_ver`` are taken when the report has them and left out otherwise,
+    so a report with a row added or removed still loads; the keys keep
+    their usual order either way.
+    """
     matrix_dict = report_to_matrix_dict(report_df)
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    sdk_version = report_df.loc[ROW_SDK_VER]['Value']
-    sn = report_df.loc[ROW_SN]['Value']
-    freq = report_df.loc[ROW_FREQ]['Value']
-    hw_version = report_df.loc[ROW_HW_VER]['Value']
-    hwid = report_df.loc[ROW_HWID]['Value']
-    fw_version = report_df.loc[ROW_FW_VER]['Value']
-    config = {'sn': sn,
-              'hwid': hwid,
-              'freq': freq,
-              'hw_ver': hw_version,
-              'fw_ver': fw_version,
-              'sdk_ver': sdk_version,
-              'updated': now,
-              'module': matrix_dict,
-              'device':{}}
+    values = {
+        'sn': str(_required_value(report_df, 'sn')),
+        'hwid': report_value(report_df, 'hwid'),
+        'freq': _required_value(report_df, 'freq'),
+        'hw_ver': report_value(report_df, 'hw_ver'),
+        'fw_ver': report_value(report_df, 'fw_ver'),
+        'sdk_ver': report_value(report_df, 'sdk_ver'),
+    }
+    config = {k: (str(v) if k in ('hwid', 'hw_ver', 'fw_ver', 'sdk_ver') else v)
+              for k, v in values.items() if v is not None}
+    config.update({'updated': now, 'module': matrix_dict, 'device': {}})
     return config
 
+
+def _version(value):
+    """A version for comparison: text, stripped, without a leading 'v'
+    (reports carry both 'v2.0.17' and '2.0.17')."""
+    text = str(value).strip() if value is not None else ""
+    return text[1:] if text[:1] in ("v", "V") else text
+
+
 def check_config_against_device(ifx, config, module=0):
+    """True if *config* belongs to TX *module*: its hwid must match.
+
+    A firmware version that differs from the device's fails the check; one
+    the config doesn't carry is only warned about. The SDK version is only
+    ever warned about. Missing keys never raise.
+    """
     sdk_version = ifx.get_sdk_version()
-    if sdk_version != config['sdk_ver']:
-        logger.warning(f"SDK version of the config {config['sdk_ver']} does not match the current SDK version {sdk_version}")
+    config_sdk = config.get('sdk_ver')
+    if config_sdk is None:
+        logger.warning("The config has no SDK version (sdk_ver)")
+    elif _version(sdk_version) != _version(config_sdk):
+        logger.warning(f"SDK version of the config {config_sdk} does not match the current SDK version {sdk_version}")
     fw_version = ifx.txdevice.get_version(module)
-    if fw_version != config['fw_ver']:
-        logger.warning(f"Firmware version of the config ({config['fw_ver']}) does not match the version of the device ({fw_version})")
+    config_fw = config.get('fw_ver')
+    if config_fw is None:
+        logger.warning(f"The config has no firmware version (fw_ver); the device has {fw_version}")
+    elif _version(fw_version) != _version(config_fw):
+        logger.warning(f"Firmware version of the config ({config_fw}) does not match the version of the device ({fw_version})")
         return False
-    hwid_hex = ifx.txdevice.get_hardware_id(module, raw_hex=True)
-    hwid =  base58.b58encode(bytes.fromhex(hwid_hex[:HW_ID_DATA_LENGTH])).decode('utf-8')
-    if hwid != config['hwid']:
-        logger.warning(f"Hardware ID of the config ({config['hwid']}) does not match the ID of the device ({hwid})")
-        return False
-    return True
+    # Records carry the base58 of the full 12-byte UID; units calibrated
+    # before SR-004 carry base58 of only its first 6 bytes. Accept those
+    # too, but say so, so the record gets rewritten in the full form.
+    config_hwid = config.get('hwid')
+    hwid = ifx.txdevice.get_hardware_id(module, base58=True)
+    if config_hwid == hwid:
+        return True
+    legacy_hwid = ifx.txdevice.get_hardware_id(module, base58=True, legacy_6byte=True)
+    if config_hwid == legacy_hwid:
+        logger.warning(f"Module {module}: the config's hardware ID ({config_hwid}) is the legacy "
+                       f"6-byte form of the device's ID ({hwid}); recalibrate the unit or rewrite "
+                       f"its hwid in the full form")
+        return True
+    logger.warning(f"Hardware ID of the config ({config_hwid}) does not match the ID of the device ({hwid})")
+    return False

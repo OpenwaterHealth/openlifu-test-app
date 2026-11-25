@@ -7,9 +7,12 @@ dependency with ``lifu_connector`` (which imports the mixin classes).
 """
 from __future__ import annotations
 
-import functools
 import logging
 import re
+
+# Import limits from SDK
+from openlifu_sdk.io.LIFUTXDevice import MIN_PROFILE_SWITCH_INTERVAL, VALID_DELAY_PROFILES
+
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,16 @@ NUM_ELEMENTS_PER_MODULE = 64  # Each TX module has 64 elements
 
 
 # =============================================================================
+# Multi-focus (rastered) sonication limits derived from SDK
+# =============================================================================
+#   MAX_FOCUS_POINTS              delay-RAM profile slots (one per focus)
+#   MIN_PROFILE_SWITCH_INTERVAL_S inter-pulse dead time the firmware needs
+#                                 to perform the SPI profile-switch writes
+MAX_FOCUS_POINTS = len(VALID_DELAY_PROFILES)
+MIN_PROFILE_SWITCH_INTERVAL_S = MIN_PROFILE_SWITCH_INTERVAL
+
+
+# =============================================================================
 # Retry policy
 # =============================================================================
 # How many extra times a device-write should be retried after a transient
@@ -79,22 +92,27 @@ RUN_LOG_DATEFMT = "%H:%M:%S"
 #                                   (Configure on Controller; Write
 #                                   Config and Add Device Configuration
 #                                   on Settings) until updated.
-#   packaged_*_fw_version()         the version of the firmware files
-#                                   actually available through the
-#                                   pinned ``openlifu-sdk`` (bundled
-#                                   binaries, plus anything dropped into
-#                                   the SDK's ``firmware/downloads/``
-#                                   directory by a runtime updater).
+#   packaged_*_fw_version()         the version of the signed images
+#                                   the app ships in ``firmware/``
+#                                   (``lifu/firmware_images.py``).
 #                                   Devices older than this (but >= the
 #                                   minimum) get an advisory "Firmware
 #                                   Update Available".
 #
 # ``validate_firmware_version_pins()`` runs at app startup and raises if
-# either minimum exceeds what the SDK can actually deliver -- otherwise
-# an operator could see "Firmware Update Required" without the bundled
-# installer being able to satisfy it.
+# either minimum exceeds the shipped firmware -- otherwise an operator
+# could see "Firmware Update Required" with no image able to satisfy it.
 MIN_CONSOLE_FW_VERSION = "1.2.5"
 MIN_TRANSMITTER_FW_VERSION = "2.0.7"
+
+# The console only gained the user-config command (OW_CMD_USR_CFG) after
+# 1.2.6 -- older consoles NAK it, which surfaced as a raw device error in
+# the Settings page.
+#
+# NOTE: this is app-side on purpose for now. The authoritative home for
+# "which firmware introduced this command" is openlifu-sdk (alongside
+# LIFUUserConfig); move it there once the SDK grows a capability check.
+MIN_CONSOLE_USER_CONFIG_FW_VERSION = "1.2.7"
 
 # Compliance buckets surfaced to QML. Order matters: aggregate "worst"
 # state across modules picks the numerically larger value.
@@ -104,47 +122,26 @@ FW_COMPLIANCE_UPDATE_AVAILABLE = 2
 FW_COMPLIANCE_UPDATE_REQUIRED = 3
 
 
-@functools.lru_cache(maxsize=1)
 def packaged_console_fw_version() -> str | None:
-    """Console firmware version the SDK ships as its *included* image.
+    """Version of the console firmware the app ships and installs.
 
-    The console updates exclusively to the signed image bundled with the
-    SDK (``LIFUFirmwareUpdate.bundled_signed_app``), so the authoritative
-    version is the FwVersion in that image's SBSFU header (decoded to
-    semver by ``LIFUCrypto``). Falls back to the legacy GitHub-era lookup
-    for older SDKs. Returns ``None`` if neither is available -- callers
-    must treat that as "unknown" and skip the update-available advisory.
+    Read from the signed image's SBSFU header (``lifu/firmware_images.py``).
+    openlifu-sdk 2.1.0-rc.4 and later carry no firmware, so the app ships
+    the images itself. Returns ``None`` if the image is missing or
+    unreadable -- callers must treat that as "unknown" and skip the
+    update-available advisory.
     """
-    try:
-        from openlifu_sdk.io.LIFUCrypto import parse_signed_image
-        from openlifu_sdk.io.LIFUFirmwareUpdate import bundled_signed_app
-        img = bundled_signed_app()
-        if img.is_file():
-            return parse_signed_image(str(img)).fw_version_str
-        logger.warning("bundled console firmware not present: %s", img)
-    except Exception as e:
-        logger.debug("Bundled signed console image unreadable (%s); "
-                     "trying legacy SDK lookup", e)
-    try:
-        from openlifu_sdk.util.firmware import get_console_firmware_version
-        return get_console_firmware_version()
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("Could not read packaged console firmware version: %s", e)
-        return None
+    from lifu import firmware_images
+    return firmware_images.shipped_version(firmware_images.CONSOLE_SIGNED_APP)
 
 
-@functools.lru_cache(maxsize=1)
 def packaged_transmitter_fw_version() -> str | None:
-    """Latest transmitter firmware version the pinned SDK can provide.
+    """Version of the transmitter firmware the app ships and installs.
 
-    See :func:`packaged_console_fw_version` for caching/error semantics.
+    See :func:`packaged_console_fw_version`.
     """
-    try:
-        from openlifu_sdk.util.firmware import get_transmitter_firmware_version
-        return get_transmitter_firmware_version()
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("Could not read packaged transmitter firmware version: %s", e)
-        return None
+    from lifu import firmware_images
+    return firmware_images.shipped_version(firmware_images.TRANSMITTER_SIGNED_APP)
 
 
 def parse_firmware_version(version_str):
@@ -183,11 +180,26 @@ def firmware_compliance(version_str, min_version, packaged_version):
     return FW_COMPLIANCE_OK
 
 
+def console_supports_user_config(version_str) -> bool:
+    """True if a console running ``version_str`` implements user config.
+
+    Unreadable/unparseable versions return ``True``: a failed version
+    query must not lock the operator out of the config editor. The
+    attempt then fails on the device NAK, which is the same outcome as
+    before this check existed.
+    """
+    parsed = parse_firmware_version(version_str)
+    if parsed is None:
+        return True
+    floor = parse_firmware_version(MIN_CONSOLE_USER_CONFIG_FW_VERSION)
+    return floor is None or parsed >= floor
+
+
 def validate_firmware_version_pins():
     """Sanity-check the firmware version pins. Raises ValueError on misconfig.
 
     Run at startup so a release that pins a minimum higher than the
-    firmware versions the SDK can actually deliver fails fast (a
+    firmware the app ships in ``firmware/`` fails fast (a
     developer/dependency guardrail) rather than locking operators out
     of configuration with an unfulfillable "Firmware Update Required"
     status.
@@ -203,19 +215,19 @@ def validate_firmware_version_pins():
             )
         if pkg_v is None:
             raise ValueError(
-                f"Could not determine the {label} firmware version "
-                f"shipped by openlifu-sdk; cannot verify minimum "
-                f"firmware pin {min_v!r}."
+                f"Could not determine the version of the {label} "
+                f"firmware shipped with the app (firmware/); cannot "
+                f"verify minimum firmware pin {min_v!r}."
             )
         parsed_pkg = parse_firmware_version(pkg_v)
         if parsed_pkg is None:
             raise ValueError(
-                f"openlifu-sdk reported an unparseable {label} firmware "
-                f"version: {pkg_v!r}"
+                f"The {label} firmware shipped with the app has an "
+                f"unparseable version: {pkg_v!r}"
             )
         if parsed_min > parsed_pkg:
             raise ValueError(
                 f"{label} minimum firmware version {min_v} exceeds the "
-                f"version shipped by openlifu-sdk ({pkg_v}); bump the "
-                f"SDK pin or lower MIN_{label.upper()}_FW_VERSION."
+                f"version shipped with the app ({pkg_v}); update the "
+                f"image in firmware/ or lower MIN_{label.upper()}_FW_VERSION."
             )

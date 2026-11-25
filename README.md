@@ -23,18 +23,20 @@ OpenLIFU Test App is an engineering-first interface with dedicated pages for:
 ### Prerequisites
 
 - Python 3.10+
-- Local checkout of `openlifu-sdk` and `OpenLIFU-python` (or installed package equivalents)
+- `openlifu-sdk` — installed automatically as a dependency; for SDK development use a local editable checkout instead
 
 ### Install
 #### Windows Executable
 From the [Releases](https://github.com/OpenwaterHealth/openlifu-test-app/releases) page, download the latest `OpenLifu-TestApp*.zip` asset, extract it, and run `TestApp.exe` or `TestApp_console.exe` (to view console output).
 
+Release and release-candidate executables are code-signed by Open Water Internet, Inc.; builds from branch pushes are unsigned. See [Code signing](docs/code-signing.md).
+
 #### Python
 1. Clone this repository.
 
    ```bash
-   git clone https://github.com/OpenwaterHealth/OpenLIFU-TestAPP.git
-   cd OpenLIFU-TestAPP
+   git clone https://github.com/OpenwaterHealth/openlifu-test-app.git
+   cd openlifu-test-app
    ```
 
 2. Create and activate a virtual environment.
@@ -60,16 +62,7 @@ From the [Releases](https://github.com/OpenwaterHealth/openlifu-test-app/release
    pip install -e .[dev,test]
    ```
 
-4. Install OpenLIFU Python.
-
-   ```bash
-   git clone https://github.com/OpenwaterHealth/OpenLIFU-python.git
-   cd OpenLIFU-python
-   pip install -e .
-   cd ..
-   ```
-
-5. Launch the app.
+4. Launch the app.
 
    ```bash
    python main.py
